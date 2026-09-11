@@ -41,6 +41,26 @@ services:
     volumes:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude.json:/home/node/.claude.json
       - ${CLAUDE_CONFIG_DIR:-~}/.claude:/home/node/.claude
+      # ホストの ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、
+      # 上の rw マウントの内側に :ro で重ねてコンテナから書き換え不能にする。
+      # 侵害されたセッションが hook/skill/plugin 等を書くと、次にホストで Claude Code
+      # を起動した時点（user settings の hooks は file watcher で稼働中セッションにも）
+      # ホストの権限で実行されるため。認証・transcript・memory 等の状態は rw のまま。
+      # マウント先がホストに無いと podman がサブ uid 所有の実体を作って残骸になるため、
+      # claude-container の prepare_claude_config_ro() が起動直前に空で作る。
+      # 基点は親と同じ ${CLAUDE_CONFIG_DIR:-~} に固定し、別実体を指せないようにする。
+      # 項目を増減するときは claude-container 側の一覧と test-build.sh を同期すること。
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/hooks:/home/node/.claude/hooks:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/skills:/home/node/.claude/skills:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/plugins:/home/node/.claude/plugins:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/commands:/home/node/.claude/commands:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/agents:/home/node/.claude/agents:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/workflows:/home/node/.claude/workflows:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/rules:/home/node/.claude/rules:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/output-styles:/home/node/.claude/output-styles:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/settings.json:/home/node/.claude/settings.json:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/CLAUDE.md:/home/node/.claude/CLAUDE.md:ro
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/statusline.sh:/home/node/.claude/statusline.sh:ro
       - ${CONTEXT}:/workspace
       - ${EXTRA_MOUNT:-/dev/null}:/data
       # 第2の追加マウント（claude-container#46）。複数プロジェクトから同一ホスト

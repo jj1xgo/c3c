@@ -661,6 +661,70 @@ run_env_file_launcher_tests() {
     bash -c "[ \"\$(grep -c 'podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/claude-container')\" -eq 2 ]"
   rm -f "$proj/.env"
 
+  # 許可リスト（claude-container#44）。偽 grep は実行痕跡を残してから本物へ委譲する
+  # （偽物が動いてもランチャーの流れは壊さず、痕跡の有無だけで判定する）。
+  local evil="$root/evil" marker="$root/evil-ran" real_grep
+  real_grep="$(command -v grep)"
+  mkdir -p "$evil" "$home/.codex" "$home/.codex-container"
+  cat > "$evil/grep" <<DUMMY
+#!/bin/bash
+touch "$marker"
+exec "$real_grep" "\$@"
+DUMMY
+  chmod +x "$evil/grep"
+
+  # E1: env の PATH は export されず、以降の grep はホストの本物が動く。
+  # $bin を含めるのは、修正前（PATH が export される状態）でもダミー podman が解決され続ける
+  # ようにするため（含めないと赤の確認で実 podman の image exists → 実ビルドへ進んでしまう）。
+  # 判定は marker の有無なので赤は成立する。
+  printf 'PATH=%s:%s:/usr/bin:/bin\n' "$evil" "$bin" > "$envf"
+  run_launcher
+  check "E1: env の PATH で偽 grep が実行されない（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && [ ! -e '$marker' ] && ! grep -q '^PATH=$evil' '$root/compose-env'"
+  check "E1: PATH は未対応キーとして WARNING で報告される" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*PATH.*解釈しないため無視'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E2: env の HOME で guard_codex_dir の fail-closed が沈黙しない（2026-09-12 の実測の回帰）
+  printf 'HOME=%s\nCODEX_DIR=%s/.codex\n' "$root/fake-home" "$home" > "$envf"
+  run_launcher
+  check "E2: env の HOME では CODEX_DIR ガードを迂回できない（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CODEX_DIR' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E3: 許可キーは従来どおり compose へ届く（許可リストを狭めすぎたら落ちる対照）
+  : > "$root/gitconfig"
+  printf 'TZ=Asia/Tokyo\nGITCONFIG_FILE=%s\nCLAUDE_CONTAINER_NO_FIREWALL=1\n' "$root/gitconfig" > "$envf"
+  run_launcher
+  check "E3: 許可キー TZ/GITCONFIG_FILE/NO_FIREWALL が compose へ届く（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' && grep -qxF 'GITCONFIG_FILE=$root/gitconfig' '$root/compose-env' && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env'"
+  check "E3: 許可キーには WARNING が出ない" \
+    bash -c "! printf '%s' \"\$0\" | grep -q '解釈しないため無視'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E4: 廃止変数を env ファイルに書いた場合の移行案内（ERROR）は許可リスト化後も維持される
+  printf 'GH_TOKEN_FILE=/nonexistent\n' > "$envf"
+  run_launcher
+  check "E4: env の GH_TOKEN_FILE は廃止 ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '廃止されました' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E5: --check は未対応キーを [WARN] として報告し、FAIL にはしない。
+  # 修正前は LD_PRELOAD が export され、外部コマンドの exec ごとに ld.so が stderr へ
+  # 「ERROR: ld.so: object '/nonexistent/evil.so' from LD_PRELOAD cannot be preloaded」を出す。
+  # 単に LD_PRELOAD を grep すると修正前から緑になるので、汎用 WARNING の文言と同一行で結ぶ。
+  printf 'LD_PRELOAD=/nonexistent/evil.so\n' > "$envf"
+  run_launcher_check
+  check "E5: --check は LD_PRELOAD を WARNING で報告し結果は WARN（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING:.*LD_PRELOAD.*解釈しないため無視' && printf '%s' \"\$0\" | grep -q '結果: WARN'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E6: 未対応キーは compose の環境にも現れない
+  run_launcher
+  check "E6: LD_PRELOAD は compose の環境に渡らない（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && ! grep -q '^LD_PRELOAD=' '$root/compose-env'"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
   launcher_sandbox_cleanup
 }
 

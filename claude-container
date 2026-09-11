@@ -169,8 +169,8 @@ compute_project_name() {
 
 # プロジェクトごとの固定パス群（MCP承認記録・設定ディレクトリ・ビルドコンテキスト）を
 # freeze する。load_env_file() より前に呼んだうえで readonly にすることで、プロジェクト側の
-# .claude-container.d/env が HOME 等を書き換えても、同名キーを直接書いても、これらのパスは
-# 一切影響を受けない（呼び出し順序だけでは直接代入を防げない。claude-container#39）。
+# .claude-container.d/env が同名キーを直接書いても readonly で拒否され、HOME 等は許可リスト外で
+# export されない（claude-container#39、#44）ため、これらのパスは一切影響を受けない。
 # --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化（readonly は
 # ( check_one_project ) サブシェル内に閉じるためプロジェクト間で衝突しない）。
 freeze_project_paths() {
@@ -210,26 +210,39 @@ record_project_in_ledger() {
   chmod 600 "$CC_LEDGER_FILE" 2>/dev/null || true
 }
 
-# プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば、保護変数を除いて環境変数として取り込む。
-# source だとシェル構文がホスト上で即時解釈され任意コード実行になりうるため、変数代入以外の
-# 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。なお「source しない」
-# ことが防ぐのはこの即時解釈の経路のみで、env の値経由の間接的な経路（PATH 等）は防がない。
+# プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば、許可リストのキーだけを環境変数として
+# 取り込む。source だとシェル構文がホスト上で即時解釈され任意コード実行になりうるため、変数代入以外の
+# 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
 #
-# 保護変数（readonly）への上書きは拒否して警告する（claude-container#39）。readonly 属性そのものが
-# 保護対象の登録簿であり、変数名リストは持たない（新しい境界変数は宣言箇所で readonly するだけで
-# 自動的に保護される）。ただし保護変数を子プロセスへ渡すときはコマンド前置代入でなく export を使う
-# こと（readonly 変数への前置代入は代入エラーになり set -euo pipefail 下で起動が止まる）。
+# 許可リスト（claude-container#44）: compose.yml が補間するキーとコンテナへ渡す 2 キー
+# （TZ・CLAUDE_CONTAINER_NO_FIREWALL）以外、env のキーには正当な機能がない。一方 PATH・HOME・
+# LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
+# ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
+# ことを実測）。拒否リストは列挙が閉じないので、許可リストで受け付けるキーを固定し、それ以外は
+# WARNING を出して無視する（export しなければ無害なので ERROR にはしない。--check では [WARN]）。
+# 新しいキーを compose.yml へ足したら、この配列と README「環境変数」節の表を同時に更新する。
+# 保護変数（readonly）は許可リストに含まれないので上書きされない。readonly 宣言自体は
+# スクリプト内部の直接代入に対する防御として残す（claude-container#39）。
 # ローカル変数名を _lef_ で名前空間化しているのは、bash の動的スコープにより関数内ローカルと同名の
-# env キーが export してもグローバルへ出ないため（衝突しうる名前を、通常の設定キーとは衝突しにくい
-# 専用の名前空間へ寄せる）。この3名は bash の有効な識別子であり、env キーとしては使えなくなる。
+# キーが export してもグローバルへ出ないため（許可リストのキーをこの名前にしないこと）。
+ENV_FILE_ALLOWED_KEYS=(
+  CLAUDE_CONFIG_DIR
+  EXTRA_MOUNT
+  SHARED_MOUNT
+  TZ
+  CLAUDE_CONTAINER_NO_FIREWALL
+  GITCONFIG_FILE
+  SECRETS_DIR
+  CODEX_DIR
+)
+readonly -a ENV_FILE_ALLOWED_KEYS
 load_env_file() {
   local _lef_file="$1" _lef_line _lef_key
   while IFS= read -r _lef_line || [[ -n "$_lef_line" ]]; do
     [[ "$_lef_line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
     _lef_key="${_lef_line%%=*}"
-    # readonly 性はサブシェルで非破壊テストする（親の値を汚さず、if 条件が set -e の abort を抑止する）。
-    if ! ( export "$_lef_key=" ) 2>/dev/null; then
-      guard_warn "WARNING: $_lef_file のキー $_lef_key は読み取り専用のため無視します（スクリプトが算出・固定する境界変数、またはシェル組み込みの読み取り専用変数）。"
+    if [[ " ${ENV_FILE_ALLOWED_KEYS[*]} " != *" $_lef_key "* ]]; then
+      guard_warn "WARNING: $_lef_file のキー $_lef_key は claude-container が解釈しないため無視します（受け付けるキー: ${ENV_FILE_ALLOWED_KEYS[*]}。README「環境変数」節）。"
       continue
     fi
     # shellcheck disable=SC2163  # 変数名でなく KEY=VALUE 文字列の export が意図
@@ -251,9 +264,14 @@ guard_env_gh_token() {
 # 無視せず fail-closed で起動を中止し、新レイアウトへの移行手順を案内する（検出した
 # 変数をまとめて1回で提示し、複数回起動してもう1個見つかる体験を避ける）。
 guard_legacy_vars() {
-  local _legacy_vars_found=()
-  [[ -n "${GH_TOKEN_FILE:-}" ]] && _legacy_vars_found+=("GH_TOKEN_FILE")
-  [[ -n "${GH_TOKEN_SECONDARY_FILE:-}" ]] && _legacy_vars_found+=("GH_TOKEN_SECONDARY_FILE")
+  local _legacy_vars_found=() _lv
+  # シェル環境の export 済み変数と、env ファイルの行の両方を見る。後者は許可リスト外なので
+  # export されず（claude-container#44）、変数を見るだけでは移行案内が汎用 WARNING に格下げされる。
+  for _lv in GH_TOKEN_FILE GH_TOKEN_SECONDARY_FILE; do
+    if [[ -n "${!_lv:-}" ]] || { [[ -n "$ENV_FILE" ]] && grep -qE "^${_lv}=" "$ENV_FILE" 2>/dev/null; }; then
+      _legacy_vars_found+=("$_lv")
+    fi
+  done
   if [[ ${#_legacy_vars_found[@]} -gt 0 ]]; then
     guard_fail \
       "ERROR: 次の変数は廃止されました（後方互換なし、claude-container#24）: ${_legacy_vars_found[*]}" \
@@ -571,9 +589,9 @@ guard_env_boundary_keys() {
 }
 
 # ベースイメージの検証（内部運用issue参照）。BASE_IMAGE は env 由来の値を
-# 一切信用しない — load_env_file() は保護変数（readonly）以外の KEY=VALUE を
-# そのまま export し、かつこのガードより前に走るため、ここで無条件に既定値から
-# 開始することで env 経由の上書きを遮断する（MCP_APPROVAL_FILE を全分岐末尾で
+# 一切信用しない — load_env_file() の許可リスト外なので env からは export されない
+# （claude-container#44）が、シェル環境から渡された値も信用しないよう、ここで無条件に
+# 既定値から開始する（MCP_APPROVAL_FILE を全分岐末尾で
 # 無条件 export しているのと同じ流儀）。正しい指定先は
 # .claude-container.d/base-image.txt のみ。
 #
@@ -1231,7 +1249,7 @@ if ! compute_asset_hash; then
   exit 1
 fi
 
-# ホストのタイムゾーンを自動検出（.env で上書き済みでなければ設定）
+# ホストのタイムゾーンを自動検出（.claude-container.d/env またはシェル環境で TZ が設定済みでなければ）
 if [[ -z "${TZ:-}" ]]; then
   if [[ -f /etc/timezone ]]; then
     TZ=$(cat /etc/timezone)

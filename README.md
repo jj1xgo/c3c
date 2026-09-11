@@ -88,7 +88,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | `1` でエグレス制限（後述）を無効化 |
 | `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス（後述） |
 | `SECRETS_DIR` | (unset) | GitHub トークン等のシークレットをコンテナへ持ち込む唯一の機構のホスト側パス（後述「GitHub トークンの配線」節） |
-| `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「MCP サーバーの追加」節の Codex レシピ） |
+| `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「MCP サーバーの追加」節の Codex レシピ）。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する）。実ホストの `~/.codex` と同じ実体を指す指定（表記ゆれ・シンボリックリンクを含む）は起動を中止する |
 
 `TZ` は起動スクリプトがホストの `/etc/timezone`（なければ `/etc/localtime` シンボリックリンク）から自動検出する。`.claude-container.d/env` で明示した場合はそちらが優先される。
 
@@ -117,7 +117,7 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 
 `env` 以外は任意。`packages.txt`/`requirements.txt`/`allowed-domains.txt` を置かなければ claude-container 同梱のデフォルト（空のフォールバック）が使われる。`allowed-domains.txt` にはプロジェクトの作業に必要な追加ドメイン（例: pip なら `pypi.org` と、パッケージ本体の実ダウンロード先である `files.pythonhosted.org` の両方— index への到達だけでは `pip install` は完走しない）を書く。ビルド時にイメージへ焼き込まれるため、変更を反映するには `-b` での再ビルドが必要（`env` はこのビルド時焼き込みの対象外 — ホスト固有パスをイメージに含めないため）。
 
-`allowed-ports.txt` は許可ドメイン（GitHub CIDR・`allowed-domains.txt` 指定分）への到達を許すTCPポートを既定の `443,22` から変更したい場合に使う（`jj1xgo/claude-container#31`）。置かなければ `443,22` が使われる（他の3ファイルと異なり WARNING は出ない — `node-version.txt`/`codex-version.txt` と同じ任意機能の流儀）。この制限は許可ドメイン宛のルールにのみ適用され、DNS（53番）とホストネットワーク宛のルールには適用されない（後述「アーキテクチャ」節参照）。ポート数は `iptables` の `multiport` マッチの上限により最大15個まで。
+`allowed-ports.txt` は許可ドメイン（GitHub CIDR・`allowed-domains.txt` 指定分）への到達を許すTCPポートを既定の `443,22` から変更したい場合に使う（`jj1xgo/claude-container#31`）。置かなければ `443,22` が使われる（他の3ファイルと異なり WARNING は出ない — `node-version.txt`/`codex-version.txt` と同じ任意機能の流儀）。この制限は許可ドメイン宛のルールにのみ適用され、DNS（53番）とホストネットワーク宛のルールには適用されない（後述「アーキテクチャ」節参照）。ポート数は `iptables` の `multiport` マッチの上限により最大15個まで。`443` は必ず含めること（api.anthropic.com・api.github.com への到達と起動時の自己検証に必要）、`80` は許可できない（起動時の自己検証が「api.github.com:80 へ到達できない」ことを遮断のプローブに使う）。どちらも範囲指定（`79:81` 等）で含む場合も同様で、違反するとコンテナ起動時に理由付きの ERROR で停止する（`jj1xgo/claude-container#49`）。
 
 `node-version.txt` は apt の debian:stable では入手できない Node.js バージョン（例: 22.x — trixie は 20.x、testing は 22 を飛ばして 24.x）が必要な場合に使う。nodejs.org 公式の Linux tarball を取得し、同梱の `SHASUMS256.txt` でチェックサム検証したうえで展開する。**ビルド時ネットワークは無制限のため、`allowed-domains.txt` に `nodejs.org` を追加する必要はない**（`init-firewall.sh` のエグレス制限はランタイムにのみ適用される）。置かなければ Node.js は導入されない（他の3ファイルと異なり、この場合は WARNING も出ない — 新設の任意機能であり、大多数のプロジェクトが使わないのが正常な状態のため）。
 
@@ -414,6 +414,8 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 `compose.yml` の `:ro` 重ねマウント、または `claude-container` の `prepare_claude_config_ro()` を編集した場合は、ビルド済みのテストイメージ `localhost/claude-test`（`./test-build.sh` の全実行で作られる）がある状態で `./test-build.sh --config-ro-only` を実行する。実物の `compose.yml` とイメージで 11 項目への書き込みが拒否されること、実物のランチャーが placeholder 作成・型検査・`--check` の無書き込み・compose への `CLAUDE_CONFIG_DIR` 受け渡しを正しく行うことを、それぞれ別のテストで確認する（両者を通した対話起動は手動で行う）。
 
+`claude-container` のガード関数（`guard_*`・`prepare_claude_config_ro()`）を編集した場合は `./test-build.sh --launcher-only` を実行する。podman をダミーに置き換えた隔離環境（一時 `HOME`・空の環境変数）で実物のランチャーを起動し、各ガードの通常起動と `--check` の挙動、compose へ渡る環境変数を検証する。実 podman が不要なので、コンテナ内の開発セッションや CI からも回せる。通常の `./test-build.sh` にも含まれる。
+
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 
 ### バージョニング
@@ -520,7 +522,7 @@ Place a `.claude-container.d/env` file at the root of the **target project** to 
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | Set to `1` to disable the egress firewall (see below) |
 | `GITCONFIG_FILE` | (unset) | Path on the host to a git config file to mount read-only as `~/.gitconfig` inside the container (see below) |
 | `SECRETS_DIR` | (unset) | Host path to the sole mechanism for bringing GitHub tokens and other secrets into the container (see "GitHub Token Wiring" below) |
-| `CODEX_DIR` | (unset) | Host path to the Codex CLI credentials directory (`auth.json` etc.), mounted rw into the container. Use a dedicated directory (see the Codex recipe under "Adding MCP Servers" below) |
+| `CODEX_DIR` | (unset) | Host path to the Codex CLI credentials directory (`auth.json` etc.), mounted rw into the container. Use a dedicated directory (see the Codex recipe under "Adding MCP Servers" below). Must be an absolute path or start with `~/` (a relative path aborts the launch). Any spelling that resolves to the real host `~/.codex` (including symlinks) aborts the launch |
 
 `TZ` is auto-detected from the host's `/etc/timezone` (or `/etc/localtime` symlink). An explicit value in `.claude-container.d/env` takes precedence.
 
@@ -549,7 +551,7 @@ Target-project-specific claude-container configuration lives entirely under `.cl
 
 All except `env` are optional. If `packages.txt`/`requirements.txt`/`allowed-domains.txt` are absent, claude-container's bundled defaults (empty fallbacks) are used. `allowed-domains.txt` lists extra domains the project needs (e.g. for pip: both `pypi.org` and `files.pythonhosted.org` — the latter serves the actual package downloads, so reaching the index alone isn't enough for `pip install` to succeed). These three are baked into the image at build time, so changing them requires a `-b` rebuild (`env` is deliberately excluded from this baking — it may hold host-specific paths that must never end up in the image).
 
-`allowed-ports.txt` changes which TCP ports are reachable on allowed domains (GitHub CIDRs and `allowed-domains.txt` entries) from the default `443,22` (`jj1xgo/claude-container#31`). If absent, `443,22` is used — unlike the other three files, no WARNING fires (same opt-in convention as `node-version.txt`/`codex-version.txt`). This restriction applies only to allowed-domain rules; it does not apply to DNS (port 53) or the host-network rule (see "Architecture" below). At most 15 ports/ranges, per `iptables`' `multiport` match limit.
+`allowed-ports.txt` changes which TCP ports are reachable on allowed domains (GitHub CIDRs and `allowed-domains.txt` entries) from the default `443,22` (`jj1xgo/claude-container#31`). If absent, `443,22` is used — unlike the other three files, no WARNING fires (same opt-in convention as `node-version.txt`/`codex-version.txt`). This restriction applies only to allowed-domain rules; it does not apply to DNS (port 53) or the host-network rule (see "Architecture" below). At most 15 ports/ranges, per `iptables`' `multiport` match limit. `443` must be included (api.anthropic.com, api.github.com and the startup self-check need it) and `80` cannot be allowed (the startup self-check uses "api.github.com:80 is unreachable" as its blocked-port probe); both also apply when a range (e.g. `79:81`) covers the port, and a violation stops the container at startup with an ERROR stating the reason (`jj1xgo/claude-container#49`).
 
 `node-version.txt` is for Node.js versions apt can't provide on debian:stable (e.g. 22.x — trixie ships 20.x, testing skips straight to 24.x). It fetches the official Linux tarball from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before extracting. **Build-time network is unrestricted, so no `allowed-domains.txt` entry for `nodejs.org` is needed** (the `init-firewall.sh` egress restriction only applies at runtime). If absent, no Node.js is installed — and unlike the other three files, no WARNING fires in this case (it's a new opt-in feature; not having it is the normal state for most projects).
 
@@ -845,6 +847,8 @@ There is no test suite. After editing the script or Compose/Dockerfile, verify w
 `lint.sh` runs `bash -n` and `shellcheck` on every bash script in the repository (tracked and untracked files minus gitignored ones, detected by shebang, so the target list needs no maintenance when scripts are added or removed), plus `podman compose -f compose.yml config`. It fails with an explicit error if shellcheck is not installed (`sudo apt-get install shellcheck`). When podman is unavailable (e.g. developing inside the container), only the Compose validation is skipped with a warning.
 
 If you edit the `:ro` overlay mounts in `compose.yml` or `prepare_claude_config_ro()` in `claude-container`, run `./test-build.sh --config-ro-only` with the built test image `localhost/claude-test` present (a full `./test-build.sh` run creates it). Separate tests confirm that, with the real `compose.yml` and image, writes to the 11 items are rejected, and that the real launcher creates placeholders, checks types, keeps `--check` write-free, and passes `CLAUDE_CONFIG_DIR` through to compose (an interactive launch through both is done by hand).
+
+If you edit the guard functions in `claude-container` (`guard_*`, `prepare_claude_config_ro()`), run `./test-build.sh --launcher-only`. It launches the real launcher in an isolated environment (temporary `HOME`, empty environment, podman replaced by a dummy) and checks each guard's behavior on a normal launch and under `--check`, plus the environment variables handed to compose. No real podman is needed, so it also runs from a development session inside the container or from CI. The full `./test-build.sh` run includes it.
 
 Changes to `Dockerfile.claude` (the `ENTRYPOINT`'s `setpriv` wrapper) require a `-b` rebuild plus a real launch to verify (see "Security Model" above). A session losing the ability to run `iptables` without `sudo` is the correct, intended state — to inspect the firewall rules themselves, use `podman exec --user root <container> iptables -S` from the host; running `iptables -S` from inside the session will fail once capabilities are stripped.
 

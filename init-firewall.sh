@@ -52,7 +52,10 @@ resolve_allowed_ports() {
   local -a ports=()
   local raw
   if [ -f "$ALLOWED_PORTS_FILE" ]; then
-    while IFS= read -r raw; do
+    # `|| [ -n "$raw" ]` keeps a final line that has no trailing newline
+    # (read returns non-zero on it but still fills the variable; without
+    # this the last entry was silently dropped — claude-container#49).
+    while IFS= read -r raw || [ -n "$raw" ]; do
       raw="${raw%%#*}"
       raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
       [ -n "$raw" ] || continue
@@ -68,6 +71,27 @@ resolve_allowed_ports() {
   fi
   if [ "${#ports[@]}" -gt 15 ]; then
     echo "ERROR: $ALLOWED_PORTS_FILE lists ${#ports[@]} ports/ranges; iptables' multiport match supports at most 15" >&2
+    exit 1
+  fi
+  # The startup self-check in full_init() assumes 443 is reachable and 80 is
+  # blocked on api.github.com. A list that violates either assumption used to
+  # fail there with a message that read like a network problem ("unable to
+  # reach ...:443") or a broken rule ("port restriction not enforced"), so
+  # validate the list here with the real reason (claude-container#49).
+  # Ranges are inclusive; 10# forces decimal so leading zeros (e.g. 080) are
+  # not read as octal.
+  local entry lo hi has_443=0 has_80=0
+  for entry in "${ports[@]}"; do
+    lo="${entry%%:*}"; hi="${entry##*:}"
+    if (( 10#$lo <= 443 && 443 <= 10#$hi )); then has_443=1; fi
+    if (( 10#$lo <= 80 && 80 <= 10#$hi )); then has_80=1; fi
+  done
+  if [ "$has_443" -eq 0 ]; then
+    echo "ERROR: $ALLOWED_PORTS_FILE must include 443 (api.anthropic.com, api.github.com and the startup self-check need it)" >&2
+    exit 1
+  fi
+  if [ "$has_80" -eq 1 ]; then
+    echo "ERROR: $ALLOWED_PORTS_FILE must not allow port 80 (the startup self-check uses api.github.com:80 as the blocked-port probe)" >&2
     exit 1
   fi
   local IFS=,

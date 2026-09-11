@@ -432,17 +432,19 @@ run_config_ro_tests() {
     podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false down >/dev/null 2>&1
   podman rmi "$svc_image" >/dev/null 2>&1
   rm -rf "$root"
-
-  run_config_ro_launcher_tests
   log ""
 }
 
-# ランチャー本体の prepare_claude_config_ro() を、模倣ではなく claude-container を
-# 実際に起動して検証する（podman はダミー化し、compose には到達させない）。
-# HOME を一時ディレクトリに向けることで、既定の基点（$HOME/.claude）・起動台帳・
-# MCP 承認記録がすべて一時領域に閉じ、実環境を汚さない。
-run_config_ro_launcher_tests() {
-  local root bin home proj out rc d f
+# --- ランチャー（claude-container）のダミー podman テスト ---
+# ランチャー本体のガード群を、模倣ではなく claude-container を実際に起動して検証する
+# （podman はダミー化し、compose には到達させない。実 podman 不要のためコンテナ内や
+# CI でも回せる）。HOME を一時ディレクトリに向けることで、既定の基点（$HOME/.claude）・
+# 起動台帳・MCP 承認記録がすべて一時領域に閉じ、実環境を汚さない。
+#
+# 各テスト関数は `local root bin home proj out rc before_ctx` を宣言してから
+# launcher_sandbox_init を呼び、最後に launcher_sandbox_cleanup を呼ぶ（bash の
+# 動的スコープにより、ヘルパーは呼び出し側の local へ代入する）。
+launcher_sandbox_init() {
   root="$(mktemp -d)"; bin="$root/bin"; home="$root/home"; proj="$root/proj"
   mkdir -p "$bin" "$home/.claude" "$proj"
   # ダミー podman: compose 呼び出し時の環境を記録する（ランチャー → compose の接続部
@@ -457,16 +459,259 @@ esac
 exit 0
 DUMMY
   chmod +x "$bin/podman"
-  # 環境を env -i で空にしてから HOME・PATH だけを与える（実行者のシェルに
-  # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
-  # 残りの引数は KEY=VALUE でランチャーへ渡す環境変数。
-  run_launcher() {
-    rm -f "$root/compose-env"
-    out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
-  }
   # ランチャーはプロジェクト毎の .build-context/<name>/ を作るため、前後の差分を控えて後始末する
-  local before_ctx
   before_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+}
+
+# 環境を env -i で空にしてから HOME・PATH だけを与える（実行者のシェルに
+# CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
+# 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
+run_launcher() {
+  rm -f "$root/compose-env"
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
+}
+
+# run_launcher の --check 版（同じ環境の隔離、同じプロジェクト）。引数は省略可。
+# shellcheck disable=SC2120
+run_launcher_check() {
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
+}
+
+# ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）。
+launcher_sandbox_cleanup() {
+  local after_ctx new_ctx
+  after_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+  while IFS= read -r new_ctx; do
+    [[ -n "$new_ctx" ]] && rm -rf "${SCRIPT_DIR}/.build-context/${new_ctx}"
+  done < <(comm -13 <(echo "$before_ctx" | sort) <(echo "$after_ctx" | sort))
+  rm -rf "$root"
+}
+
+# ランチャーテストの実行入口。通常実行と --launcher-only の双方がこの関数をちょうど
+# 1 回呼ぶ（個別テスト関数を直接呼ばない。呼び出しがここに一本化されていないと、
+# 入口を増やしたときに一方からだけ新テストが漏れる）。
+run_launcher_tests() {
+  log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
+  run_config_ro_launcher_tests
+  run_base_image_launcher_tests
+  run_codex_dir_launcher_tests
+  run_allowed_ports_tests
+  log ""
+}
+
+# init-firewall.sh の resolve_allowed_ports() の検証（claude-container#31、#49）。
+# 関数を sed で抜き出し、本番と同じ `bash -euo pipefail` の独立プロセスで
+# ALLOWED_PORTS_FILE をフィクスチャに向けて素呼びし、rc・ALLOWED_PORTS（stdout）・
+# ERROR 文（stderr）を親で捕捉する。iptables には触れない。
+#
+# ベクタ表フォーマット: class|input|expected
+#   accept: rc0、ALLOWED_PORTS が expected と完全一致
+#   reject: rc1、stderr が expected（部分文字列）を含む
+#   input は printf '%b' で展開するエスケープ表記（末尾 \n の有無が意味を持つ）。
+ALLOWED_PORTS_VECTORS=(
+  # 末尾改行なしでも最終行を読む（#49-1）
+  'accept|443\n8080|443,8080'
+  'accept|443|443'
+  # 443 必須・80 禁止（#49-2）。範囲は端点を含めて判定する
+  'reject|8080\n|must include 443'
+  'reject|443\n80\n|must not allow port 80'
+  'reject|443\n79:81\n|must not allow port 80'
+  'reject|443\n79:80\n|must not allow port 80'
+  'reject|443\n80:81\n|must not allow port 80'
+  'accept|442:444\n|442:444'
+  'accept|443:443\n|443:443'
+  # 先頭ゼロは十進として扱う（bash 算術の八進解釈を避ける）
+  'accept|00443\n|00443'
+  'reject|443\n080\n|must not allow port 80'
+  # 既存挙動の固定
+  'accept|443\n22\n8000:8010\n|443,22,8000:8010'
+  'accept||443,22'
+  'accept|# comment only\n\n|443,22'
+  'reject|abc\n|invalid entry'
+)
+
+run_allowed_ports_tests() {
+  local t harness fixture entry class input expected actual_rc actual_out actual_err
+  t=$(mktemp -d) || { log "  [FAIL] allowed-ports: mktemp -d failed"; FAIL=$((FAIL + 1)); return; }
+  harness="$t/harness.sh"; fixture="$t/allowed-ports.txt"
+  {
+    cat <<'HARNESS_HEAD'
+#!/bin/bash
+set -euo pipefail
+ALLOWED_PORTS_FILE="$1"
+HARNESS_HEAD
+    sed -n '/^resolve_allowed_ports()/,/^}/p' "${SCRIPT_DIR}/init-firewall.sh"
+    cat <<'HARNESS_TAIL'
+resolve_allowed_ports
+printf '%s\n' "$ALLOWED_PORTS"
+HARNESS_TAIL
+  } > "$harness"
+  if ! grep -q '^resolve_allowed_ports()' "$harness"; then
+    log "  [FAIL] allowed-ports: init-firewall.sh から resolve_allowed_ports() を抜き出せません"
+    FAIL=$((FAIL + 1)); rm -rf "$t"; return
+  fi
+
+  for entry in "${ALLOWED_PORTS_VECTORS[@]}"; do
+    IFS='|' read -r class input expected <<< "$entry"
+    printf '%b' "$input" > "$fixture"
+    actual_rc=0
+    actual_out=$(bash "$harness" "$fixture" 2>"$t/err") || actual_rc=$?
+    actual_err=$(cat "$t/err")
+    case "$class" in
+      accept)
+        if [ "$actual_rc" -eq 0 ] && [ "$actual_out" = "$expected" ]; then
+          PASS=$((PASS + 1))
+        else
+          FAIL=$((FAIL + 1))
+          log "  [FAIL] allowed-ports accept input=[$input] rc=$actual_rc out=[$actual_out] err=[$actual_err]"
+        fi
+        ;;
+      reject)
+        if [ "$actual_rc" -eq 1 ] && [[ "$actual_err" == *"$expected"* ]]; then
+          PASS=$((PASS + 1))
+        else
+          FAIL=$((FAIL + 1))
+          log "  [FAIL] allowed-ports reject input=[$input] rc=$actual_rc out=[$actual_out] err=[$actual_err]"
+        fi
+        ;;
+    esac
+  done
+  log "  allowed-ports.txt ベクタ表 ${#ALLOWED_PORTS_VECTORS[@]} 件を実行"
+  rm -rf "$t"
+}
+
+# guard_codex_dir() の検証（claude-container#36、#48）。実ホストの ~/.codex を指す
+# CODEX_DIR を、文字列の表記ゆれ・シンボリックリンクによらず実体で検出して fail-closed
+# にすること。各ケースを通常起動と --check の対で見る。
+run_codex_dir_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local label value expected
+  mkdir -p "$home/.codex" "$home/.codex-container" "$proj/.codex-container"
+  ln -s "$home/.codex" "$home/codex-link"
+  ln -s "$home/.codex-container" "$home/link-container"
+
+  # 拒否側: 通常起動は ERROR で compose に進まず、--check は FAIL
+  reject_case() {
+    local label="$1" value="$2"
+    run_launcher CODEX_DIR="$value"
+    check "$label は ERROR で起動中止（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CODEX_DIR' && [ ! -e '$root/compose-env' ]" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check CODEX_DIR="$value"
+    check "$label を --check は FAIL で報告する（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  }
+  reject_case "H1: 末尾 // の実 ~/.codex"        "$home/.codex//"
+  reject_case "H2: ~/./.codex 表記の実 ~/.codex" "$home/./.codex"
+  reject_case "H3: ~/.codex/. 表記の実 ~/.codex" "$home/.codex/."
+  reject_case "H4: 実 ~/.codex への symlink"      "$home/codex-link"
+  reject_case "H4b: 先頭 // 表記の実 ~/.codex"   "/$home/.codex"
+  reject_case "H5: 相対パスの CODEX_DIR"          ".codex-container"
+  # H6: ~/.codex 自体が symlink で、そのリンク先を直接指す
+  rm -rf "$home/.codex"; mkdir -p "$home/real-codex"; ln -s "$home/real-codex" "$home/.codex"
+  reject_case "H6: symlink の ~/.codex のリンク先"  "$home/real-codex"
+  rm -f "$home/.codex"; mkdir -p "$home/.codex"
+  # H7: ~/.codex が存在しない状態で文字列として指す（文字列比較で拒否）
+  rm -rf "$home/.codex"
+  reject_case "H7: 存在しない ~/.codex を文字列で指定" "$home/.codex"
+  mkdir -p "$home/.codex"
+  # H8: 存在しないパス → 既存の ERROR
+  reject_case "H8: 存在しない CODEX_DIR"            "$home/no-such-dir"
+
+  # 通過側: 正規化済み絶対パスが compose へ渡る（正規化を実装しないと落ちる対照）
+  expected="$(cd "$home/.codex-container" && pwd -P)"
+  for label in "H9: ~/./.codex-container 表記|$home/./.codex-container" "H10: 専用ディレクトリへの symlink|$home/link-container" "H11: 先頭 // 表記の専用ディレクトリ|/$home/.codex-container"; do
+    value="${label#*|}"; label="${label%%|*}"
+    run_launcher CODEX_DIR="$value"
+    check "$label は起動が進む（rc=$rc）" [ "$rc" -eq 0 ]
+    check "$label は compose へ正規化済み絶対パスが渡る" \
+      grep -qxF "CODEX_DIR=$expected" "$root/compose-env"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check CODEX_DIR="$value"
+    check "$label を --check は最後まで診断して PASS/WARN で終える（rc=$rc）" \
+      bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qE '結果: (PASS|WARN)'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+
+  launcher_sandbox_cleanup
+}
+
+# guard_base_image() の検証（claude-container#50）。base-image.txt に有効行が無い
+# （空・コメントのみ）ときに通常起動が無言で止まらず既定値で進み、--check と結果が
+# 一致すること。通常起動と --check は同じ関数を別の呼び出し文脈（素呼び／|| true）で
+# 呼ぶため、両者を必ず対で見る。
+run_base_image_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local conf="$proj/.claude-container.d"
+  mkdir -p "$conf"
+  local label
+
+  # G1: 空ファイル / G2: コメントのみ → 既定値 debian:stable で起動が進む
+  for label in "G1: 空の base-image.txt" "G2: コメントのみの base-image.txt"; do
+    if [[ "$label" == G1* ]]; then : > "$conf/base-image.txt"; else printf '# only a comment\n\n' > "$conf/base-image.txt"; fi
+    run_launcher
+    check "$label は既定値で通常起動が進む（rc=$rc）" \
+      bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:stable' '$root/compose-env'"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "$label を --check は既定値として報告する（rc=$rc）" \
+      bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'base-image.txt は空、既定値'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+
+  # G3: 有効行が多いファイル（先頭が採用される）。grep | head -1 のパイプでは head の
+  # 早期終了で grep が SIGPIPE を受け、pipefail 下で無言停止していた経路。
+  { echo debian:stable; yes debian:testing | head -200000; } > "$conf/base-image.txt"
+  run_launcher
+  check "G3: 有効行 20 万行でも先頭行で通常起動が進む（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:stable' '$root/compose-env'"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  run_launcher_check
+  check "G3: 有効行 20 万行を --check は先頭行で報告する（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qF '[INFO] base image: debian:stable' && ! printf '%s' \"\$0\" | grep -q '既定値'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # G4: 読めないファイル → 通常起動は ERROR で compose に進まず、--check は FAIL
+  # （root は chmod 000 でも読めるため、その場合は判定せず SKIP を記録する）
+  printf 'debian:testing\n' > "$conf/base-image.txt"
+  chmod 000 "$conf/base-image.txt"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    log "  G4: 読めない base-image.txt（root 実行のため SKIP）"
+  else
+    run_launcher
+    check "G4: 読めない base-image.txt は ERROR で起動中止（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'base-image.txt' && [ ! -e '$root/compose-env' ]" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "G4: 読めない base-image.txt を --check は FAIL で報告する（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  fi
+  chmod 644 "$conf/base-image.txt"
+
+  # G5: 有効値は compose へそのまま渡る（対照）
+  run_launcher
+  check "G5: debian:testing が compose へ渡る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:testing' '$root/compose-env'"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # G6: 許容範囲外の値は ERROR（既存挙動の固定）
+  printf 'ubuntu:24.04\n' > "$conf/base-image.txt"
+  run_launcher
+  check "G6: 許容範囲外の値は ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '許容範囲外' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  launcher_sandbox_cleanup
+}
+
+# prepare_claude_config_ro() の検証（PR #47）。
+run_config_ro_launcher_tests() {
+  local root bin home proj out rc d f before_ctx
+  launcher_sandbox_init
 
   # A: 空の ~/.claude → 11 項目が空で作られ、作成が 11 行ログされ、すべてユーザー所有
   run_launcher
@@ -510,7 +755,7 @@ DUMMY
   rm -rf "$home/.claude/skills"
   local tree_before tree_after
   tree_before="$(find "$home/.claude" | sort)"
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
+  run_launcher_check
   tree_after="$(find "$home/.claude" | sort)"
   check "C: --check は ~/.claude に何も作らない（rc=$rc）" [ "$rc" -eq 0 -a "$tree_before" = "$tree_after" ]
   check "C: --check は欠けている項目を WARN で報告する" \
@@ -540,13 +785,7 @@ DUMMY
     bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING' && printf '%s' \"\$0\" | grep -q '別の rw'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）
-  local after_ctx new_ctx
-  after_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
-  while IFS= read -r new_ctx; do
-    [[ -n "$new_ctx" ]] && rm -rf "${SCRIPT_DIR}/.build-context/${new_ctx}"
-  done < <(comm -13 <(echo "$before_ctx" | sort) <(echo "$after_ctx" | sort))
-  rm -rf "$root"
+  launcher_sandbox_cleanup
 }
 
 if [[ "${1:-}" == "--validator-only" ]]; then
@@ -561,8 +800,22 @@ if [[ "${1:-}" == "--validator-only" ]]; then
 fi
 
 # 保護テストだけを回す入口（イメージはビルド済みの $IMAGE を使う。無ければ FAIL）。
+# 従来どおり、実 podman の書き込み検査とランチャー側の placeholder 検証を両方回す。
 if [[ "${1:-}" == "--config-ro-only" ]]; then
   run_config_ro_tests
+  run_config_ro_launcher_tests
+  log "========================================"
+  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
+  log "========================================"
+  if [ "$FAIL" -eq 0 ]; then
+    exit 0
+  fi
+  exit 1
+fi
+
+# ランチャーテストだけを回す入口（実 podman 不要。コンテナ内開発や CI 向け）。
+if [[ "${1:-}" == "--launcher-only" ]]; then
+  run_launcher_tests
   log "========================================"
   log "  結果: PASS=${PASS}  FAIL=${FAIL}"
   log "========================================"
@@ -795,6 +1048,7 @@ rm -rf "$ENV_TESTROOT"
 log ""
 
 run_config_ro_tests
+run_launcher_tests
 
 log "## TZ"
 check "date (UTC確認)"   podman run --rm "$IMAGE" date

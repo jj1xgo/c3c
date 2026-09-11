@@ -455,7 +455,7 @@ case "\$1 \$2" in
   "image exists") exit 0 ;;
   "image inspect") exit 0 ;;
 esac
-[[ "\$1" == "compose" ]] && env > "$root/compose-env"
+[[ "\$1" == "compose" ]] && { env > "$root/compose-env"; printf '%s\n' "\$@" >> "$root/compose-args"; }
 exit 0
 DUMMY
   chmod +x "$bin/podman"
@@ -467,7 +467,7 @@ DUMMY
 # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
 # 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
 run_launcher() {
-  rm -f "$root/compose-env"
+  rm -f "$root/compose-env" "$root/compose-args"
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
 }
 
@@ -495,6 +495,7 @@ run_launcher_tests() {
   run_config_ro_launcher_tests
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
+  run_env_file_launcher_tests
   run_allowed_ports_tests
   log ""
 }
@@ -634,6 +635,31 @@ run_codex_dir_launcher_tests() {
       bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qE '結果: (PASS|WARN)'" "$out"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
+
+  launcher_sandbox_cleanup
+}
+
+# .claude-container.d/env の許可リスト（claude-container#44）と、対象プロジェクト直下の
+# .env を compose の補間に使わせない遮断（claude-container#60）の検証。env ファイルは
+# 実際に $proj/.claude-container.d/env へ書く（既存テストのようにシェル環境で渡すと、
+# 「ファイルのキーを export するか」という本題を検証できない）。
+run_env_file_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local envf="$proj/.claude-container.d/env"
+  mkdir -p "$proj/.claude-container.d"
+
+  # D1: 対象プロジェクト直下の .env は compose へ --env-file /dev/null で遮断される
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$proj/.env"
+  rm -f "$envf"
+  run_launcher
+  check "D1: compose に --env-file /dev/null が渡る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && tr '\n' ' ' < '$root/compose-args' | grep -q -- '--env-file /dev/null '"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # D2: build 側・run 側の両方に付いている（静的確認。run_launcher は -b を渡せないため本体を数える）
+  check "D2: build と run の両呼び出しに --env-file /dev/null がある" \
+    bash -c "[ \"\$(grep -c 'podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/claude-container')\" -eq 2 ]"
+  rm -f "$proj/.env"
 
   launcher_sandbox_cleanup
 }

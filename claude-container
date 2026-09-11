@@ -1257,12 +1257,19 @@ if [[ $BUILD -eq 1 ]]; then
     CODEX_CACHEBUST="$(date +%s)"
   fi
   CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false build claude-auth-workspace
+    podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
 fi
 
 # BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は
 # compose の暗黙ビルドで焼かれるため、run 側に渡し忘れると初回だけ既定値でビルド
 # され、以後 -b するまで設定が効かないという無言バグになる（ASSET_HASH を両方に
 # 渡している理由と同型）。
+#
+# --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
+# カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（claude-container#60）。
+# リポジトリ同梱の .env が CODEX_DIR・EXTRA_MOUNT・CLAUDE_CONTAINER_NO_FIREWALL 等を
+# 全ガード素通りで設定できていた。ランタイム設定の入口は .claude-container.d/env だけにする。
+# dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
+# compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
-  podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false run --rm claude-auth-workspace
+  podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace

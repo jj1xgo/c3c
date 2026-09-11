@@ -575,8 +575,17 @@ guard_base_image() {
     return 0
   fi
 
-  local value
-  value="$(grep -vE '^[[:space:]]*(#|$)' "$ASSET_PATH" | head -1 | tr -d '[:space:]')"
+  # 最初の有効行を読む（claude-container#50）。grep の終了コードは 0（有効行あり）／
+  # 1（有効行なし）／2 以上（読めない等）で、set -e 下では 1 でも代入式ごと関数が
+  # 落ちるため || で受ける。--check は guard_* を `|| true` で呼ぶので set -e が
+  # 効かず、素呼びの通常起動だけが無言停止する乖離になっていた。`grep | head -1` は
+  # 有効行が多いと head の早期終了で grep が SIGPIPE（rc=141）を受けるため、grep 自身が
+  # 最初の一致で止まる -m1 を使う（pipefail 下で rc が grep の 0/1/2 に確定する）。
+  local value grep_rc=0
+  value="$(grep -m1 -vE '^[[:space:]]*(#|$)' "$ASSET_PATH" | tr -d '[:space:]')" || grep_rc=$?
+  if (( grep_rc > 1 )); then
+    guard_fail "ERROR: $PROJECT_CONF_DIR/base-image.txt を読めません（grep rc=$grep_rc）。起動を中止します。" || return 1
+  fi
   if [[ -z "$value" ]]; then
     [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt は空、既定値）"
     return 0

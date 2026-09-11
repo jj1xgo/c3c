@@ -493,7 +493,78 @@ launcher_sandbox_cleanup() {
 run_launcher_tests() {
   log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
+  run_base_image_launcher_tests
   log ""
+}
+
+# guard_base_image() の検証（claude-container#50）。base-image.txt に有効行が無い
+# （空・コメントのみ）ときに通常起動が無言で止まらず既定値で進み、--check と結果が
+# 一致すること。通常起動と --check は同じ関数を別の呼び出し文脈（素呼び／|| true）で
+# 呼ぶため、両者を必ず対で見る。
+run_base_image_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local conf="$proj/.claude-container.d"
+  mkdir -p "$conf"
+  local label
+
+  # G1: 空ファイル / G2: コメントのみ → 既定値 debian:stable で起動が進む
+  for label in "G1: 空の base-image.txt" "G2: コメントのみの base-image.txt"; do
+    if [[ "$label" == G1* ]]; then : > "$conf/base-image.txt"; else printf '# only a comment\n\n' > "$conf/base-image.txt"; fi
+    run_launcher
+    check "$label は既定値で通常起動が進む（rc=$rc）" \
+      bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:stable' '$root/compose-env'"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "$label を --check は既定値として報告する（rc=$rc）" \
+      bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'base-image.txt は空、既定値'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+
+  # G3: 有効行が多いファイル（先頭が採用される）。grep | head -1 のパイプでは head の
+  # 早期終了で grep が SIGPIPE を受け、pipefail 下で無言停止していた経路。
+  { echo debian:stable; yes debian:testing | head -200000; } > "$conf/base-image.txt"
+  run_launcher
+  check "G3: 有効行 20 万行でも先頭行で通常起動が進む（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:stable' '$root/compose-env'"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  run_launcher_check
+  check "G3: 有効行 20 万行を --check は先頭行で報告する（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qF '[INFO] base image: debian:stable' && ! printf '%s' \"\$0\" | grep -q '既定値'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # G4: 読めないファイル → 通常起動は ERROR で compose に進まず、--check は FAIL
+  # （root は chmod 000 でも読めるため、その場合は判定せず SKIP を記録する）
+  printf 'debian:testing\n' > "$conf/base-image.txt"
+  chmod 000 "$conf/base-image.txt"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    log "  G4: 読めない base-image.txt（root 実行のため SKIP）"
+  else
+    run_launcher
+    check "G4: 読めない base-image.txt は ERROR で起動中止（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'base-image.txt' && [ ! -e '$root/compose-env' ]" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "G4: 読めない base-image.txt を --check は FAIL で報告する（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  fi
+  chmod 644 "$conf/base-image.txt"
+
+  # G5: 有効値は compose へそのまま渡る（対照）
+  run_launcher
+  check "G5: debian:testing が compose へ渡る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:testing' '$root/compose-env'"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # G6: 許容範囲外の値は ERROR（既存挙動の固定）
+  printf 'ubuntu:24.04\n' > "$conf/base-image.txt"
+  run_launcher
+  check "G6: 許容範囲外の値は ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '許容範囲外' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  launcher_sandbox_cleanup
 }
 
 # prepare_claude_config_ro() の検証（PR #47）。

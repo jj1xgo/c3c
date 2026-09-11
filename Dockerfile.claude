@@ -1,85 +1,85 @@
-# Base image. Default is debian:stable; projects can override via
-# .claude-container.d/base-image.txt (claude-container validates the value
-# host-side and passes it as a build arg — see guard_base_image()). FROM is
-# evaluated before COPY, so the file cannot be read directly here; ARG is the
-# only channel. The default value is duplicated in compose.yml's build.args
-# and in guard_base_image() (three places kept in sync).
+# ベースイメージ。既定は debian:stable。プロジェクトは
+# .claude-container.d/base-image.txt で上書きできる（claude-container がホスト側で
+# 値を検証し build arg として渡す。guard_base_image() を参照）。FROM は COPY より
+# 先に評価されるため、ここでファイルを直接読むことはできず、ARG が唯一の経路。
+# 既定値は compose.yml の build.args と guard_base_image() にも重複している
+# （3 箇所を同期させる）。
 ARG BASE_IMAGE=debian:stable
 FROM ${BASE_IMAGE}
 
 ARG CLAUDE_CODE_VERSION=latest
 ARG TZ=UTC
 
-# Set timezone before package install so tzdata uses it non-interactively
+# パッケージインストール前にタイムゾーンを設定し、tzdata が非対話で使えるようにする
 ENV TZ=${TZ}
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install ca-certificates first via HTTP (not pre-installed in debian:stable image)
+# まず ca-certificates を HTTP 経由でインストールする（debian:stable イメージには
+# 事前導入されていない）
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Switch apt sources to HTTPS now that ca-certificates is installed. Rewrites
-# every http:// URI found (not a hardcoded deb.debian.org hostname), so this
-# doesn't silently no-op against a different mirror. The capability-assertion
-# layer below verifies no http:// URI remains, so an unrecognized rewrite
-# failure fails the build loudly instead of leaving hardening un-applied.
+# ca-certificates を導入したので、apt ソースを HTTPS へ切り替える。見つかった
+# http:// の URI を（固定の deb.debian.org ホスト名決め打ちではなく）全て
+# 書き換えるので、異なるミラーに対しても黙って no-op にならない。下の機能検証
+# レイヤーが http:// の URI が残っていないことを確認するため、想定外の
+# 書き換え失敗はビルドを大声で失敗させ、堅牢化が未適用のまま残ることを防ぐ。
 RUN set -e; \
     files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
-    [ -n "$files" ] || { echo "ERROR: no apt sources found under /etc/apt" >&2; exit 1; }; \
+    [ -n "$files" ] || { echo "ERROR: /etc/apt 配下に apt ソースが見つかりません" >&2; exit 1; }; \
     sed -i 's|http://|https://|g' $files
 
-# Install Claude Code dependencies (curl/jq for native installer; rest is dev convenience)
-# iptables/bind9-dnsutils/iproute2/sudo are for init-firewall.sh (egress allowlist)
-# tini becomes PID1 (see ENTRYPOINT below): reaps children and keeps PID1
-# signalable. With claude itself as PID1 (via exec in entrypoint.sh), children
-# reparented to PID1 (e.g. the firewall refresh loop's sudo helpers, one per
-# cycle) were never reaped and piled up as zombies, and when the workload
-# wedged on exit (2026-07-02: a host kernel workqueue Oops left an unkillable
-# D-state thread), the zombie PID1 could not be signalled at all — podman
-# showed `crun kill ... failed` / "No such process" and the container stuck
-# in "Stopping". tini cannot fix a kernel-side wedge, but keeps reaping and
-# `podman stop` working. Kept here rather than in packages.txt so a project's
-# own packages.txt can't silently drop it.
+# Claude Code の依存関係をインストールする（curl/jq はネイティブインストーラ用、
+# 残りは開発時の利便性のため）
+# iptables/bind9-dnsutils/iproute2/sudo は init-firewall.sh（エグレス許可リスト）用
+# tini は PID1 になる（下の ENTRYPOINT を参照）: 子プロセスを reap し、PID1 への
+# シグナル送信を可能な状態に保つ。claude 自身が PID1 だった場合（entrypoint.sh の
+# exec 経由）、PID1 に再親付けされた子プロセス（ファイアウォール更新ループの
+# sudo 補助プロセス、サイクルごとに 1 つ）が reap されずゾンビとして蓄積し、
+# ワークロードが終了時にハングすると（2026-07-02: ホストカーネルの workqueue Oops が
+# kill 不能な D 状態スレッドを残した）、ゾンビ化した PID1 にはシグナルすら送れなく
+# なった — podman は `crun kill ... failed` / "No such process" を示し、コンテナは
+# "Stopping" のまま固まった。tini はカーネル側のハングそのものは直せないが、
+# reap と `podman stop` を機能させ続ける。プロジェクト側の packages.txt に
+# 黙って落とされないよう、packages.txt ではなくここに置いている。
 #
-# util-linux: provides /usr/bin/setpriv, which ENTRYPOINT below uses to strip
-# ambient/inheritable capabilities at container start (claude-container#33
-# security fix). Previously an implicit dependency on the base image
-# happening to include it; kept in this fixed layer for the same
-# can't-silently-drop reason as tini. The capability-assertion layer below
-# verifies it actually works, not just that the binary exists.
+# util-linux: /usr/bin/setpriv を提供する。下の ENTRYPOINT がコンテナ起動時に
+# ambient/inheritable capability を剥奪するのに使う（claude-container#33 の
+# セキュリティ修正）。以前はベースイメージがたまたま含んでいることへの暗黙の
+# 依存だったが、tini と同じ「黙って落とされない」理由でこの固定レイヤーに置く。
+# 下の機能検証レイヤーは、バイナリが存在するだけでなく実際に動作することを確認する。
 #
-# xz-utils: for extracting the optional Node.js tarball (see node-version.txt
-# below). Kept in this fixed layer rather than packages.txt for the same
-# reason as tini — a project's own packages.txt can't silently drop it.
+# xz-utils: 任意の Node.js tarball（下の node-version.txt を参照）の展開用。
+# tini と同じ理由で、プロジェクト側の packages.txt ではなくこの固定レイヤーに置く。
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       curl git jq fzf unzip procps tzdata \
       iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Fail the build loudly if this base image doesn't provide what the
-# container's security boundary depends on, rather than succeeding and
-# breaking silently at runtime (missing setpriv) or leaving hardening
-# un-applied (apt sources still on HTTP). This only catches honest breakage —
-# it cannot detect a base image that maliciously fakes these commands to pass
-# the checks; see README's Security Model section for that limitation.
+# このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
+# 成功したことにして実行時に静かに壊れる（setpriv 不在）か堅牢化が未適用のまま
+# 残る（apt ソースが HTTP のまま）のではなく、ビルドを大声で失敗させる。これは
+# 正直な壊れ方しか検知できない — これらのコマンドを悪意を持って偽装して
+# チェックを通過するベースイメージは検知できない。その限界については README の
+# セキュリティモデル節を参照。
 RUN set -e; \
-    [ -x /usr/bin/setpriv ] || { echo "ERROR: /usr/bin/setpriv not found (ENTRYPOINT requires it at this absolute path)" >&2; exit 1; }; \
-    [ -x /usr/bin/tini ]    || { echo "ERROR: /usr/bin/tini not found (used as PID1)" >&2; exit 1; }; \
+    [ -x /usr/bin/setpriv ] || { echo "ERROR: /usr/bin/setpriv がありません（ENTRYPOINT がこの絶対パスを必要とします）" >&2; exit 1; }; \
+    [ -x /usr/bin/tini ]    || { echo "ERROR: /usr/bin/tini がありません（PID1 として使います）" >&2; exit 1; }; \
     /usr/bin/setpriv --ambient-caps=-all --inh-caps=-all /bin/true \
-      || { echo "ERROR: setpriv does not accept --ambient-caps/--inh-caps" >&2; exit 1; }; \
+      || { echo "ERROR: setpriv が --ambient-caps/--inh-caps を受け付けません" >&2; exit 1; }; \
     files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
     if grep -HE '^[^#]*http://' $files; then \
-      echo "ERROR: apt sources still contain http:// (HTTPS rewrite failed)" >&2; exit 1; fi
+      echo "ERROR: apt ソースに http:// が残っています（HTTPS への書き換えに失敗）" >&2; exit 1; fi
 
-# Install gh from GitHub's official apt repository instead of Debian's. Debian
-# trixie ships gh 2.46.0, 46 releases behind upstream, which has a known-broken
-# `gh pr view`/PR command regression across all repos (Debian bug #1119130,
-# severity: serious) caused by the Projects (classic) API removal; issue
-# commands are unaffected. Build-time network is unrestricted (see README.md's
-# Security Model section), so fetching the signing key and repo metadata here
-# never touches the runtime egress allowlist.
+# gh は Debian のものではなく GitHub の公式 apt リポジトリからインストールする。
+# Debian trixie が同梱する gh 2.46.0 は upstream から 46 リリース遅れており、
+# Projects (classic) API の廃止に起因する `gh pr view`/PR コマンドの既知の不具合
+# （Debian bug #1119130、severity: serious）がある（issue コマンドは影響を受けない）。
+# ビルド時ネットワークは無制限（README.md のセキュリティモデル節を参照）なので、
+# ここで署名鍵とリポジトリのメタデータを取得してもランタイムのエグレス許可リストには
+# 一切触れない。
 RUN mkdir -p -m 755 /etc/apt/keyrings && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
@@ -88,11 +88,10 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
     apt-get install -y --no-install-recommends gh && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install project-specific apt packages. Lines are validated by
-# validate-build-input.sh (bare Debian package names only, no version pins,
-# no leading "-"; see the script for the full allowlist) before being
-# passed to apt-get, so an attacker who can write packages.txt cannot inject
-# apt options via it.
+# プロジェクト固有の apt パッケージをインストールする。各行は apt-get へ渡す前に
+# validate-build-input.sh で検証される（素の Debian パッケージ名のみ、バージョン
+# 固定なし、先頭の "-" なし。許可リストの全体はスクリプトを参照）ため、
+# packages.txt を書き込める攻撃者でもそこから apt オプションを注入できない。
 COPY validate-build-input.sh /tmp/
 COPY packages.txt /tmp/packages.txt
 RUN set -e; \
@@ -102,39 +101,39 @@ RUN set -e; \
       $(tr '\n' ' ' < /tmp/packages.norm) && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages (skipped when requirements.norm has no entries
-# after validation). pip3 is not in the base image — projects using
-# requirements.txt must add python3-pip to their packages.txt. Lines are
-# validated by validate-build-input.sh before being passed to pip3.
+# Python パッケージをインストールする（検証後に requirements.norm が空ならスキップ）。
+# pip3 はベースイメージに入っていない — requirements.txt を使うプロジェクトは
+# packages.txt に python3-pip を追加する必要がある。各行は pip3 へ渡す前に
+# validate-build-input.sh で検証される。
 COPY requirements.txt /tmp/requirements.txt
 RUN set -e; \
     sh /tmp/validate-build-input.sh requirements /tmp/requirements.txt /tmp/requirements.norm || exit 1; \
     if [ -s /tmp/requirements.norm ]; then \
       command -v pip3 >/dev/null || { \
-        echo "ERROR: requirements.txt has entries but pip3 is not installed." >&2; \
-        echo "Add python3-pip to .claude-container.d/packages.txt." >&2; \
+        echo "ERROR: requirements.txt にエントリがありますが pip3 が入っていません。" >&2; \
+        echo ".claude-container.d/packages.txt に python3-pip を追加してください。" >&2; \
         exit 1; }; \
       pip3 install -r /tmp/requirements.norm --break-system-packages; \
     fi
 
-# Install a specific Node.js version from the official nodejs.org tarball when
-# .claude-container.d/node-version.txt specifies one (e.g. "22.14.0"). apt on
-# debian:stable has no path to Node 22.x (trixie ships 20.x, testing skips
-# straight to 24.x), so projects needing 22.x declare just the bare version
-# number here instead of a general-purpose build hook (see claude-container#3
-# for the design rationale). Verifies the download against nodejs.org's own
-# SHASUMS256.txt before extracting — fails the build (not silently) on any
-# mismatch or network failure. Architecture is auto-detected (uname -m) since
-# the build host may be x86_64 or arm64 (e.g. podman machine on Apple Silicon).
+# .claude-container.d/node-version.txt が指定する（例: "22.14.0"）場合、nodejs.org
+# 公式の tarball から特定バージョンの Node.js をインストールする。debian:stable の
+# apt には Node 22.x への経路がない（trixie は 20.x、testing は 22 を飛ばして
+# 24.x）ため、22.x が必要なプロジェクトは、汎用のビルドフックではなく、ここで
+# 素のバージョン番号だけを宣言する（設計の根拠は claude-container#3 を参照）。
+# 展開前に nodejs.org 自身の SHASUMS256.txt と照合して検証する — 不一致や
+# ネットワーク障害があれば（黙ってではなく）ビルドを失敗させる。ビルドホストが
+# x86_64 か arm64 か（例: Apple Silicon 上の podman machine）は自動検出
+# （uname -m）する。
 COPY node-version.txt /tmp/node-version.txt
 RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
     if [ -n "$NODE_VERSION" ]; then \
       echo "$NODE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
-        echo "ERROR: .claude-container.d/node-version.txt must contain a bare version like 22.14.0 (got: $NODE_VERSION)" >&2; exit 1; }; \
+        echo "ERROR: .claude-container.d/node-version.txt には 22.14.0 のような素のバージョンだけを書いてください（実際の値: $NODE_VERSION）" >&2; exit 1; }; \
       case "$(uname -m)" in \
         x86_64) NODE_ARCH=x64 ;; \
         aarch64) NODE_ARCH=arm64 ;; \
-        *) echo "ERROR: unsupported architecture $(uname -m) for node-version.txt" >&2; exit 1 ;; \
+        *) echo "ERROR: node-version.txt が対応していないアーキテクチャです: $(uname -m)" >&2; exit 1 ;; \
       esac; \
       cd /tmp && \
       curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
@@ -146,44 +145,46 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
       rm -f "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt node.sha256; \
     fi
 
-# Install Codex CLI from npm when .claude-container.d/codex-version.txt specifies a
-# version (e.g. "0.46.0") or the literal "latest". Optional, sibling design to
-# node-version.txt above (see the internal ops issue for the design rationale:
-# declarative opt-in file, not a general-purpose build hook). Requires npm —
-# projects opting in must also set node-version.txt (or add nodejs/npm via
-# packages.txt). "latest" resolves via npm's own dist-tag on every install, same
-# as Claude Code's own "latest" install below — CODEX_CACHEBUST (only bumped by
-# claude-container when codex-version.txt says "latest") busts just this layer's
-# cache so the reinstall actually happens on every `-b` rebuild.
+# .claude-container.d/codex-version.txt がバージョン（例: "0.46.0"）か文字どおりの
+# "latest" を指定する場合、npm から Codex CLI をインストールする。任意機能で、
+# 上の node-version.txt と同じ設計思想（汎用のビルドフックではなく宣言的な
+# オプトインファイル。設計の根拠は内部運用 issue を参照）。npm が必要 —
+# オプトインするプロジェクトは node-version.txt も設定する（または packages.txt
+# 経由で nodejs/npm を追加する）必要がある。"latest" は、下の Claude Code 自身の
+# "latest" インストールと同様に、インストールのたびに npm 自身の dist-tag で
+# 解決される — CODEX_CACHEBUST（codex-version.txt が "latest" のときだけ
+# claude-container が更新する）がこのレイヤーのキャッシュだけを破棄するので、
+# `-b` の再ビルドのたびに実際に再インストールが起きる。
 COPY codex-version.txt /tmp/codex-version.txt
 ARG CODEX_CACHEBUST=pinned
 RUN echo "codex-cachebust=${CODEX_CACHEBUST}" && \
     CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)" && \
     if [ -n "$CODEX_VERSION" ]; then \
       echo "$CODEX_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
-        echo "ERROR: .claude-container.d/codex-version.txt must contain a bare version like 0.46.0 or the literal \"latest\" (got: $CODEX_VERSION)" >&2; exit 1; }; \
+        echo "ERROR: .claude-container.d/codex-version.txt には 0.46.0 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $CODEX_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
-        echo "ERROR: codex-version.txt requires npm, which is not installed. Set .claude-container.d/node-version.txt (or add nodejs/npm to packages.txt)." >&2; exit 1; }; \
+        echo "ERROR: codex-version.txt には npm が必要ですが入っていません。.claude-container.d/node-version.txt を設定するか、packages.txt に nodejs/npm を追加してください。" >&2; exit 1; }; \
       npm install -g "@openai/codex@${CODEX_VERSION}"; \
     fi
 
 ENV DEVCONTAINER=true
 
-# Create node user (UID 1000) — debian:stable doesn't have one
+# node ユーザー（UID 1000）を作成する — debian:stable には存在しない
 RUN groupadd --gid 1000 node \
   && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
 
-# Create workspace and config directories
+# ワークスペースと設定ディレクトリを作成する
 RUN mkdir -p /workspace /home/node/.claude && \
   chown -R node:node /workspace /home/node/.claude
 
-# Directory ownership governs unlink/rename, so the boundary scripts below are only
-# as immutable as the directory that holds them. The optional Node.js tarball above
-# can carry its own uids into /usr/local, so pin these back to root explicitly.
+# unlink/rename の可否はディレクトリの所有権が決めるため、下の境界スクリプトも
+# それを保持するディレクトリの不変性以上にはならない。上の任意の Node.js tarball が
+# 独自の uid を /usr/local に持ち込みうるので、ここで明示的に root へ固定し直す。
 RUN chown root:root /usr/local/bin /usr/local/lib /usr/local/share
 
-# Egress firewall assets: root-owned so the node user cannot alter the allowlist
-# or the script at runtime. node may only run this exact script via sudo.
+# エグレスファイアウォールのアセット: root 所有にし、node ユーザーが実行時に
+# 許可リストやスクリプト自体を変更できないようにする。node は sudo 経由で
+# このスクリプトのみを実行できる。
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY allowed-domains.txt /etc/claude-container/allowed-domains.txt
 COPY allowed-ports.txt /etc/claude-container/allowed-ports.txt
@@ -192,75 +193,77 @@ RUN chmod 755 /usr/local/bin/init-firewall.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
-# GIT_ASKPASS helper for the opt-in git push wiring (see entrypoint.sh). Root-owned,
-# same pattern as init-firewall.sh, so the node user cannot alter it at runtime.
+# オプトインの git push 配線用の GIT_ASKPASS ヘルパー（entrypoint.sh を参照）。
+# init-firewall.sh と同じパターンで root 所有にし、node ユーザーが実行時に
+# 変更できないようにする。
 COPY git-askpass.sh /usr/local/bin/git-askpass.sh
 RUN chmod 755 /usr/local/bin/git-askpass.sh
 
-# GitHub meta snapshot, fetched by claude-container's stage_build_context() into the
-# build context (not fetched here, so this step never touches the unauthenticated
-# GitHub API rate limit itself). init-firewall.sh reads only this snapshot at runtime
-# — it no longer does a live fetch. Root-owned like the other firewall assets.
+# GitHub meta スナップショット。claude-container の stage_build_context() が
+# ビルドコンテキストへ取得する（ここでは取得しないので、このステップ自体は
+# 未認証の GitHub API のレート制限に一切触れない）。init-firewall.sh は実行時に
+# このスナップショットのみを読む — もはや動的な取得はしない。他のファイアウォール
+# アセットと同様に root 所有。
 COPY github-meta.json /etc/claude-container/github-meta.json
 RUN chmod 644 /etc/claude-container/github-meta.json && \
   jq -e '.web and .api and .git' /etc/claude-container/github-meta.json >/dev/null
 
-# Boundary asset (listed in ASSET_HASH_TARGETS): placed in root-owned /usr/local/bin
-# alongside init-firewall.sh and git-askpass.sh, so neither the file nor the directory
-# that holds it is writable by the node user at runtime (claude-container#40).
+# 境界アセット（ASSET_HASH_TARGETS に列挙）: init-firewall.sh・git-askpass.sh と
+# 同じ root 所有の /usr/local/bin に置くことで、ファイル自体もそれを保持する
+# ディレクトリも、実行時に node ユーザーからは書き込めない（claude-container#40）。
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
 USER node
 
-# Persist bash history to /workspace/.claude/bash_history
+# bash 履歴を /workspace/.claude/bash_history へ永続化する
 RUN echo "export PROMPT_COMMAND='mkdir -p /workspace/.claude && history -a'" >> /home/node/.bashrc \
   && echo "export HISTFILE=/workspace/.claude/bash_history" >> /home/node/.bashrc
 
-# Cache-bust marker: value changes on every `-b` run so this layer (and below)
-# is never reused from cache, guaranteeing the latest Claude Code is fetched.
+# キャッシュ破棄用マーカー: `-b` 実行のたびに値が変わるので、このレイヤー
+# （およびそれ以降）は決してキャッシュから再利用されず、常に最新の Claude Code が
+# 取得される。
 ARG CACHEBUST=unknown
 
-# Install Claude Code via official native installer (Recommended method)
-# Installs to ~/.local/bin/claude (symlink) and ~/.local/share/claude (binary)
-# Auto-updater is disabled via settings.json since container is --rm
+# 公式ネイティブインストーラ経由で Claude Code をインストールする（推奨方式）
+# ~/.local/bin/claude（symlink）と ~/.local/share/claude（本体）にインストールされる
+# コンテナが --rm のため、自動更新は settings.json で無効化されている
 RUN echo "cachebust=${CACHEBUST}" \
   && curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_CODE_VERSION}
 
-# Add ~/.local/bin to PATH (where native installer places the symlink)
+# ~/.local/bin を PATH に追加する（ネイティブインストーラが symlink を置く場所）
 ENV PATH=/home/node/.local/bin:$PATH
 
-# Boundary-asset drift detection (claude-container#30): the hash of
-# entrypoint.sh/init-firewall.sh/etc. that claude-container computed from its
-# current source at launch time, baked in as a label so a later launch can
-# detect that those sources changed since this image was built. Placed after
-# the CACHEBUST-consuming RUN above, so adding this label costs no extra
-# cache invalidation (everything from CACHEBUST onward is already busted on
-# every `-b` run).
+# 境界アセットのドリフト検出（claude-container#30）: claude-container が起動時に
+# 現在のソースから計算した entrypoint.sh/init-firewall.sh 等のハッシュを、
+# ラベルとして焼き込む。これにより後の起動が、このイメージのビルド後にそれらの
+# ソースが変わったことを検知できる。CACHEBUST を消費する上の RUN より後に
+# 置いているので、このラベルの追加は追加のキャッシュ無効化コストを生まない
+# （CACHEBUST 以降は `-b` 実行のたびに既に破棄されている）。
 ARG ASSET_HASH=unknown
 LABEL claude-container.asset-hash="${ASSET_HASH}"
 
-# Records the actual base image value baked into this build, independent of
-# base-image.txt's current content. compute_asset_hash() only hashes file
-# content, so it cannot detect "changed to X, rebuilt, changed back to the
-# original value, forgot to rebuild" — the hash matches again. This label
-# lets guard_asset_drift() catch that case too. ARGs declared before FROM are
-# out of scope in this build stage, so BASE_IMAGE must be re-declared here
-# (buildkit carries the pre-FROM value through automatically).
+# base-image.txt の現在の内容とは独立に、このビルドに実際に焼き込まれたベース
+# イメージの値を記録する。compute_asset_hash() はファイル内容しかハッシュしない
+# ため、「X に変更 → 再ビルド → 元の値に戻す → 再ビルドを忘れる」を検知できない
+# （ハッシュが再び一致してしまう）。このラベルにより guard_asset_drift() は
+# そのケースも捕捉できる。FROM より前に宣言された ARG はこのビルドステージでは
+# スコープ外になるため、BASE_IMAGE をここで再宣言する必要がある（buildkit は
+# FROM 前の値を自動的に引き継ぐ）。
 ARG BASE_IMAGE
 LABEL claude-container.base-image="${BASE_IMAGE}"
 
-# compose.yml adds NET_ADMIN/NET_RAW (cap_add) so init-firewall.sh can configure
-# iptables. Under rootless podman with userns_mode: keep-id, those capabilities
-# land in the non-root `node` user's *ambient* set, which is inherited by every
-# child process — meaning Claude (and anything it execs) could operate iptables
-# directly, bypassing the sudoers restriction that limits sudo to
-# /usr/local/bin/init-firewall.sh only. setpriv strips ambient/inheritable caps
-# from the whole process tree at the container's entry point; the sole
-# remaining consumer is `sudo init-firewall.sh`, which re-acquires NET_ADMIN
-# from the (unaffected) bounding set via its setuid-root escalation. setpriv
-# execs (does not linger), so tini remains PID1; entrypoint.sh (and the claude
-# process it execs into) runs as its child.
+# compose.yml は init-firewall.sh が iptables を設定できるよう NET_ADMIN/NET_RAW
+# （cap_add）を追加する。userns_mode: keep-id を伴う rootless podman では、
+# それらの capability は非 root の `node` ユーザーの *ambient* set に入り、
+# 全ての子プロセスに継承される — つまり Claude（とそれが exec するもの）は、
+# sudo を /usr/local/bin/init-firewall.sh のみに限定する sudoers の制限を
+# バイパスして、iptables を直接操作できてしまう。setpriv はコンテナのエントリ
+# ポイントでプロセスツリー全体から ambient/inheritable capability を剥奪する。
+# 残る唯一の消費者は `sudo init-firewall.sh` で、これは（影響を受けない）
+# bounding set から setuid-root の昇格経由で NET_ADMIN を再取得する。setpriv は
+# exec する（居残らない）ので tini が PID1 のままであり、entrypoint.sh
+# （とそれが exec する claude プロセス）はその子として動く。
 ENTRYPOINT ["/usr/bin/setpriv", "--ambient-caps=-all", "--inh-caps=-all", "/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/entrypoint.sh"]

@@ -33,30 +33,30 @@ guard_warn() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [OPTIONS] <directory>
+使い方: $(basename "$0") [オプション] <ディレクトリ>
 
-Launch a containerized Claude workspace in the given directory.
+指定したディレクトリを作業ディレクトリにして、コンテナ化した Claude Code を起動する。
 
-Options:
-  -b, --build          Force a rebuild of the container image
-  --clean <directory>  Remove the image, network, and staged build context
-                        for that project only, then exit
-  --clean              (no directory) Remove all projects' images,
-                        networks, and staged build contexts, then exit
-  --check [<directory>...]
-                        Diagnose without launching: report what a rebuild/
-                        launch would need (legacy vars, SECRETS_DIR layout,
-                        MCP approval state, etc.) for the given directories,
-                        or for every project in the launch ledger
-                        (~/.local/state/claude-container/projects) if none
-                        are given. Non-interactive; makes no writes. Exits
-                        non-zero if any project has a FAIL. -b is ignored
-                        with --check.
-  -h, --help            Show this help message and exit
+オプション:
+  -b, --build          コンテナイメージを強制的に再ビルドしてから起動する
+  --clean <ディレクトリ>
+                        そのプロジェクト分のイメージ・ネットワーク・
+                        ステージング済みビルドコンテキストを削除して終了する
+  --clean              （ディレクトリなし）全プロジェクト分のイメージ・
+                        ネットワーク・ビルドコンテキストを削除して終了する
+  --check [<ディレクトリ>...]
+                        起動せずに診断する: 再ビルド・起動に必要な対応
+                        （レガシー変数、SECRETS_DIR のレイアウト、MCP の承認状態
+                        など）を、指定したディレクトリについて、指定がなければ
+                        起動台帳（~/.local/state/claude-container/projects）の
+                        全プロジェクトについて報告する。非対話で、書き込みはしない。
+                        FAIL のプロジェクトが 1 つでもあれば終了コードは非 0。
+                        --check と併用した -b は無視される。
+  -h, --help            このヘルプを表示して終了する
 EOF
 }
 
-# Parse arguments
+# 引数を解析する
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -115,39 +115,39 @@ clean_all() {
     found=1
     project="${repo#localhost/}"
     project="${project%_claude-auth-workspace}"
-    echo "Removing image: $repo"
-    podman rmi "$repo" 2>/dev/null && echo "Removed." || echo "Failed, skipping."
-    echo "Removing network: ${project}_default"
-    podman network rm "${project}_default" 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
+    echo "イメージを削除します: $repo"
+    podman rmi "$repo" 2>/dev/null && echo "削除しました。" || echo "失敗したのでスキップします。"
+    echo "ネットワークを削除します: ${project}_default"
+    podman network rm "${project}_default" 2>/dev/null && echo "削除しました。" || echo "ネットワークがないのでスキップします。"
   done < <(podman images --format '{{.Repository}}' 2>/dev/null | grep -E '^localhost/.+_claude-auth-workspace$' || true)
-  [[ $found -eq 1 ]] || echo "No claude-container images found, skipping image/network removal."
-  echo "Removing staged build contexts: $RUN_DIR/.build-context"
-  rm -rf "$RUN_DIR/.build-context" && echo "Removed." || echo "Not found, skipping."
+  [[ $found -eq 1 ]] || echo "claude-container のイメージが見つからないため、イメージ・ネットワークの削除をスキップします。"
+  echo "ステージング済みビルドコンテキストを削除します: $RUN_DIR/.build-context"
+  rm -rf "$RUN_DIR/.build-context" && echo "削除しました。" || echo "見つからないのでスキップします。"
   local approval_store="$HOME/.local/state/claude-container/mcp-approvals"
-  echo "Removing MCP approval records: $approval_store"
-  rm -rf "$approval_store" && echo "Removed." || echo "Not found, skipping."
-  echo "Removing launch ledger: $CC_LEDGER_FILE"
-  rm -f "$CC_LEDGER_FILE" && echo "Removed." || echo "Not found, skipping."
-  echo "Pruning dangling images..."
+  echo "MCP 承認記録を削除します: $approval_store"
+  rm -rf "$approval_store" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "起動台帳を削除します: $CC_LEDGER_FILE"
+  rm -f "$CC_LEDGER_FILE" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "dangling イメージを整理しています..."
   podman image prune -f
 }
 
 # 現在のターゲットプロジェクト（$IMAGE_NAME / $PROJECT_NAME / $BUILD_CONTEXT_DIR）分のみを削除する。
 clean_project() {
-  echo "Removing image: $IMAGE_NAME"
-  podman rmi "$IMAGE_NAME" 2>/dev/null && echo "Removed." || echo "Image not found, skipping."
-  echo "Removing network: ${PROJECT_NAME}_default"
-  podman network rm "${PROJECT_NAME}_default" 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
-  echo "Removing staged build context: $BUILD_CONTEXT_DIR"
-  rm -rf "$BUILD_CONTEXT_DIR" && echo "Removed." || echo "Not found, skipping."
-  echo "Removing MCP approval record: $MCP_APPROVAL_RECORD"
-  rm -f "$MCP_APPROVAL_RECORD" && echo "Removed." || echo "Not found, skipping."
+  echo "イメージを削除します: $IMAGE_NAME"
+  podman rmi "$IMAGE_NAME" 2>/dev/null && echo "削除しました。" || echo "イメージがないのでスキップします。"
+  echo "ネットワークを削除します: ${PROJECT_NAME}_default"
+  podman network rm "${PROJECT_NAME}_default" 2>/dev/null && echo "削除しました。" || echo "ネットワークがないのでスキップします。"
+  echo "ステージング済みビルドコンテキストを削除します: $BUILD_CONTEXT_DIR"
+  rm -rf "$BUILD_CONTEXT_DIR" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "MCP 承認記録を削除します: $MCP_APPROVAL_RECORD"
+  rm -f "$MCP_APPROVAL_RECORD" && echo "削除しました。" || echo "見つからないのでスキップします。"
   if [[ -f "$CC_LEDGER_FILE" ]]; then
-    echo "Removing $WORKING_DIR from launch ledger: $CC_LEDGER_FILE"
+    echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
     grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" > "$CC_LEDGER_FILE.tmp" 2>/dev/null || true
     mv "$CC_LEDGER_FILE.tmp" "$CC_LEDGER_FILE"
   fi
-  echo "Pruning dangling images..."
+  echo "dangling イメージを整理しています..."
   podman image prune -f
 }
 
@@ -599,7 +599,7 @@ guard_base_image() {
 
   resolve_asset_source base-image.txt
   if [[ "$ASSET_ORIGIN" == "missing" ]]; then
-    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt なし、既定値）"
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE（base-image.txt なし、既定値）"
     return 0
   fi
 
@@ -615,7 +615,7 @@ guard_base_image() {
     guard_fail "ERROR: $PROJECT_CONF_DIR/base-image.txt を読めません（grep rc=$grep_rc）。起動を中止します。" || return 1
   fi
   if [[ -z "$value" ]]; then
-    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt は空、既定値）"
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE（base-image.txt は空、既定値）"
     return 0
   fi
 
@@ -626,7 +626,7 @@ guard_base_image() {
   fi
 
   BASE_IMAGE="$value"
-  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE"
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE"
   return 0
 }
 
@@ -710,22 +710,22 @@ check_mcp_approval() {
       return 0
       ;;
     approved)
-      echo "INFO: MCP audit: stdio servers pre-approved (hash match); skipping confirmation" >&2
+      echo "INFO: MCP 監査: stdio 型サーバーは承認済み（ハッシュ一致）。確認を省略します" >&2
       MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
       export MCP_APPROVAL_FILE
       return 0
       ;;
     pending)
-      echo "WARNING: $WORKING_DIR/.mcp.json declares stdio-type MCP server(s) that changed since last approval (or have never been approved). Their code runs immediately at session start and can read all exported secrets:" >&2
+      echo "WARNING: $WORKING_DIR/.mcp.json の stdio 型 MCP サーバーの定義が前回の承認から変わっている（または未承認の）ものがあります。そのコードはセッション開始時に即座に実行され、export された全ての秘密を読めます:" >&2
       # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
       # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
       # 「ターミナル・スプーフィング」に無防備になる（claude-container#35）。entrypoint.sh 側の同種の
       # 表示ロジックと同一のサニタイズ方式（LC_ALL=C tr -d '\000-\037\177'）を使うこと（同期必須）。
       echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' | LC_ALL=C tr -d '\000-\037\177' >&2
-      printf 'Allow these MCP servers to start and remember this approval? [y/N] ' >&2
+      printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
       local mcp_confirm=""
       if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
-        echo "INFO: no interactive TTY available here; deferring confirmation to the in-container MCP audit gate." >&2
+        echo "INFO: 対話可能な TTY がないため、確認はコンテナ内の MCP 監査ゲートに委ねます。" >&2
         export MCP_APPROVAL_FILE
         return 0
       fi
@@ -739,7 +739,7 @@ check_mcp_approval() {
           export MCP_APPROVAL_FILE
           ;;
         *)
-          echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+          echo "ERROR: MCP stdio 型サーバーの確認が拒否されました。起動を中止します" >&2
           exit 1
           ;;
       esac
@@ -785,7 +785,7 @@ resolve_asset_source() {
       fi
       ;;
     *)
-      echo "ERROR: resolve_asset_source: unknown asset name: $name" >&2
+      echo "ERROR: resolve_asset_source: 未知のアセット名です: $name" >&2
       exit 1
       ;;
   esac
@@ -824,7 +824,7 @@ compute_asset_hash() {
     if [[ "$ASSET_ORIGIN" == "missing" ]]; then
       content_hash=$(printf '' | sha256sum | cut -d' ' -f1)
     elif ! content_hash=$(sha256sum < "$ASSET_PATH" 2>/dev/null | cut -d' ' -f1) || [[ -z "$content_hash" ]]; then
-      echo "ERROR: compute_asset_hash: failed to hash $name ($ASSET_PATH)" >&2
+      echo "ERROR: compute_asset_hash: $name（$ASSET_PATH）のハッシュ計算に失敗しました" >&2
       return 1
     fi
     combined+="${name}:${content_hash}"$'\n'
@@ -859,7 +859,7 @@ stage_build_context() {
       # リング（2026-07-01）後に .claude-container.d/ へ移行されないまま消失した
       # 実障害（python3-missing インシデント、2026-07-02）があるため、フォール
       # バック使用時は必ず気づけるよう警告を出す。
-      echo "WARNING: $PROJECT_CONF_DIR/$name not found; using claude-container's generic empty fallback ($name). If this project needs packages/domains here, create .claude-container.d/$name." >&2
+      echo "WARNING: $PROJECT_CONF_DIR/$name がありません。claude-container 同梱の空のフォールバック（$name）を使います。このプロジェクトでパッケージやドメインが必要なら .claude-container.d/$name を作成してください。" >&2
     fi
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -905,12 +905,12 @@ stage_build_context() {
      && echo "$gh_meta" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
     echo "$gh_meta" > "$BUILD_CONTEXT_DIR/github-meta.json"
   elif [[ -f "$BUILD_CONTEXT_DIR/github-meta.json" ]]; then
-    echo "WARNING: live GitHub meta fetch failed (rate limit?); reusing previously staged snapshot" >&2
+    echo "WARNING: GitHub meta の取得に失敗しました（レート制限の可能性）。前回ステージングしたスナップショットを再利用します" >&2
   elif sibling=$(ls -t "$RUN_DIR"/.build-context/*/github-meta.json 2>/dev/null | head -1) && [[ -n "$sibling" ]]; then
-    echo "WARNING: live GitHub meta fetch failed and no snapshot for this project; reusing another project's snapshot ($sibling)" >&2
+    echo "WARNING: GitHub meta の取得に失敗し、このプロジェクトのスナップショットもありません。別プロジェクトのスナップショットを再利用します（$sibling）" >&2
     cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json"
   else
-    echo "ERROR: failed to fetch GitHub meta and no previous snapshot exists (rate limit? retry after it resets)" >&2
+    echo "ERROR: GitHub meta を取得できず、過去のスナップショットもありません（レート制限の可能性。解除後に再試行してください）" >&2
     exit 1
   fi
 }
@@ -1010,7 +1010,7 @@ check_one_project() {
       echo "[OK]   $file: プロジェクト側設定あり"
     else
       CHECK_HAS_WARN=1
-      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file not found; using claude-container's generic empty fallback ($file). If this project needs packages/domains here, create .claude-container.d/$file."
+      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file がありません。claude-container 同梱の空のフォールバック（$file）を使います。このプロジェクトでパッケージやドメインが必要なら .claude-container.d/$file を作成してください。"
     fi
 
     # packages.txt/requirements.txt の内容診断（validate-build-input.sh を
@@ -1227,7 +1227,7 @@ fi
 # プレフィックスへ渡す（下記）。build ブロック内だけに限定すると、-b 無しの初回
 # 起動（compose の暗黙ビルド）でラベルが空になり、直後の通常起動で必ず誤警告が出る。
 if ! compute_asset_hash; then
-  echo "ERROR: failed to compute the boundary-asset hash; aborting" >&2
+  echo "ERROR: 境界アセットのハッシュを計算できませんでした。起動を中止します" >&2
   exit 1
 fi
 

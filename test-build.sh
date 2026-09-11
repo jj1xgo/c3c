@@ -11,9 +11,9 @@ PASS=0
 FAIL=0
 
 if [[ "${1:-}" == "--clean" ]]; then
-  echo "Removing test image: ${IMAGE}"
-  podman rmi "${IMAGE}" 2>/dev/null && echo "Done." || echo "Image not found, skipping."
-  echo "Pruning dangling images..."
+  echo "テストイメージを削除します: ${IMAGE}"
+  podman rmi "${IMAGE}" 2>/dev/null && echo "完了。" || echo "イメージがないのでスキップします。"
+  echo "dangling イメージを整理しています..."
   podman image prune -f
   exit 0
 fi
@@ -513,21 +513,21 @@ ALLOWED_PORTS_VECTORS=(
   'accept|443\n8080|443,8080'
   'accept|443|443'
   # 443 必須・80 禁止（#49-2）。範囲は端点を含めて判定する
-  'reject|8080\n|must include 443'
-  'reject|443\n80\n|must not allow port 80'
-  'reject|443\n79:81\n|must not allow port 80'
-  'reject|443\n79:80\n|must not allow port 80'
-  'reject|443\n80:81\n|must not allow port 80'
+  'reject|8080\n|443 を含める必要があります'
+  'reject|443\n80\n|80 番を許可できません'
+  'reject|443\n79:81\n|80 番を許可できません'
+  'reject|443\n79:80\n|80 番を許可できません'
+  'reject|443\n80:81\n|80 番を許可できません'
   'accept|442:444\n|442:444'
   'accept|443:443\n|443:443'
   # 先頭ゼロは十進として扱う（bash 算術の八進解釈を避ける）
   'accept|00443\n|00443'
-  'reject|443\n080\n|must not allow port 80'
+  'reject|443\n080\n|80 番を許可できません'
   # 既存挙動の固定
   'accept|443\n22\n8000:8010\n|443,22,8000:8010'
   'accept||443,22'
   'accept|# comment only\n\n|443,22'
-  'reject|abc\n|invalid entry'
+  'reject|abc\n|不正なエントリ'
 )
 
 run_allowed_ports_tests() {
@@ -671,7 +671,7 @@ run_base_image_launcher_tests() {
   printf '%s\n' "$out" >> "$LOG_FILE"
   run_launcher_check
   check "G3: 有効行 20 万行を --check は先頭行で報告する（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qF '[INFO] base image: debian:stable' && ! printf '%s' \"\$0\" | grep -q '既定値'" "$out"
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qF '[INFO] ベースイメージ: debian:stable' && ! printf '%s' \"\$0\" | grep -q '既定値'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # G4: 読めないファイル → 通常起動は ERROR で compose に進まず、--check は FAIL
@@ -864,7 +864,7 @@ stage_common_context() {
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)
   if [[ -n "$sibling" ]]; then
-    echo "WARNING: live GitHub meta fetch failed; reusing $sibling" >&2
+    echo "WARNING: GitHub meta の取得に失敗しました。$sibling を再利用します" >&2
     cp "$sibling" "$dest/github-meta.json"
   else
     echo "ERROR: github-meta.json を取得できず、既存スナップショットも見つかりません" >&2

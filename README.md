@@ -362,7 +362,7 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 このガードレールが機能するのは、Claude（およびその子プロセス）がこの許可リスト自体を書き換えられないことが前提になる。`Dockerfile.claude` の `ENTRYPOINT`（前述「アーキテクチャ」節参照）でコンテナ起動時に関連 capability（`NET_ADMIN`/`NET_RAW`）を剥奪しており、iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh` のみに限定される。file capabilities 付きバイナリの追加導入や `podman exec` 経由には限界が残る（[詳細](SECURITY-CLAIMS.md#c-1)）。
 
-**制限しても残るリスク**: DNS クエリを使ったトンネリング、許可済みサービス（GitHub 等）自体への送信、CDN の共有 IP 経由の到達は原理上防げない。`/etc/resolv.conf` から IPv4 リゾルバを検出できない場合（通常の Podman 環境では稀）、DNS（53番ポート）は宛先無制限で許可される縮退動作になる（起動時に `WARNING: no IPv4 resolver in /etc/resolv.conf, allowing DNS to any host` が出力される）。許可ドメインの IP は約15秒間隔のバックグラウンド再解決で追従するが（上記アーキテクチャ節参照）、ローテーション直後からリフレッシュが反映されるまでの数十秒間は新規接続が失敗しうる（コンテナ再起動が必要だった以前と比べれば大幅に縮小されるが、ゼロにはできない）。GitHub IP レンジはビルド時スナップショット固定のため、コンテナ再起動では更新されず `-b` でのリビルドが必要。ビルド時（`pip3 install` 等）のネットワークは制限されない。
+**制限しても残るリスク**: DNS クエリを使ったトンネリング、許可済みサービス（GitHub 等）自体への送信、CDN の共有 IP 経由の到達は原理上防げない。`/etc/resolv.conf` から IPv4 リゾルバを検出できない場合（通常の Podman 環境では稀）、DNS（53番ポート）は宛先無制限で許可される縮退動作になる（起動時に `WARNING: /etc/resolv.conf に IPv4 リゾルバがないため、DNS を任意のホストへ許可します` が出力される）。許可ドメインの IP は約15秒間隔のバックグラウンド再解決で追従するが（上記アーキテクチャ節参照）、ローテーション直後からリフレッシュが反映されるまでの数十秒間は新規接続が失敗しうる（コンテナ再起動が必要だった以前と比べれば大幅に縮小されるが、ゼロにはできない）。GitHub IP レンジはビルド時スナップショット固定のため、コンテナ再起動では更新されず `-b` でのリビルドが必要。ビルド時（`pip3 install` 等）のネットワークは制限されない。
 
 **`packages.txt`/`requirements.txt` のビルド時インジェクション対策にも残余がある**: 両ファイルは `validate-build-input.sh` による allowlist 検証を経る（前述「利用側プロジェクトの設定」「アーキテクチャ」節）が、PyPI は open publishing のため、`requirements.txt` の名前指定だけで任意パッケージの sdist に含まれる `setup.py` がビルド時 root で実行される経路が原理的に残る（`claude-container#34`）。apt 側は設定済みリポジトリ内のパッケージに限られるため同じ経路は無い。
 

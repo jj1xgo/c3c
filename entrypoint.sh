@@ -2,23 +2,24 @@
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
 # 無効化する場合は利用側プロジェクトの .claude-container.d/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
 if [ "${CLAUDE_CONTAINER_NO_FIREWALL:-}" = "1" ]; then
-  echo "WARNING: egress firewall disabled (CLAUDE_CONTAINER_NO_FIREWALL=1); container has unrestricted network access" >&2
+  echo "WARNING: エグレスファイアウォールは無効です（CLAUDE_CONTAINER_NO_FIREWALL=1）。コンテナのネットワークは無制限です" >&2
 else
   if ! sudo /usr/local/bin/init-firewall.sh; then
-    echo "ERROR: firewall setup failed; refusing to start (set CLAUDE_CONTAINER_NO_FIREWALL=1 to opt out)" >&2
+    echo "ERROR: ファイアウォールの設定に失敗しました。起動を中止します（無効化するには CLAUDE_CONTAINER_NO_FIREWALL=1）" >&2
     exit 1
   fi
-  # CDN-backed allowed domains (e.g. behind CloudFront) can rotate their IPs on
-  # TTLs as short as ~13s, well within a long session. init-firewall.sh's
-  # startup resolution is a one-shot snapshot, so refresh it in the background
-  # to keep up. `&` backgrounds this in a subshell; `exec claude` below only
-  # replaces this script's own process image, so the subshell survives as its
-  # child. Output goes to /tmp (not the bind-mounted ~/.claude) since it's
-  # session-local noise, and is kept off the shared tty (compose.yml sets
-  # tty: true for claude's interactive UI) to avoid corrupting the display.
-  # (The container's actual PID1 is tini, set via Dockerfile.claude's
-  # ENTRYPOINT — this script and the claude process it execs into both run as
-  # tini's child, so signals podman forwards on exit land on a live process.)
+  # CDN 経由（例: CloudFront 配下）の許可ドメインは、長いセッション時間の中では
+  # 短い ~13 秒程度の TTL で IP をローテーションしうる。init-firewall.sh の
+  # 起動時解決は一発限りのスナップショットなので、追随できるようバックグラウンドで
+  # 更新する。`&` によりサブシェルとしてバックグラウンド化する。下の `exec claude` は
+  # このスクリプト自身のプロセスイメージを置き換えるだけなので、サブシェルはその
+  # 子として生き残る。出力先は /tmp（bind mount された ~/.claude ではない）とする
+  # のは、これがセッションローカルなノイズだからで、共有 tty（compose.yml が
+  # claude の対話 UI 用に tty: true を設定）を汚さないようにするため。
+  # （コンテナの実際の PID1 は tini で、Dockerfile.claude の ENTRYPOINT で設定
+  # されている — このスクリプトと、これが exec する claude プロセスはどちらも
+  # tini の子として動くため、終了時に podman が転送するシグナルは生きている
+  # プロセスに届く。）
   (
     while true; do
       sleep 15
@@ -53,7 +54,7 @@ if [ -f "$MCP_CONFIG" ]; then
     (.mcpServers // {}) | to_entries[] | select(.value.command != null) |
     "\(.key)\t\(.value.command)\t\((.value.args // []) | join(" "))"
   ' "$MCP_CONFIG" 2>/dev/null); then
-    echo "ERROR: failed to parse $MCP_CONFIG as JSON; refusing to start" >&2
+    echo "ERROR: $MCP_CONFIG を JSON として解析できません。起動を中止します" >&2
     exit 1
   fi
   if [ -n "$stdio_servers" ]; then
@@ -68,11 +69,11 @@ if [ -f "$MCP_CONFIG" ]; then
       recorded_hash=$(cat "$approved_hash_file" 2>/dev/null || true)
     fi
     if [ -n "$recorded_hash" ] && [ "$recorded_hash" = "$current_hash" ]; then
-      echo "INFO: MCP audit: stdio servers pre-approved (hash match); OK" >&2
+      echo "INFO: MCP 監査: stdio 型サーバーは承認済み（ハッシュ一致）。OK" >&2
     else
-      echo "WARNING: $MCP_CONFIG declares stdio-type MCP server(s). Their code runs immediately at session start (no per-tool-call confirmation) and can read all exported secrets:" >&2
+      echo "WARNING: $MCP_CONFIG に stdio 型の MCP サーバーがあります。そのコードはセッション開始時に即座に実行され（ツール呼び出しごとの確認はなく）、export された全ての秘密を読めます:" >&2
       if [ -n "$recorded_hash" ]; then
-        echo "  (note: definition changed since the last host-side approval)" >&2
+        echo "  （注: 前回のホスト側承認から定義が変わっています）" >&2
       fi
       # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
       # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
@@ -84,21 +85,21 @@ if [ -f "$MCP_CONFIG" ]; then
         mcp_args=$(printf '%s' "$mcp_args" | LC_ALL=C tr -d '\000-\037\177')
         echo "  - $mcp_name: $mcp_cmd $mcp_args" >&2
       done <<<"$stdio_servers"
-      printf 'Allow these MCP servers to start? [y/N] ' >&2
+      printf 'これらの MCP サーバーの起動を許可しますか? [y/N] ' >&2
       if ! read -r mcp_confirm </dev/tty; then
-        echo "ERROR: no interactive TTY available to confirm MCP stdio servers; refusing to start" >&2
+        echo "ERROR: MCP stdio 型サーバーを確認する対話可能な TTY がありません。起動を中止します" >&2
         exit 1
       fi
       case "$mcp_confirm" in
         y | Y | yes | YES | Yes) ;;
         *)
-          echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+          echo "ERROR: MCP stdio 型サーバーの確認が拒否されました。起動を中止します" >&2
           exit 1
           ;;
       esac
     fi
   else
-    echo "INFO: MCP audit: $MCP_CONFIG contains no stdio servers; OK" >&2
+    echo "INFO: MCP 監査: $MCP_CONFIG に stdio 型サーバーはありません。OK" >&2
   fi
 fi
 
@@ -122,14 +123,14 @@ if [ -d "$EXPORT_MOUNT" ]; then
     [ -f "$secret_file" ] || continue
     secret_name=$(basename "$secret_file")
     if ! [[ "$secret_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      echo "WARNING: secrets/export: '$secret_name' is not a valid environment variable name; skipping" >&2
+      echo "WARNING: secrets/export: '$secret_name' は環境変数名として不正です。スキップします" >&2
       continue
     fi
     # ${!name+x} は set 判定（値でなく「存在するか」）。set-but-empty な compose
     # 変数（例: CLAUDE_CONTAINER_NO_FIREWALL）や bash の readonly シェル変数
     # （UID 等）も捕捉できるため、非空判定（${!name:-}）より安全側に倒せる。
     if [ -n "${!secret_name+x}" ]; then
-      echo "WARNING: secrets/export: '$secret_name' is already set in the environment; skipping" >&2
+      echo "WARNING: secrets/export: '$secret_name' は既に環境変数に設定されています。スキップします" >&2
       continue
     fi
     secret_value=$(tr -d '\n\r' <"$secret_file")

@@ -494,7 +494,66 @@ run_launcher_tests() {
   log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
   run_base_image_launcher_tests
+  run_codex_dir_launcher_tests
   log ""
+}
+
+# guard_codex_dir() の検証（claude-container#36、#48）。実ホストの ~/.codex を指す
+# CODEX_DIR を、文字列の表記ゆれ・シンボリックリンクによらず実体で検出して fail-closed
+# にすること。各ケースを通常起動と --check の対で見る。
+run_codex_dir_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local label value expected
+  mkdir -p "$home/.codex" "$home/.codex-container" "$proj/.codex-container"
+  ln -s "$home/.codex" "$home/codex-link"
+  ln -s "$home/.codex-container" "$home/link-container"
+
+  # 拒否側: 通常起動は ERROR で compose に進まず、--check は FAIL
+  reject_case() {
+    local label="$1" value="$2"
+    run_launcher CODEX_DIR="$value"
+    check "$label は ERROR で起動中止（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CODEX_DIR' && [ ! -e '$root/compose-env' ]" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check CODEX_DIR="$value"
+    check "$label を --check は FAIL で報告する（rc=$rc）" \
+      bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  }
+  reject_case "H1: 末尾 // の実 ~/.codex"        "$home/.codex//"
+  reject_case "H2: ~/./.codex 表記の実 ~/.codex" "$home/./.codex"
+  reject_case "H3: ~/.codex/. 表記の実 ~/.codex" "$home/.codex/."
+  reject_case "H4: 実 ~/.codex への symlink"      "$home/codex-link"
+  reject_case "H4b: 先頭 // 表記の実 ~/.codex"   "/$home/.codex"
+  reject_case "H5: 相対パスの CODEX_DIR"          ".codex-container"
+  # H6: ~/.codex 自体が symlink で、そのリンク先を直接指す
+  rm -rf "$home/.codex"; mkdir -p "$home/real-codex"; ln -s "$home/real-codex" "$home/.codex"
+  reject_case "H6: symlink の ~/.codex のリンク先"  "$home/real-codex"
+  rm -f "$home/.codex"; mkdir -p "$home/.codex"
+  # H7: ~/.codex が存在しない状態で文字列として指す（文字列比較で拒否）
+  rm -rf "$home/.codex"
+  reject_case "H7: 存在しない ~/.codex を文字列で指定" "$home/.codex"
+  mkdir -p "$home/.codex"
+  # H8: 存在しないパス → 既存の ERROR
+  reject_case "H8: 存在しない CODEX_DIR"            "$home/no-such-dir"
+
+  # 通過側: 正規化済み絶対パスが compose へ渡る（正規化を実装しないと落ちる対照）
+  expected="$(cd "$home/.codex-container" && pwd -P)"
+  for label in "H9: ~/./.codex-container 表記|$home/./.codex-container" "H10: 専用ディレクトリへの symlink|$home/link-container" "H11: 先頭 // 表記の専用ディレクトリ|/$home/.codex-container"; do
+    value="${label#*|}"; label="${label%%|*}"
+    run_launcher CODEX_DIR="$value"
+    check "$label は起動が進む（rc=$rc）" [ "$rc" -eq 0 ]
+    check "$label は compose へ正規化済み絶対パスが渡る" \
+      grep -qxF "CODEX_DIR=$expected" "$root/compose-env"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check CODEX_DIR="$value"
+    check "$label を --check は最後まで診断して PASS/WARN で終える（rc=$rc）" \
+      bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qE '結果: (PASS|WARN)'" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+
+  launcher_sandbox_cleanup
 }
 
 # guard_base_image() の検証（claude-container#50）。base-image.txt に有効行が無い

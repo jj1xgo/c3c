@@ -361,12 +361,40 @@ guard_codex_dir() {
     CODEX_DIR="${CODEX_DIR/#\~\//$HOME/}"
     CODEX_DIR="${CODEX_DIR%/}"
     export CODEX_DIR
+    local codex_real_msg="ERROR: CODEX_DIR が実ホストの \$HOME/.codex を指しています。コンテナ側のコードが config.toml（notify フック・MCP サーバー定義）を汚染し、ホストで codex 実行時に任意コマンドが実行される経路になるため、専用ディレクトリ（例: ~/.codex-container）を指定してください。起動を中止します。"
+    # 文字列比較（claude-container#36）。~/.codex が存在しない状態での誤指定もここで捕まえる。
     if [[ "$CODEX_DIR" == "$HOME/.codex" ]]; then
-      guard_fail "ERROR: CODEX_DIR が実ホストの \$HOME/.codex を指しています。コンテナ側のコードが config.toml（notify フック・MCP サーバー定義）を汚染し、ホストで codex 実行時に任意コマンドが実行される経路になるため、専用ディレクトリ（例: ~/.codex-container）を指定してください。起動を中止します。" || return 1
+      guard_fail "$codex_real_msg" || return 1
+    fi
+    # 相対パスは拒否する（CLAUDE_CONFIG_DIR と同じ理由: compose は相対 bind source を
+    # compose.yml のディレクトリ基準で解決し、ランチャーの解釈と食い違う。加えて相対パスの
+    # cd は CDPATH — env から export できる — の影響を受ける）。claude-container#48
+    if [[ "$CODEX_DIR" != /* ]]; then
+      guard_fail "ERROR: CODEX_DIR=$CODEX_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1
     fi
     if [[ ! -d "$CODEX_DIR" ]]; then
       guard_fail "ERROR: CODEX_DIR=$CODEX_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
     fi
+    # 実体で比較する（claude-container#48）。`~/.codex//`・`~/./.codex`・`~/.codex/.`・
+    # `//home/...`・実 ~/.codex への symlink は文字列比較をすり抜け、podman 側で解決されて
+    # 実 ~/.codex が rw マウントされるため、-ef（同じ device と inode か）で比べる。
+    # パス文字列の正規化（pwd -P）では先頭の `//` が残り（POSIX で意味が実装定義のため
+    # bash は保持する）、文字列比較に戻ると同じ穴が開く。$HOME/.codex 側が存在しない・
+    # 辿れない場合は -ef が偽になるだけで起動は止めず、上の文字列比較だけに委ねる
+    # （運用者が指していないディレクトリの事情で止めない）。
+    if [[ "$CODEX_DIR" -ef "$HOME/.codex" ]]; then
+      guard_fail "$codex_real_msg" || return 1
+    fi
+    # 正規化済みの絶対パスを compose へ渡す（CLAUDE_CONFIG_DIR と同じ扱い。bind source に
+    # `.`・`..`・symlink・先頭 `//` を含めない）。CDPATH='' は cd の検索経路を断ち、
+    # >/dev/null は CDPATH 経由時に cd が出力するパスを捨てる。
+    local codex_dir_real
+    if ! codex_dir_real="$(CDPATH='' cd -- "$CODEX_DIR" >/dev/null 2>&1 && pwd -P)"; then
+      guard_fail "ERROR: CODEX_DIR=$CODEX_DIR を解決できません（ディレクトリに入れません）。起動を中止します。" || return 1
+    fi
+    while [[ "$codex_dir_real" == //* ]]; do codex_dir_real="${codex_dir_real#/}"; done
+    CODEX_DIR="$codex_dir_real"
+    export CODEX_DIR
     local codex_dir_perm
     codex_dir_perm=$(stat -c '%a' "$CODEX_DIR" 2>/dev/null || stat -f '%Lp' "$CODEX_DIR" 2>/dev/null || echo "")
     if [[ -n "$codex_dir_perm" && "$codex_dir_perm" != "700" ]]; then

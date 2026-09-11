@@ -88,7 +88,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | `1` でエグレス制限（後述）を無効化 |
 | `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス（後述） |
 | `SECRETS_DIR` | (unset) | GitHub トークン等のシークレットをコンテナへ持ち込む唯一の機構のホスト側パス（後述「GitHub トークンの配線」節） |
-| `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「MCP サーバーの追加」節の Codex レシピ） |
+| `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「MCP サーバーの追加」節の Codex レシピ）。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する）。実ホストの `~/.codex` と同じ実体を指す指定（表記ゆれ・シンボリックリンクを含む）は起動を中止する |
 
 `TZ` は起動スクリプトがホストの `/etc/timezone`（なければ `/etc/localtime` シンボリックリンク）から自動検出する。`.claude-container.d/env` で明示した場合はそちらが優先される。
 
@@ -522,7 +522,7 @@ Place a `.claude-container.d/env` file at the root of the **target project** to 
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | Set to `1` to disable the egress firewall (see below) |
 | `GITCONFIG_FILE` | (unset) | Path on the host to a git config file to mount read-only as `~/.gitconfig` inside the container (see below) |
 | `SECRETS_DIR` | (unset) | Host path to the sole mechanism for bringing GitHub tokens and other secrets into the container (see "GitHub Token Wiring" below) |
-| `CODEX_DIR` | (unset) | Host path to the Codex CLI credentials directory (`auth.json` etc.), mounted rw into the container. Use a dedicated directory (see the Codex recipe under "Adding MCP Servers" below) |
+| `CODEX_DIR` | (unset) | Host path to the Codex CLI credentials directory (`auth.json` etc.), mounted rw into the container. Use a dedicated directory (see the Codex recipe under "Adding MCP Servers" below). Must be an absolute path or start with `~/` (a relative path aborts the launch). Any spelling that resolves to the real host `~/.codex` (including symlinks) aborts the launch |
 
 `TZ` is auto-detected from the host's `/etc/timezone` (or `/etc/localtime` symlink). An explicit value in `.claude-container.d/env` takes precedence.
 

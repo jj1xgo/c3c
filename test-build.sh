@@ -671,7 +671,7 @@ run_base_image_launcher_tests() {
   printf '%s\n' "$out" >> "$LOG_FILE"
   run_launcher_check
   check "G3: 有効行 20 万行を --check は先頭行で報告する（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qF '[INFO] base image: debian:stable' && ! printf '%s' \"\$0\" | grep -q '既定値'" "$out"
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qF '[INFO] ベースイメージ: debian:stable' && ! printf '%s' \"\$0\" | grep -q '既定値'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # G4: 読めないファイル → 通常起動は ERROR で compose に進まず、--check は FAIL

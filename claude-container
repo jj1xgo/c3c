@@ -599,7 +599,7 @@ guard_base_image() {
 
   resolve_asset_source base-image.txt
   if [[ "$ASSET_ORIGIN" == "missing" ]]; then
-    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt なし、既定値）"
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE（base-image.txt なし、既定値）"
     return 0
   fi
 
@@ -615,7 +615,7 @@ guard_base_image() {
     guard_fail "ERROR: $PROJECT_CONF_DIR/base-image.txt を読めません（grep rc=$grep_rc）。起動を中止します。" || return 1
   fi
   if [[ -z "$value" ]]; then
-    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt は空、既定値）"
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE（base-image.txt は空、既定値）"
     return 0
   fi
 
@@ -626,7 +626,7 @@ guard_base_image() {
   fi
 
   BASE_IMAGE="$value"
-  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE"
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE"
   return 0
 }
 

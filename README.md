@@ -410,9 +410,20 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 
+## 表記
+
+この repo の文書・スクリプトのメッセージとコメント・tag メッセージ・Release 本文・Issue と PR は**日本語のみ**で書く。v8.2.1 までは README と tag が日英併記だったが、v8.2.1 を最後に英語版を廃止した（既存の tag と Release は書き換えない）。例外として英語のまま残すのは、`ERROR:` / `WARNING:` / `INFO:` / `[OK]` / `[WARN]` / `[FAIL]` の接頭辞（テストと `--check` の集計が照合する機械可読トークン）、`[y/N]`、環境変数名・関数名・コマンド名・URL、`LICENSE` の法文、git や gh が出す文字列と照合する部分。日本語の文中の技術用語（base image、stdio、hash、fail-closed 等）は英語のまま書いてよく、「行にひらがなかカタカナが含まれる」ことを日本語化済みの判定に使う。
+
 ## バージョニング
 
-[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）で管理し、タグごとに `gh release create <tag> --notes-from-tag` でタグメッセージをそのまま流用した GitHub Release を作成する（CHANGELOG ファイルは作らない）。番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
+[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）で管理し、タグごとに、タグメッセージを本文にした GitHub Release を作成する（CHANGELOG ファイルは作らない）。`--notes-from-tag` は `-R` と併用できない（gh 2.100.0 で実測）ので、本文はファイル経由で渡す:
+
+```bash
+git tag -l --format='%(contents)' vX.Y.Z > /tmp/notes.txt
+gh release create vX.Y.Z -R jj1xgo/claude-container --verify-tag --title vX.Y.Z --notes-file /tmp/notes.txt
+```
+
+番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
 
 - **MAJOR** — 後方互換性が壊れる変更（デフォルト挙動の変更、設定形式の削除・非互換化など、利用者が対応しないと従来どおり動かないもの）
 - **MINOR** — 後方互換な機能追加（既存の使い方はそのまま動く）

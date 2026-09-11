@@ -495,7 +495,89 @@ run_launcher_tests() {
   run_config_ro_launcher_tests
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
+  run_allowed_ports_tests
   log ""
+}
+
+# init-firewall.sh の resolve_allowed_ports() の検証（claude-container#31、#49）。
+# 関数を sed で抜き出し、本番と同じ `bash -euo pipefail` の独立プロセスで
+# ALLOWED_PORTS_FILE をフィクスチャに向けて素呼びし、rc・ALLOWED_PORTS（stdout）・
+# ERROR 文（stderr）を親で捕捉する。iptables には触れない。
+#
+# ベクタ表フォーマット: class|input|expected
+#   accept: rc0、ALLOWED_PORTS が expected と完全一致
+#   reject: rc1、stderr が expected（部分文字列）を含む
+#   input は printf '%b' で展開するエスケープ表記（末尾 \n の有無が意味を持つ）。
+ALLOWED_PORTS_VECTORS=(
+  # 末尾改行なしでも最終行を読む（#49-1）
+  'accept|443\n8080|443,8080'
+  'accept|443|443'
+  # 443 必須・80 禁止（#49-2）。範囲は端点を含めて判定する
+  'reject|8080\n|must include 443'
+  'reject|443\n80\n|must not allow port 80'
+  'reject|443\n79:81\n|must not allow port 80'
+  'reject|443\n79:80\n|must not allow port 80'
+  'reject|443\n80:81\n|must not allow port 80'
+  'accept|442:444\n|442:444'
+  'accept|443:443\n|443:443'
+  # 先頭ゼロは十進として扱う（bash 算術の八進解釈を避ける）
+  'accept|00443\n|00443'
+  'reject|443\n080\n|must not allow port 80'
+  # 既存挙動の固定
+  'accept|443\n22\n8000:8010\n|443,22,8000:8010'
+  'accept||443,22'
+  'accept|# comment only\n\n|443,22'
+  'reject|abc\n|invalid entry'
+)
+
+run_allowed_ports_tests() {
+  local t harness fixture entry class input expected actual_rc actual_out actual_err
+  t=$(mktemp -d) || { log "  [FAIL] allowed-ports: mktemp -d failed"; FAIL=$((FAIL + 1)); return; }
+  harness="$t/harness.sh"; fixture="$t/allowed-ports.txt"
+  {
+    cat <<'HARNESS_HEAD'
+#!/bin/bash
+set -euo pipefail
+ALLOWED_PORTS_FILE="$1"
+HARNESS_HEAD
+    sed -n '/^resolve_allowed_ports()/,/^}/p' "${SCRIPT_DIR}/init-firewall.sh"
+    cat <<'HARNESS_TAIL'
+resolve_allowed_ports
+printf '%s\n' "$ALLOWED_PORTS"
+HARNESS_TAIL
+  } > "$harness"
+  if ! grep -q '^resolve_allowed_ports()' "$harness"; then
+    log "  [FAIL] allowed-ports: init-firewall.sh から resolve_allowed_ports() を抜き出せません"
+    FAIL=$((FAIL + 1)); rm -rf "$t"; return
+  fi
+
+  for entry in "${ALLOWED_PORTS_VECTORS[@]}"; do
+    IFS='|' read -r class input expected <<< "$entry"
+    printf '%b' "$input" > "$fixture"
+    actual_rc=0
+    actual_out=$(bash "$harness" "$fixture" 2>"$t/err") || actual_rc=$?
+    actual_err=$(cat "$t/err")
+    case "$class" in
+      accept)
+        if [ "$actual_rc" -eq 0 ] && [ "$actual_out" = "$expected" ]; then
+          PASS=$((PASS + 1))
+        else
+          FAIL=$((FAIL + 1))
+          log "  [FAIL] allowed-ports accept input=[$input] rc=$actual_rc out=[$actual_out] err=[$actual_err]"
+        fi
+        ;;
+      reject)
+        if [ "$actual_rc" -eq 1 ] && [[ "$actual_err" == *"$expected"* ]]; then
+          PASS=$((PASS + 1))
+        else
+          FAIL=$((FAIL + 1))
+          log "  [FAIL] allowed-ports reject input=[$input] rc=$actual_rc out=[$actual_out] err=[$actual_err]"
+        fi
+        ;;
+    esac
+  done
+  log "  allowed-ports.txt ベクタ表 ${#ALLOWED_PORTS_VECTORS[@]} 件を実行"
+  rm -rf "$t"
 }
 
 # guard_codex_dir() の検証（claude-container#36、#48）。実ホストの ~/.codex を指す

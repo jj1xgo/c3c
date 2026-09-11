@@ -513,21 +513,21 @@ ALLOWED_PORTS_VECTORS=(
   'accept|443\n8080|443,8080'
   'accept|443|443'
   # 443 必須・80 禁止（#49-2）。範囲は端点を含めて判定する
-  'reject|8080\n|must include 443'
-  'reject|443\n80\n|must not allow port 80'
-  'reject|443\n79:81\n|must not allow port 80'
-  'reject|443\n79:80\n|must not allow port 80'
-  'reject|443\n80:81\n|must not allow port 80'
+  'reject|8080\n|443 を含める必要があります'
+  'reject|443\n80\n|80 番を許可できません'
+  'reject|443\n79:81\n|80 番を許可できません'
+  'reject|443\n79:80\n|80 番を許可できません'
+  'reject|443\n80:81\n|80 番を許可できません'
   'accept|442:444\n|442:444'
   'accept|443:443\n|443:443'
   # 先頭ゼロは十進として扱う（bash 算術の八進解釈を避ける）
   'accept|00443\n|00443'
-  'reject|443\n080\n|must not allow port 80'
+  'reject|443\n080\n|80 番を許可できません'
   # 既存挙動の固定
   'accept|443\n22\n8000:8010\n|443,22,8000:8010'
   'accept||443,22'
   'accept|# comment only\n\n|443,22'
-  'reject|abc\n|invalid entry'
+  'reject|abc\n|不正なエントリ'
 )
 
 run_allowed_ports_tests() {

@@ -1,36 +1,36 @@
 #!/bin/bash
-# Deny-by-default egress allowlist. Ported from the official Anthropic devcontainer
-# (anthropics/claude-code .devcontainer/init-firewall.sh) with these deviations:
-#   - No ipset: rootless podman cannot autoload the host's ip_set kernel module,
-#     so plain per-CIDR iptables rules in a dedicated chain are used instead.
-#   - DNS egress is limited to the resolvers in /etc/resolv.conf, not port 53 at large.
-#   - IPv6 egress is dropped entirely: the allowlist resolves A records only, and
-#     upstream's IPv4-only rules would otherwise leave IPv6 (pasta) as a bypass.
-#   - Extra allowed domains come from /etc/claude-container/allowed-domains.txt,
-#     baked into the image at build time (root-owned, not writable by node).
-#   - Domain-backed CIDR rules carry a generation tag (see add_cidr_tagged below)
-#     so `--refresh-domains` mode can keep up with short-TTL CDN IP rotation
-#     without a full rule flush (observed 2026-07: cyberjapandata.gsi.go.jp
-#     behind CloudFront rotates its entire A-record set every 13-60s, and a
-#     one-shot startup resolution goes stale well within a long session).
-# Runs as root via sudo from entrypoint.sh. Must stay fail-closed on the initial
-# run: any error aborts container startup (opt out with CLAUDE_CONTAINER_NO_FIREWALL=1).
-# `--refresh-domains` mode (see bottom) is a lightweight, fail-open exception to
-# that rule — it's a periodic background touch-up, not the startup safety gate.
+# デフォルト拒否のエグレス許可リスト。公式 Anthropic devcontainer
+# （anthropics/claude-code の .devcontainer/init-firewall.sh）からの移植で、差分は以下:
+#   - ipset は使わない: rootless podman はホストの ip_set カーネルモジュールを
+#     自動ロードできないため、代わりに専用チェーンでの CIDR ごとの素の iptables ルールを使う。
+#   - DNS のエグレスは /etc/resolv.conf のリゾルバに限定し、53番ポート全般ではない。
+#   - IPv6 のエグレスは全面遮断する: 許可リストは A レコードのみを解決するため、
+#     upstream の IPv4 限定ルールをそのまま使うと IPv6（pasta）が迂回経路として残ってしまう。
+#   - 追加の許可ドメインは /etc/claude-container/allowed-domains.txt から読み、
+#     ビルド時にイメージへ焼き込む（root 所有で node からは書き込めない）。
+#   - ドメイン由来の CIDR ルールには世代タグを付ける（下の add_cidr_tagged を参照）。
+#     これにより `--refresh-domains` モードが、短い TTL で IP が入れ替わる CDN に
+#     ルール全消去なしで追随できる（2026-07 に観測: CloudFront 経由の
+#     cyberjapandata.gsi.go.jp は A レコード一式が 13〜60 秒ごとに丸ごと入れ替わり、
+#     起動時 1 回だけの解決では長いセッション中に確実に古くなる）。
+# entrypoint.sh から sudo 経由で root として実行する。初回実行では fail-closed を
+# 保つ必要がある: エラーが起きればコンテナ起動を中止する（CLAUDE_CONTAINER_NO_FIREWALL=1 で無効化可）。
+# `--refresh-domains` モード（末尾を参照）はこの原則の軽量な fail-open 例外である
+# — 定期的なバックグラウンドの手直しであり、起動時の安全ゲートではない。
 set -euo pipefail
 IFS=$'\n\t'
 
 ALLOWED_DOMAINS_FILE=/etc/claude-container/allowed-domains.txt
 ALLOWED_PORTS_FILE=/etc/claude-container/allowed-ports.txt
 CHAIN=CLAUDE_EGRESS
-# Shortest observed CDN TTL was 13s; refresh slightly slower than that so a
-# missed tick is caught by the next one rather than by chasing every wobble.
-# The sleep itself lives in entrypoint.sh's refresh loop — keep the two in sync;
-# here the constant sizes the grace window below.
+# 観測された最短の CDN TTL は 13 秒。それよりやや遅く更新することで、1 回の取りこぼしを
+# 毎回の揺らぎを追いかけるのではなく次のサイクルで拾えるようにする。
+# sleep 自体は entrypoint.sh の更新ループ側にある — 両者を同期させておくこと。
+# ここでの定数は、下の猶予期間のサイズを決めるためのもの。
 REFRESH_INTERVAL_SECONDS=15
-# 12 refresh cycles' worth of grace: absorbs a CDN answering with only a
-# subset of its live edge IPs on any single query, and transient resolver
-# hiccups, before a domain's now-unused IP is finally pruned.
+# 更新サイクル 12 回分の猶予: CDN が 1 回のクエリで稼働中エッジ IP の一部しか
+# 返さなかった場合や、一時的なリゾルバの不調を吸収してから、
+# 使われなくなったドメインの IP をようやく削除する。
 GRACE_WINDOW_SECONDS=$((REFRESH_INTERVAL_SECONDS * 12))
 
 MODE=init
@@ -38,29 +38,29 @@ if [ -n "${1:-}" ]; then
   if [ "$1" = "--refresh-domains" ]; then
     MODE=refresh
   else
-    echo "ERROR: unknown argument: $1 (expected --refresh-domains or no argument)" >&2
+    echo "ERROR: 未知の引数です: $1（--refresh-domains か引数なしを想定）" >&2
     exit 1
   fi
 fi
 
-# Ports that CHAIN-routed ACCEPT rules (add_cidr/add_cidr_tagged below) permit
-# on an otherwise-allowed IP (claude-container#31). Read once here so both
-# `init` and `--refresh-domains` modes see the same value. Does NOT apply to
-# the DNS resolver rules or the host-network rule in full_init() — those bypass
-# CHAIN entirely and stay unrestricted (see the comment where CHAIN is created).
+# CHAIN 経由の ACCEPT ルール（下の add_cidr/add_cidr_tagged）が、それ以外は許可された
+# IP に対して許可するポート（claude-container#31）。init モードと --refresh-domains モードの
+# 両方が同じ値を見るよう、ここで一度だけ読む。DNS リゾルバのルールや full_init() の
+# ホストネットワークのルールには適用されない — それらは CHAIN を完全にバイパスし、
+# 制限なしのままとなる（CHAIN 作成箇所のコメントを参照）。
 resolve_allowed_ports() {
   local -a ports=()
   local raw
   if [ -f "$ALLOWED_PORTS_FILE" ]; then
-    # `|| [ -n "$raw" ]` keeps a final line that has no trailing newline
-    # (read returns non-zero on it but still fills the variable; without
-    # this the last entry was silently dropped — claude-container#49).
+    # `|| [ -n "$raw" ]` により、末尾に改行のない最終行も読む
+    # （read はその行で非 0 を返すが変数は埋まっている。これがないと
+    # 最終エントリが黙って落ちていた — claude-container#49）。
     while IFS= read -r raw || [ -n "$raw" ]; do
       raw="${raw%%#*}"
       raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
       [ -n "$raw" ] || continue
       if [[ ! "$raw" =~ ^[0-9]{1,5}(:[0-9]{1,5})?$ ]]; then
-        echo "ERROR: invalid entry in $ALLOWED_PORTS_FILE: '$raw' (expected a port or port:port range, e.g. 443 or 8000:8010)" >&2
+        echo "ERROR: $ALLOWED_PORTS_FILE に不正なエントリがあります: '$raw'（ポート番号か port:port の範囲を想定。例: 443、8000:8010）" >&2
         exit 1
       fi
       ports+=("$raw")
@@ -70,16 +70,16 @@ resolve_allowed_ports() {
     ports=(443 22)
   fi
   if [ "${#ports[@]}" -gt 15 ]; then
-    echo "ERROR: $ALLOWED_PORTS_FILE lists ${#ports[@]} ports/ranges; iptables' multiport match supports at most 15" >&2
+    echo "ERROR: $ALLOWED_PORTS_FILE のポート/範囲が ${#ports[@]} 個あります。iptables の multiport マッチは最大 15 個です" >&2
     exit 1
   fi
-  # The startup self-check in full_init() assumes 443 is reachable and 80 is
-  # blocked on api.github.com. A list that violates either assumption used to
-  # fail there with a message that read like a network problem ("unable to
-  # reach ...:443") or a broken rule ("port restriction not enforced"), so
-  # validate the list here with the real reason (claude-container#49).
-  # Ranges are inclusive; 10# forces decimal so leading zeros (e.g. 080) are
-  # not read as octal.
+  # full_init() の起動時自己検証は、api.github.com への 443 番が到達可能で
+  # 80 番が遮断されていることを前提にしている。どちらかに反する設定は、以前は
+  # そこで「ネットワークの問題」に見えるメッセージ（"unable to reach ...:443"）や
+  # 「ルールが壊れている」ように見えるメッセージ（"port restriction not enforced"）で
+  # 失敗していたため、ここで本当の理由とともに検証する（claude-container#49）。
+  # 範囲は両端を含む。10# は 10 進として強制するもので、先頭ゼロ（例: 080）を
+  # 8 進として読まないようにする。
   local entry lo hi has_443=0 has_80=0
   for entry in "${ports[@]}"; do
     lo="${entry%%:*}"; hi="${entry##*:}"
@@ -87,11 +87,11 @@ resolve_allowed_ports() {
     if (( 10#$lo <= 80 && 80 <= 10#$hi )); then has_80=1; fi
   done
   if [ "$has_443" -eq 0 ]; then
-    echo "ERROR: $ALLOWED_PORTS_FILE must include 443 (api.anthropic.com, api.github.com and the startup self-check need it)" >&2
+    echo "ERROR: $ALLOWED_PORTS_FILE には 443 を含める必要があります（api.anthropic.com・api.github.com への到達と起動時の自己検証に必要）" >&2
     exit 1
   fi
   if [ "$has_80" -eq 1 ]; then
-    echo "ERROR: $ALLOWED_PORTS_FILE must not allow port 80 (the startup self-check uses api.github.com:80 as the blocked-port probe)" >&2
+    echo "ERROR: $ALLOWED_PORTS_FILE では 80 番を許可できません（起動時の自己検証が api.github.com:80 を遮断確認のプローブに使う）" >&2
     exit 1
   fi
   local IFS=,
@@ -99,47 +99,46 @@ resolve_allowed_ports() {
 }
 resolve_allowed_ports
 
-# Plain per-CIDR ACCEPT, no generation tag. Used for ranges that don't rotate
-# on a short TTL (GitHub's build-time snapshot) and so never need pruning.
+# 世代タグなしの、素の CIDR ごとの ACCEPT。短い TTL で入れ替わらない範囲
+# （GitHub のビルド時スナップショット）に使い、削除の必要がない。
 add_cidr() {
   local cidr="$1" origin="$2"
   if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
-    echo "Skipping non-IPv4 range from $origin: $cidr"
+    echo "$origin の IPv4 以外の範囲をスキップします: $cidr"
     return 0
   fi
   iptables -A "$CHAIN" -d "$cidr" -p tcp -m multiport --dports "$ALLOWED_PORTS" -j ACCEPT
 }
 
-# Same as add_cidr, but tags the rule with domain+generation so
-# prune_stale_domain_rules() can find and expire it later. Used only for the
-# per-domain dynamic resolution loop below, never for GitHub CIDRs or the
-# host-network rule (neither of those rotates on a short TTL).
+# add_cidr と同じだが、ルールにドメインと世代のタグを付け、
+# prune_stale_domain_rules() が後で見つけて期限切れにできるようにする。下の
+# ドメインごとの動的解決ループでのみ使い、GitHub の CIDR やホストネットワークの
+# ルール（どちらも短い TTL では入れ替わらない）には使わない。
 add_cidr_tagged() {
   local cidr="$1" domain="$2" generation="$3"
   if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
-    echo "Skipping non-IPv4 range from $domain: $cidr"
+    echo "$domain の IPv4 以外の範囲をスキップします: $cidr"
     return 0
   fi
   if [[ ! "$domain" =~ ^[A-Za-z0-9.-]+$ ]]; then
-    echo "ERROR: refusing to tag rule with unsafe domain string: $domain" >&2
+    echo "ERROR: 安全でないドメイン文字列のため、ルールにタグを付けられません: $domain" >&2
     return 1
   fi
   iptables -A "$CHAIN" -d "$cidr" -p tcp -m multiport --dports "$ALLOWED_PORTS" -m comment --comment "domain=${domain};gen=${generation}" -j ACCEPT
 }
 
-# Adds a fresh tagged rule for (domain, ip); if a rule for that exact pair
-# already exists, drops the old one so only the generation tag effectively
-# "moves forward" instead of accumulating a duplicate on every refresh tick.
-# New rule is added *before* the old one is deleted, so the IP stays allowed
-# throughout — no flush, no gap.
-# NOTE: assumes `iptables -S` renders a bare host as "-d IP/32" and that,
-# after stripping the leading "-N CHAIN" line, grep's 1-indexed match line
-# number equals the rule's position for `iptables -D CHAIN <N>`. Confirmed
-# empirically (iptables 1.8.11/nf_tables) that -S always emits core fields
-# (-A CHAIN -d IP/32 -p ...) before match-extension flags (-m multiport,
-# -m comment) regardless of the order they were passed on the add_cidr* call,
-# so the "-d ${ip}/32 " grep below keeps matching after the port restriction
-# (claude-container#31) was added to add_cidr_tagged.
+# (domain, ip) の組に対して新しいタグ付きルールを追加する。その組にちょうど
+# 一致するルールが既にあれば古い方を削除し、世代タグだけが実質的に「前進」し、
+# 更新のたびに重複が積み重ならないようにする。新ルールは古いルールを削除する
+# *前*に追加するので、その間 IP は許可されたままになる — フラッシュもギャップもない。
+# 注記: `iptables -S` が素のホストを "-d IP/32" として描画すること、先頭の
+# "-N CHAIN" 行を除いた後の grep の 1 始まりの一致行番号が、
+# `iptables -D CHAIN <N>` に渡すルールの位置と一致することを前提にしている。
+# 実測で確認済み（iptables 1.8.11/nf_tables）: -S は add_cidr* の呼び出しで
+# 渡した順序に関わらず、常にコアフィールド（-A CHAIN -d IP/32 -p ...）を
+# マッチ拡張フラグ（-m multiport、-m comment）より先に出力するため、下の
+# "-d ${ip}/32 " での grep は、add_cidr_tagged にポート制限（claude-container#31）を
+# 追加した後も一致し続ける。
 add_or_touch_domain_ip() {
   local ip="$1" domain="$2" generation="$3"
   local existing_idx
@@ -152,7 +151,7 @@ add_or_touch_domain_ip() {
   fi
 }
 
-# Claude Code endpoints + project-specific domains, one per line.
+# Claude Code のエンドポイントとプロジェクト固有のドメイン、1 行に 1 つ。
 build_domain_list() {
   local -a base_domains=(
     api.anthropic.com
@@ -168,46 +167,45 @@ build_domain_list() {
   fi
 }
 
-# Resolves every allowed domain and applies add_or_touch_domain_ip for each
-# returned IP. A single domain failing to resolve does not abort the others
-# (fail-open at this layer) — callers decide what a nonzero return means:
-# full_init treats it as fatal (fail-closed startup gate), do_refresh logs
-# and retries next cycle (fail-open background touch-up).
+# 許可された全ドメインを解決し、返ってきた IP それぞれに add_or_touch_domain_ip を
+# 適用する。1 つのドメインの解決失敗は他を中断させない（この層では fail-open）
+# — 戻り値が非 0 であることの意味は呼び出し側が決める: full_init はそれを
+# 致命的として扱い（fail-closed の起動ゲート）、do_refresh はログに残して次の
+# サイクルで再試行する（fail-open のバックグラウンドの手直し）。
 #
-# NXDOMAIN (the domain no longer exists at all, e.g. statsig.anthropic.com as
-# of 2026-07) is treated as a warning, not a failure, and distinct from a
-# transient failure (timeout/SERVFAIL/resolver unreachable, which still counts
-# as an error below): no ACCEPT rule is added for it either way, so the
-# security boundary is unchanged, but treating it as fatal here would
-# permanently wedge the fail-closed startup gate with no recovery short of
-# editing this script.
+# NXDOMAIN（ドメイン自体がもう存在しない。例: statsig.anthropic.com は
+# 2026-07 時点でそう）は警告として扱い、失敗としない。一時的な失敗
+# （タイムアウト・SERVFAIL・リゾルバ到達不能。これらは下で引き続きエラーとして
+# 数える）とは区別する: どちらの場合も ACCEPT ルールは追加されないので
+# セキュリティ境界は変わらないが、ここで致命的として扱うと、このスクリプトを
+# 編集する以外に回復手段のないまま fail-closed の起動ゲートが永久に詰まってしまう。
 refresh_domains() {
   local generation="$1" had_errors=0 domain ips ip dig_output
   local -a domains
   mapfile -t domains < <(build_domain_list)
   for domain in "${domains[@]}"; do
-    echo "Resolving $domain..."
-    # +comments (on top of +answer) surfaces the header's "status:" line
-    # (NOERROR/NXDOMAIN/SERVFAIL/...) in the same single dig call, so NXDOMAIN
-    # can be told apart from a transient failure below without a second
-    # round-trip. `|| true`: dig itself can exit non-zero on transient
-    # failures (e.g. no server reachable) before we ever look at the answer;
-    # under `set -o pipefail` that would otherwise trip `set -e` and abort
-    # this whole script here, before the had_errors handling below runs.
+    echo "$domain を解決しています..."
+    # +comments（+answer に加えて）によりヘッダの "status:" 行
+    # （NOERROR/NXDOMAIN/SERVFAIL/…）が同じ 1 回の dig 呼び出しで見えるため、
+    # 2 回目の往復なしで下の一時的な失敗と NXDOMAIN を区別できる。`|| true`:
+    # dig 自体は、応答を見る前の一時的な失敗（例: サーバーに到達できない）で
+    # 非 0 終了することがある。`set -o pipefail` の下ではそれが `set -e` を
+    # 発動させ、下の had_errors の処理が走る前にこのスクリプト全体を
+    # 中断させてしまう。
     dig_output=$(dig +noall +answer +comments +time=2 +tries=2 A "$domain" || true)
     ips=$(printf '%s\n' "$dig_output" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
       if [[ "$dig_output" =~ status:\ NXDOMAIN ]]; then
-        echo "WARNING: $domain does not exist (NXDOMAIN) - skipping without failing startup (no ACCEPT rule is added either way)" >&2
+        echo "WARNING: $domain は存在しません（NXDOMAIN）。起動は失敗させずにスキップします（いずれにせよ ACCEPT ルールは追加しません）" >&2
       else
-        echo "WARNING: failed to resolve $domain this cycle (will retry next interval)" >&2
+        echo "WARNING: $domain をこのサイクルで解決できませんでした（次の間隔で再試行します）" >&2
         had_errors=1
       fi
       continue
     fi
     while read -r ip; do
       if ! add_or_touch_domain_ip "$ip" "$domain" "$generation"; then
-        echo "WARNING: failed to apply rule for $domain -> $ip" >&2
+        echo "WARNING: $domain -> $ip のルール適用に失敗しました" >&2
         had_errors=1
       fi
     done <<<"$ips"
@@ -215,10 +213,10 @@ refresh_domains() {
   return "$had_errors"
 }
 
-# Deletes domain-tagged rules whose generation is older than cutoff_epoch.
-# GitHub CIDR rules and the host-network rule carry no "domain=" comment and
-# are never matched here. Deletes in descending line-number order since
-# `iptables -D CHAIN N` renumbers everything after N once it's removed.
+# 世代が cutoff_epoch より古いドメインタグ付きルールを削除する。GitHub の
+# CIDR ルールとホストネットワークのルールには "domain=" コメントがなく、
+# ここで一致することはない。行番号の降順で削除する。`iptables -D CHAIN N` は
+# N を削除するとそれ以降の全行の番号が詰まるため。
 prune_stale_domain_rules() {
   local cutoff="$1"
   local -a stale_line_numbers=()
@@ -235,23 +233,25 @@ prune_stale_domain_rules() {
   local n
   for (( n=${#stale_line_numbers[@]}-1; n>=0; n-- )); do
     iptables -D "$CHAIN" "${stale_line_numbers[n]}" 2>/dev/null || \
-      echo "WARNING: failed to prune stale rule at $CHAIN line ${stale_line_numbers[n]}" >&2
+      echo "WARNING: $CHAIN の ${stale_line_numbers[n]} 行目の古いルールを削除できませんでした" >&2
   done
 }
 
-# Full startup initialization: flush, rebuild every rule from scratch,
-# self-verify. Fail-closed — any error here aborts container startup.
+# 起動時の完全な初期化: フラッシュし、全ルールをゼロから再構築し、自己検証する。
+# fail-closed — ここでのエラーはコンテナ起動を中止する。
 full_init() {
-  # Flush existing rules. NOTE: -F only clears rules, not the -P default policy —
-  # if this script already ran once (policy is DROP from a prior run), traffic is
-  # blocked immediately after this flush until rules are rebuilt below. So the
-  # loopback/established/DNS-resolver ACCEPT rules are installed first, before
-  # anything below that needs the network (GitHub meta read is local, but the
-  # domain-resolution loop does live DNS lookups). This keeps re-running this
-  # script mid-session safe: worst case during rebuild is DROP-with-DNS-only,
-  # never a full lockout. CDN IP rotation is now handled by the much lighter
-  # `--refresh-domains` mode (see bottom of file); a full re-run like this one
-  # remains available as a heavier manual fallback (e.g. troubleshooting).
+  # 既存ルールをフラッシュする。注記: -F はルールのみを消し、-P のデフォルト
+  # ポリシーは変えない — このスクリプトが既に一度実行済みなら（前回の実行で
+  # ポリシーが DROP のまま）、このフラッシュ直後から下でルールが再構築されるまで
+  # トラフィックが即座に遮断される。そのため、ネットワークを必要とする以降の処理
+  # （GitHub meta の読み込みはローカルだが、ドメイン解決ループは実際に DNS を
+  # 引く）より前に、loopback／確立済み接続／DNS リゾルバの ACCEPT ルールを
+  # 先にインストールする。これにより、セッション途中でこのスクリプトを再実行しても
+  # 安全になる: 再構築中の最悪ケースは DNS のみ可能な DROP 状態であり、
+  # 完全なロックアウトにはならない。CDN の IP ローテーションは今では
+  # はるかに軽い `--refresh-domains` モード（ファイル末尾を参照）が扱う。
+  # このような完全な再実行は、より重いが手動のフォールバック
+  # （例: トラブルシューティング）として引き続き使える。
   iptables -F
   iptables -X
   iptables -t nat -F
@@ -259,24 +259,24 @@ full_init() {
   iptables -t mangle -F
   iptables -t mangle -X
 
-  # Allowlist chain: one ACCEPT per allowed CIDR/IP, restricted to $ALLOWED_PORTS
-  # (add_cidr/add_cidr_tagged, claude-container#31). This restriction covers
-  # GitHub CIDRs and the tagged per-domain rules ONLY. The DNS resolver rules
-  # below and the host-network rule further down bypass CHAIN entirely (they're
-  # appended straight to INPUT/OUTPUT) and stay port-unrestricted.
+  # 許可リストチェーン: 許可された CIDR/IP ごとに 1 つの ACCEPT を、
+  # $ALLOWED_PORTS に制限して置く（add_cidr/add_cidr_tagged、claude-container#31）。
+  # この制限がかかるのは GitHub の CIDR とタグ付きのドメインごとのルール「のみ」。
+  # 下の DNS リゾルバのルールと、さらに下のホストネットワークのルールは CHAIN を
+  # 完全にバイパスし（INPUT/OUTPUT へ直接追加される）、ポート制限を受けない。
   iptables -N "$CHAIN"
 
-  # Loopback and established connections
+  # loopback と確立済み接続
   iptables -A INPUT -i lo -j ACCEPT
   iptables -A OUTPUT -o lo -j ACCEPT
   iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
   iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-  # DNS: only to the configured resolvers (udp + tcp for large answers).
-  # Installed before the domain-resolution loop below, which needs it.
+  # DNS: 設定済みのリゾルバへのみ（大きな応答用に udp と tcp の両方）。
+  # 下のドメイン解決ループがこれを必要とするため、その前にインストールする。
   mapfile -t resolvers < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf | grep -E '^[0-9.]+$' || true)
   if [ "${#resolvers[@]}" -eq 0 ]; then
-    echo "WARNING: no IPv4 resolver in /etc/resolv.conf, allowing DNS to any host" >&2
+    echo "WARNING: /etc/resolv.conf に IPv4 リゾルバがないため、DNS を任意のホストへ許可します" >&2
     iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
     iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
   else
@@ -286,66 +286,69 @@ full_init() {
     done
   fi
 
-  # GitHub IP ranges (git/gh over HTTPS and SSH). No live fetch here — that would
-  # consume the unauthenticated GitHub API rate limit (60 req/h per IP) on every
-  # container start. Instead this reads the snapshot claude-container's
-  # stage_build_context() fetched once and baked into the image at build time —
-  # the ranges change rarely enough for a stale copy to stay usable.
+  # GitHub の IP 範囲（HTTPS・SSH 経由の git/gh 用）。ここでは動的な取得をしない
+  # — それをすると、コンテナ起動のたびに未認証の GitHub API のレート制限
+  # （IP あたり 60 req/h）を消費してしまう。代わりに、claude-container の
+  # stage_build_context() が一度取得しビルド時にイメージへ焼き込んだ
+  # スナップショットを読む — この範囲はめったに変わらないため、古いコピーでも
+  # 使い続けられる。
   local gh_meta_snapshot=/etc/claude-container/github-meta.json
-  echo "Loading GitHub IP ranges from build-time snapshot..."
+  echo "ビルド時スナップショットから GitHub の IP 範囲を読み込んでいます..."
   local gh_ranges
   gh_ranges=$(cat "$gh_meta_snapshot" 2>/dev/null || true)
   if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
-    echo "ERROR: GitHub meta snapshot at $gh_meta_snapshot is missing or invalid" >&2
+    echo "ERROR: GitHub meta のスナップショット $gh_meta_snapshot がないか不正です" >&2
     exit 1
   fi
   while read -r cidr; do
     add_cidr "$cidr" "GitHub meta"
   done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | sort -u)
 
-  # Claude Code endpoints + project-specific domains, tagged with a generation
-  # timestamp so the background --refresh-domains loop can find and expire
-  # stale entries as CDN-backed domains rotate IPs.
+  # Claude Code のエンドポイントとプロジェクト固有のドメインに、世代タイムスタンプの
+  # タグを付ける。これにより、バックグラウンドの --refresh-domains ループが、
+  # CDN 由来のドメインが IP をローテーションするにつれて古いエントリを見つけて
+  # 期限切れにできる。
   if ! refresh_domains "$(date +%s)"; then
-    echo "ERROR: one or more domains failed to resolve during initial firewall setup" >&2
+    echo "ERROR: 初期ファイアウォール設定中に解決できなかったドメインがあります" >&2
     exit 1
   fi
 
-  # Host network (gateway only), for host-side services. Scoped to the single
-  # gateway IP, not its /24 (claude-container#31) — no port restriction
-  # (this bypasses CHAIN, see the note where CHAIN is created above).
+  # ホストネットワーク（ゲートウェイのみ）、ホスト側サービス用。単一のゲートウェイ
+  # IP に限定し、その /24 全体ではない（claude-container#31） — ポート制限なし
+  # （これは CHAIN をバイパスする。上の CHAIN 作成箇所の注記を参照）。
   local host_ip host_network
   host_ip=$(ip route | awk '/^default/ {print $3; exit}')
   if [ -z "$host_ip" ]; then
-    echo "ERROR: Failed to detect host IP" >&2
+    echo "ERROR: ホスト IP を検出できませんでした" >&2
     exit 1
   fi
   host_network="${host_ip}/32"
-  echo "Host network detected as: $host_network"
+  echo "ホストネットワークを検出しました: $host_network"
   iptables -A INPUT -s "$host_network" -j ACCEPT
   iptables -A OUTPUT -d "$host_network" -j ACCEPT
 
-  # Default deny + allowlist chain; REJECT tail for immediate feedback
+  # デフォルト拒否 + 許可リストチェーン。即座にフィードバックを返すための REJECT を末尾に
   iptables -P INPUT DROP
   iptables -P FORWARD DROP
   iptables -P OUTPUT DROP
   iptables -A OUTPUT -j "$CHAIN"
   iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
-  # IPv6 handling:
-  #   1) Primary control: compose.yml's sysctls (net.ipv6.conf.*.disable_ipv6=1) should
-  #      already have disabled IPv6 before this script runs, fixing a bug where glibc's
-  #      getaddrinfo(AI_ADDRCONFIG) misreports IPv6 as available from a link-local-only
-  #      address (no default route) and Happy Eyeballs then stalls on unreachable AAAA
-  #      candidates for allowlisted CDN domains (observed 2026-07 with
-  #      cyberjapandata.gsi.go.jp behind CloudFront).
-  #   2) Fallback (this block): retry the same disable via /proc/sys, in case the compose
-  #      sysctls setting didn't apply (e.g. older podman-compose without `sysctls:`
-  #      support). Non-fatal — this is a reliability fix, not the security gate, so it
-  #      deliberately breaks from this script's usual fail-closed rule.
-  #   3) Security boundary (unchanged below): drop all IPv6 via ip6tables regardless of
-  #      whether 1)/2) succeeded. The allowlist only resolves A records, so any
-  #      surviving IPv6 path would otherwise bypass it entirely.
+  # IPv6 の扱い:
+  #   1) 主経路: compose.yml の sysctls（net.ipv6.conf.*.disable_ipv6=1）が、この
+  #      スクリプトが動く前に既に IPv6 を無効化しているはず。これは、glibc の
+  #      getaddrinfo(AI_ADDRCONFIG) が（デフォルトルートのない）リンクローカルのみの
+  #      アドレスから IPv6 を「使える」と誤報告し、Happy Eyeballs が許可済み CDN
+  #      ドメインの到達不能な AAAA 候補で止まってしまう不具合（2026-07 に
+  #      CloudFront 経由の cyberjapandata.gsi.go.jp で観測）を修正する。
+  #   2) フォールバック（このブロック）: compose 側の sysctls 設定が効かなかった
+  #      場合（例: `sysctls:` 未対応の古い podman-compose）に備え、/proc/sys 経由で
+  #      同じ無効化を再試行する。非致命的 — これは信頼性のための手直しであり
+  #      セキュリティゲートではないため、このスクリプト通常の fail-closed の原則から
+  #      意図的に外れる。
+  #   3) セキュリティ境界（下は不変）: 1)/2) が成功したかどうかに関わらず、
+  #      ip6tables で全ての IPv6 を遮断する。許可リストは A レコードしか
+  #      解決しないため、生き残った IPv6 経路があればそれを完全に迂回されてしまう。
   disable_ipv6_fallback() {
     local path ok=1
     for path in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
@@ -355,16 +358,16 @@ full_init() {
     [ "$ok" -eq 1 ]
   }
   if disable_ipv6_fallback; then
-    echo "IPv6 disabled via /proc/sys (fallback check passed; compose.yml sysctls is primary)"
+    echo "/proc/sys 経由で IPv6 を無効化しました（フォールバック確認 OK。主経路は compose.yml の sysctls）"
   else
-    echo "WARNING: could not disable IPv6 via /proc/sys/net/ipv6/conf/*/disable_ipv6 (fallback)." >&2
-    echo "WARNING: if compose.yml sysctls also failed to apply, glibc may still prefer AAAA" >&2
-    echo "WARNING: records for allowlisted CDN domains, risking intermittent Happy-Eyeballs" >&2
-    echo "WARNING: failures. The ip6tables DROP below remains the active security boundary." >&2
+    echo "WARNING: /proc/sys/net/ipv6/conf/*/disable_ipv6 経由で IPv6 を無効化できませんでした（フォールバック）。" >&2
+    echo "WARNING: compose.yml の sysctls も効いていない場合、glibc が許可済み CDN ドメインの AAAA を" >&2
+    echo "WARNING: 優先し、Happy Eyeballs による断続的な失敗が起きる可能性があります。" >&2
+    echo "WARNING: 下の ip6tables DROP が引き続き有効なセキュリティ境界です。" >&2
   fi
 
-  # IPv6: drop everything except loopback (allowlist is IPv4-only; security boundary,
-  # independent of whether the disable_ipv6 sysctl above took effect)
+  # IPv6: loopback を除く全てを遮断する（許可リストは IPv4 のみのため。上の
+  # disable_ipv6 sysctl が効いたかどうかに関わらず有効なセキュリティ境界）
   if ip6tables -L >/dev/null 2>&1; then
     ip6tables -F
     ip6tables -X
@@ -374,54 +377,54 @@ full_init() {
     ip6tables -P FORWARD DROP
     ip6tables -P OUTPUT DROP
   else
-    echo "ip6tables unavailable, assuming no IPv6 connectivity"
+    echo "ip6tables が使えないため、IPv6 接続はないものとみなします"
   fi
 
-  echo "Firewall configuration complete"
-  echo "Verifying firewall rules..."
+  echo "ファイアウォールの設定が完了しました"
+  echo "ファイアウォールのルールを検証しています..."
   if curl --connect-timeout 5 -s https://example.com >/dev/null 2>&1; then
-    echo "ERROR: Firewall verification failed - was able to reach https://example.com" >&2
+    echo "ERROR: ファイアウォール検証に失敗しました。https://example.com へ到達できてしまいました" >&2
     exit 1
   fi
-  echo "Verification passed - unable to reach https://example.com as expected"
-  # TCP connect only (no HTTP request) so verification doesn't consume the
-  # unauthenticated GitHub API rate limit on every container start.
+  echo "検証 OK: 想定どおり https://example.com へ到達できません"
+  # TCP の接続確認のみ（HTTP リクエストはしない）。これにより、コンテナ起動の
+  # たびに未認証の GitHub API のレート制限を消費しない。
   if ! timeout 10 bash -c 'exec 3<>/dev/tcp/api.github.com/443' 2>/dev/null; then
-    echo "ERROR: Firewall verification failed - unable to reach api.github.com:443" >&2
+    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:443 へ到達できません" >&2
     exit 1
   fi
-  echo "Verification passed - able to reach api.github.com:443 as expected"
+  echo "検証 OK: 想定どおり api.github.com:443 へ到達できます"
   if ! curl --connect-timeout 10 -s -o /dev/null https://api.anthropic.com; then
-    echo "ERROR: Firewall verification failed - unable to reach https://api.anthropic.com" >&2
+    echo "ERROR: ファイアウォール検証に失敗しました。https://api.anthropic.com へ到達できません" >&2
     exit 1
   fi
-  echo "Verification passed - able to reach https://api.anthropic.com as expected"
-  # Confirm the port restriction (claude-container#31) actually blocks a
-  # non-allowed port on an otherwise-allowed IP. github.com genuinely listens
-  # on port 80 (HTTP -> HTTPS redirect), so a failure here can't be confused
-  # with "the remote wasn't listening" — it has to be our own rule rejecting
-  # it. This only exercises the CHAIN-scoped restriction (GitHub CIDRs /
-  # tagged domain rules); DNS(53) and the host-network rule bypass CHAIN
-  # entirely and are not covered by this check.
+  echo "検証 OK: 想定どおり https://api.anthropic.com へ到達できます"
+  # ポート制限（claude-container#31）が、それ以外は許可された IP の非許可
+  # ポートを実際に遮断していることを確認する。github.com は実際に 80 番でも
+  # 待ち受けている（HTTP → HTTPS リダイレクト）ので、ここでの失敗は「相手が
+  # 待ち受けていなかった」とは混同しようがなく、必ず自分のルールが拒否している
+  # ことになる。これは CHAIN で制限される範囲（GitHub の CIDR／タグ付き
+  # ドメインルール）のみを検証する。DNS（53番）とホストネットワークのルールは
+  # CHAIN をバイパスするため、この検査の対象外。
   if timeout 5 bash -c 'exec 3<>/dev/tcp/api.github.com/80' 2>/dev/null; then
-    echo "ERROR: Firewall verification failed - was able to reach api.github.com:80 (port restriction not enforced)" >&2
+    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:80 へ到達できてしまいました（ポート制限が効いていません）" >&2
     exit 1
   fi
-  echo "Verification passed - unable to reach api.github.com:80 as expected (port restriction enforced)"
+  echo "検証 OK: 想定どおり api.github.com:80 へ到達できません（ポート制限が有効）"
 }
 
-# Lightweight periodic touch-up: re-resolves every allowed domain, adds any
-# newly-seen IPs, refreshes the generation tag on IPs still in rotation, and
-# prunes IPs not seen for GRACE_WINDOW_SECONDS. No flush, no policy changes,
-# no self-verification — assumes full_init already ran successfully once
-# (entrypoint.sh only starts the background refresh loop after that). Runs
-# fail-open: a failed cycle logs a warning and lets the next tick retry,
-# rather than tearing down the container.
+# 軽量な定期的手直し: 許可された全ドメインを再解決し、新たに見えた IP を追加し、
+# まだローテーション中の IP の世代タグを更新し、GRACE_WINDOW_SECONDS の間
+# 見えなかった IP を削除する。フラッシュもポリシー変更も自己検証もしない
+# — full_init が既に一度成功して実行済みであることを前提にする
+# （entrypoint.sh はその後にだけバックグラウンドの更新ループを開始する）。
+# fail-open で動く: 失敗したサイクルは警告をログに残し、コンテナを畳むのではなく
+# 次のサイクルの再試行に任せる。
 do_refresh() {
   local gen
   gen="$(date +%s)"
-  echo "--- refresh cycle $(date -Is) ---"
-  refresh_domains "$gen" || echo "WARNING: one or more domains failed to refresh this cycle" >&2
+  echo "--- 更新サイクル $(date -Is) ---"
+  refresh_domains "$gen" || echo "WARNING: このサイクルで更新に失敗したドメインがあります" >&2
   prune_stale_domain_rules "$(( gen - GRACE_WINDOW_SECONDS ))"
 }
 

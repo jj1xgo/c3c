@@ -414,6 +414,8 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 `compose.yml` の `:ro` 重ねマウント、または `claude-container` の `prepare_claude_config_ro()` を編集した場合は、ビルド済みのテストイメージ `localhost/claude-test`（`./test-build.sh` の全実行で作られる）がある状態で `./test-build.sh --config-ro-only` を実行する。実物の `compose.yml` とイメージで 11 項目への書き込みが拒否されること、実物のランチャーが placeholder 作成・型検査・`--check` の無書き込み・compose への `CLAUDE_CONFIG_DIR` 受け渡しを正しく行うことを、それぞれ別のテストで確認する（両者を通した対話起動は手動で行う）。
 
+`claude-container` のガード関数（`guard_*`・`prepare_claude_config_ro()`）を編集した場合は `./test-build.sh --launcher-only` を実行する。podman をダミーに置き換えた隔離環境（一時 `HOME`・空の環境変数）で実物のランチャーを起動し、各ガードの通常起動と `--check` の挙動、compose へ渡る環境変数を検証する。実 podman が不要なので、コンテナ内の開発セッションや CI からも回せる。通常の `./test-build.sh` にも含まれる。
+
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 
 ### バージョニング
@@ -845,6 +847,8 @@ There is no test suite. After editing the script or Compose/Dockerfile, verify w
 `lint.sh` runs `bash -n` and `shellcheck` on every bash script in the repository (tracked and untracked files minus gitignored ones, detected by shebang, so the target list needs no maintenance when scripts are added or removed), plus `podman compose -f compose.yml config`. It fails with an explicit error if shellcheck is not installed (`sudo apt-get install shellcheck`). When podman is unavailable (e.g. developing inside the container), only the Compose validation is skipped with a warning.
 
 If you edit the `:ro` overlay mounts in `compose.yml` or `prepare_claude_config_ro()` in `claude-container`, run `./test-build.sh --config-ro-only` with the built test image `localhost/claude-test` present (a full `./test-build.sh` run creates it). Separate tests confirm that, with the real `compose.yml` and image, writes to the 11 items are rejected, and that the real launcher creates placeholders, checks types, keeps `--check` write-free, and passes `CLAUDE_CONFIG_DIR` through to compose (an interactive launch through both is done by hand).
+
+If you edit the guard functions in `claude-container` (`guard_*`, `prepare_claude_config_ro()`), run `./test-build.sh --launcher-only`. It launches the real launcher in an isolated environment (temporary `HOME`, empty environment, podman replaced by a dummy) and checks each guard's behavior on a normal launch and under `--check`, plus the environment variables handed to compose. No real podman is needed, so it also runs from a development session inside the container or from CI. The full `./test-build.sh` run includes it.
 
 Changes to `Dockerfile.claude` (the `ENTRYPOINT`'s `setpriv` wrapper) require a `-b` rebuild plus a real launch to verify (see "Security Model" above). A session losing the ability to run `iptables` without `sudo` is the correct, intended state — to inspect the firewall rules themselves, use `podman exec --user root <container> iptables -S` from the host; running `iptables -S` from inside the session will fail once capabilities are stripped.
 

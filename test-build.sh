@@ -432,17 +432,19 @@ run_config_ro_tests() {
     podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false down >/dev/null 2>&1
   podman rmi "$svc_image" >/dev/null 2>&1
   rm -rf "$root"
-
-  run_config_ro_launcher_tests
   log ""
 }
 
-# ランチャー本体の prepare_claude_config_ro() を、模倣ではなく claude-container を
-# 実際に起動して検証する（podman はダミー化し、compose には到達させない）。
-# HOME を一時ディレクトリに向けることで、既定の基点（$HOME/.claude）・起動台帳・
-# MCP 承認記録がすべて一時領域に閉じ、実環境を汚さない。
-run_config_ro_launcher_tests() {
-  local root bin home proj out rc d f
+# --- ランチャー（claude-container）のダミー podman テスト ---
+# ランチャー本体のガード群を、模倣ではなく claude-container を実際に起動して検証する
+# （podman はダミー化し、compose には到達させない。実 podman 不要のためコンテナ内や
+# CI でも回せる）。HOME を一時ディレクトリに向けることで、既定の基点（$HOME/.claude）・
+# 起動台帳・MCP 承認記録がすべて一時領域に閉じ、実環境を汚さない。
+#
+# 各テスト関数は `local root bin home proj out rc before_ctx` を宣言してから
+# launcher_sandbox_init を呼び、最後に launcher_sandbox_cleanup を呼ぶ（bash の
+# 動的スコープにより、ヘルパーは呼び出し側の local へ代入する）。
+launcher_sandbox_init() {
   root="$(mktemp -d)"; bin="$root/bin"; home="$root/home"; proj="$root/proj"
   mkdir -p "$bin" "$home/.claude" "$proj"
   # ダミー podman: compose 呼び出し時の環境を記録する（ランチャー → compose の接続部
@@ -457,16 +459,47 @@ esac
 exit 0
 DUMMY
   chmod +x "$bin/podman"
-  # 環境を env -i で空にしてから HOME・PATH だけを与える（実行者のシェルに
-  # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
-  # 残りの引数は KEY=VALUE でランチャーへ渡す環境変数。
-  run_launcher() {
-    rm -f "$root/compose-env"
-    out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
-  }
   # ランチャーはプロジェクト毎の .build-context/<name>/ を作るため、前後の差分を控えて後始末する
-  local before_ctx
   before_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+}
+
+# 環境を env -i で空にしてから HOME・PATH だけを与える（実行者のシェルに
+# CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
+# 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
+run_launcher() {
+  rm -f "$root/compose-env"
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
+}
+
+# run_launcher の --check 版（同じ環境の隔離、同じプロジェクト）。引数は省略可。
+# shellcheck disable=SC2120
+run_launcher_check() {
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
+}
+
+# ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）。
+launcher_sandbox_cleanup() {
+  local after_ctx new_ctx
+  after_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+  while IFS= read -r new_ctx; do
+    [[ -n "$new_ctx" ]] && rm -rf "${SCRIPT_DIR}/.build-context/${new_ctx}"
+  done < <(comm -13 <(echo "$before_ctx" | sort) <(echo "$after_ctx" | sort))
+  rm -rf "$root"
+}
+
+# ランチャーテストの実行入口。通常実行と --launcher-only の双方がこの関数をちょうど
+# 1 回呼ぶ（個別テスト関数を直接呼ばない。呼び出しがここに一本化されていないと、
+# 入口を増やしたときに一方からだけ新テストが漏れる）。
+run_launcher_tests() {
+  log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
+  run_config_ro_launcher_tests
+  log ""
+}
+
+# prepare_claude_config_ro() の検証（PR #47）。
+run_config_ro_launcher_tests() {
+  local root bin home proj out rc d f before_ctx
+  launcher_sandbox_init
 
   # A: 空の ~/.claude → 11 項目が空で作られ、作成が 11 行ログされ、すべてユーザー所有
   run_launcher
@@ -510,7 +543,7 @@ DUMMY
   rm -rf "$home/.claude/skills"
   local tree_before tree_after
   tree_before="$(find "$home/.claude" | sort)"
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
+  run_launcher_check
   tree_after="$(find "$home/.claude" | sort)"
   check "C: --check は ~/.claude に何も作らない（rc=$rc）" [ "$rc" -eq 0 -a "$tree_before" = "$tree_after" ]
   check "C: --check は欠けている項目を WARN で報告する" \
@@ -540,13 +573,7 @@ DUMMY
     bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING' && printf '%s' \"\$0\" | grep -q '別の rw'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）
-  local after_ctx new_ctx
-  after_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
-  while IFS= read -r new_ctx; do
-    [[ -n "$new_ctx" ]] && rm -rf "${SCRIPT_DIR}/.build-context/${new_ctx}"
-  done < <(comm -13 <(echo "$before_ctx" | sort) <(echo "$after_ctx" | sort))
-  rm -rf "$root"
+  launcher_sandbox_cleanup
 }
 
 if [[ "${1:-}" == "--validator-only" ]]; then
@@ -561,8 +588,22 @@ if [[ "${1:-}" == "--validator-only" ]]; then
 fi
 
 # 保護テストだけを回す入口（イメージはビルド済みの $IMAGE を使う。無ければ FAIL）。
+# 従来どおり、実 podman の書き込み検査とランチャー側の placeholder 検証を両方回す。
 if [[ "${1:-}" == "--config-ro-only" ]]; then
   run_config_ro_tests
+  run_config_ro_launcher_tests
+  log "========================================"
+  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
+  log "========================================"
+  if [ "$FAIL" -eq 0 ]; then
+    exit 0
+  fi
+  exit 1
+fi
+
+# ランチャーテストだけを回す入口（実 podman 不要。コンテナ内開発や CI 向け）。
+if [[ "${1:-}" == "--launcher-only" ]]; then
+  run_launcher_tests
   log "========================================"
   log "  結果: PASS=${PASS}  FAIL=${FAIL}"
   log "========================================"
@@ -795,6 +836,7 @@ rm -rf "$ENV_TESTROOT"
 log ""
 
 run_config_ro_tests
+run_launcher_tests
 
 log "## TZ"
 check "date (UTC確認)"   podman run --rm "$IMAGE" date

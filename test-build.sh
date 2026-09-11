@@ -11,9 +11,9 @@ PASS=0
 FAIL=0
 
 if [[ "${1:-}" == "--clean" ]]; then
-  echo "Removing test image: ${IMAGE}"
-  podman rmi "${IMAGE}" 2>/dev/null && echo "Done." || echo "Image not found, skipping."
-  echo "Pruning dangling images..."
+  echo "テストイメージを削除します: ${IMAGE}"
+  podman rmi "${IMAGE}" 2>/dev/null && echo "完了。" || echo "イメージがないのでスキップします。"
+  echo "dangling イメージを整理しています..."
   podman image prune -f
   exit 0
 fi
@@ -864,7 +864,7 @@ stage_common_context() {
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)
   if [[ -n "$sibling" ]]; then
-    echo "WARNING: live GitHub meta fetch failed; reusing $sibling" >&2
+    echo "WARNING: GitHub meta の取得に失敗しました。$sibling を再利用します" >&2
     cp "$sibling" "$dest/github-meta.json"
   else
     echo "ERROR: github-meta.json を取得できず、既存スナップショットも見つかりません" >&2

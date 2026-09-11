@@ -37,18 +37,18 @@ case "$VBI_KIND" in
     VBI_RE='^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*\])?((==|!=|<=|>=|<|>|~=|===)[A-Za-z0-9.*+!]+(,(==|!=|<=|>=|<|>|~=|===)[A-Za-z0-9.*+!]+)*)?$'
     ;;
   *)
-    echo "error: unknown kind: $VBI_KIND (expected packages or requirements)" >&2
+    echo "error: 未知の kind です: $VBI_KIND（packages か requirements を想定）" >&2
     exit 2
     ;;
 esac
 
 if [ -n "$VBI_OUTFILE" ] && [ "$VBI_INFILE" = "$VBI_OUTFILE" ]; then
-  echo "error: infile and outfile must not be the same path" >&2
+  echo "error: infile と outfile に同じパスは指定できません" >&2
   exit 2
 fi
 
 if [ ! -f "$VBI_INFILE" ] || [ ! -r "$VBI_INFILE" ]; then
-  echo "error: cannot read infile: $VBI_INFILE" >&2
+  echo "error: infile を読めません: $VBI_INFILE" >&2
   exit 2
 fi
 
@@ -62,7 +62,7 @@ VBI_TOTAL_BYTES=$(wc -c < "$VBI_INFILE") || exit 2
 tr -d '\000' < "$VBI_INFILE" > "$VBI_TMPDIR/nonul" || exit 2
 VBI_NONUL_BYTES=$(wc -c < "$VBI_TMPDIR/nonul") || exit 2
 if [ "$VBI_TOTAL_BYTES" -ne "$VBI_NONUL_BYTES" ]; then
-  echo "error: $VBI_INFILE contains NUL bytes (rejected)" >&2
+  echo "error: $VBI_INFILE に NUL バイトが含まれています（拒否）" >&2
   exit 1
 fi
 

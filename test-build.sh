@@ -356,8 +356,213 @@ run_validator_layer1_and_contract() {
   log ""
 }
 
+# --- ホスト ~/.claude 設定の読み取り専用保護（compose.yml の :ro 重ねマウント） ---
+# ホスト側で実行・読込される user scope の設定 11 項目を、コンテナ内から書き換え
+# られないことを検証する。検証するストリームと実際に使うストリームを分岐させない
+# ため、実物の compose.yml・実物のイメージ・userns keep-id をそのまま使い、
+# `podman compose run --entrypoint bash` で書き込みを試みる（volumes を抜き出して
+# 別コマンドに組み直すと、検証した構成と起動する構成が別物になる）。
+CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles)
+CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
+
+# コンテナ内で実行する検査スクリプト。各項目について「新規作成」「既存への追記」
+# 「削除」（ファイルは加えて rename による置換）を試み、失敗理由が Read-only file
+# system（EROFS）または Device or resource busy（EBUSY: mountpoint 自体の削除・置換）
+# であることまで確認する。EACCES/EISDIR 等の別理由で失敗した場合は「保護されて
+# いる」とは見なさず FAIL にする（権限不足を保護成立と誤認しない）。
+# 対象外の projects/ への書き込みは成功しなければならない（状態の永続化を壊さない）。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+CONFIG_RO_PROBE='
+set -u
+cd "$HOME/.claude" || { echo "PROBE-ERROR: cannot cd"; exit 2; }
+fail=0
+expect_ro() {  # $1=ラベル, 残り=コマンド。EROFS/EBUSY で失敗すれば OK
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+for d in '"${CONFIG_RO_DIRS[*]}"'; do
+  expect_ro "$d/create"  sh -c "echo x > $d/probe-new"
+  expect_ro "$d/append"  sh -c "echo x >> $d/seed"
+  expect_ro "$d/delete"  rm -f "$d/seed"
+done
+for f in '"${CONFIG_RO_FILES[*]}"'; do
+  expect_ro "$f/append"  sh -c "echo x >> $f"
+  expect_ro "$f/delete"  rm -f "$f"
+  expect_ro "$f/replace" sh -c "echo x > $f.tmp && mv -f $f.tmp $f"
+  rm -f "$f.tmp"
+done
+if echo x > projects/probe-rw; then echo "RW-OK projects"; else echo "RW-BROKEN projects"; fail=1; fi
+exit $fail
+'
+
+run_config_ro_tests() {
+  log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
+  local proj="claude-test-config-ro"
+  local svc_image="localhost/${proj}_claude-auth-workspace:latest"
+  local root cfg d f
+  root="$(mktemp -d)"
+  cfg="$root/.claude"
+  mkdir -p "$cfg/projects"
+  echo '{}' > "$root/.claude.json"
+  for d in "${CONFIG_RO_DIRS[@]}"; do mkdir -p "$cfg/$d"; echo seed > "$cfg/$d/seed"; done
+  for f in "${CONFIG_RO_FILES[@]}"; do echo seed > "$cfg/$f"; done
+
+  # compose の暗黙ビルドを避けるため、ビルド済みテストイメージを compose が
+  # 期待する名前（<project>_<service>）へタグ付けしてから run する。
+  if ! podman tag "$IMAGE" "$svc_image" 2>/dev/null; then
+    check "compose run (テストイメージ $IMAGE が無い)" false
+    rm -rf "$root"; return
+  fi
+  check "11項目へ書けず projects/ へは書ける" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
+  # ホスト側に別 uid（サブ uid の root 等）所有の残骸が生えていないこと。
+  # 「特定 uid が無い」ではなく全エントリが実行ユーザー所有であることを見る。
+  check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
+    bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
+  env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false down >/dev/null 2>&1
+  podman rmi "$svc_image" >/dev/null 2>&1
+  rm -rf "$root"
+
+  run_config_ro_launcher_tests
+  log ""
+}
+
+# ランチャー本体の prepare_claude_config_ro() を、模倣ではなく claude-container を
+# 実際に起動して検証する（podman はダミー化し、compose には到達させない）。
+# HOME を一時ディレクトリに向けることで、既定の基点（$HOME/.claude）・起動台帳・
+# MCP 承認記録がすべて一時領域に閉じ、実環境を汚さない。
+run_config_ro_launcher_tests() {
+  local root bin home proj out rc d f
+  root="$(mktemp -d)"; bin="$root/bin"; home="$root/home"; proj="$root/proj"
+  mkdir -p "$bin" "$home/.claude" "$proj"
+  # ダミー podman: compose 呼び出し時の環境を記録する（ランチャー → compose の接続部
+  # — CLAUDE_CONFIG_DIR の export 等 — を検証するため）。
+  cat > "$bin/podman" <<DUMMY
+#!/bin/bash
+case "\$1 \$2" in
+  "image exists") exit 0 ;;
+  "image inspect") exit 0 ;;
+esac
+[[ "\$1" == "compose" ]] && env > "$root/compose-env"
+exit 0
+DUMMY
+  chmod +x "$bin/podman"
+  # 環境を env -i で空にしてから HOME・PATH だけを与える（実行者のシェルに
+  # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
+  # 残りの引数は KEY=VALUE でランチャーへ渡す環境変数。
+  run_launcher() {
+    rm -f "$root/compose-env"
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
+  }
+  # ランチャーはプロジェクト毎の .build-context/<name>/ を作るため、前後の差分を控えて後始末する
+  local before_ctx
+  before_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+
+  # A: 空の ~/.claude → 11 項目が空で作られ、作成が 11 行ログされ、すべてユーザー所有
+  run_launcher
+  local ok=1
+  for d in "${CONFIG_RO_DIRS[@]}"; do [[ -d "$home/.claude/$d" ]] || ok=0; done
+  for f in "${CONFIG_RO_FILES[@]}"; do [[ -f "$home/.claude/$f" ]] || ok=0; done
+  [[ "$(cat "$home/.claude/settings.json")" == "{}" ]] || ok=0
+  [[ ! -s "$home/.claude/CLAUDE.md" && ! -s "$home/.claude/statusline.sh" ]] || ok=0
+  check "A: 欠けている 11 項目を空で作成する（rc=$rc）" [ "$ok" -eq 1 -a "$rc" -eq 0 ]
+  check "A: 作成を 11 行ログする" \
+    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 11 ]
+  check "A: 作成物がすべて実行ユーザー所有" \
+    bash -c "out=\$(find '$home/.claude' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # A2: 2 回目は何も作らず、作成ログも出ない（冪等）
+  run_launcher
+  check "A2: 2 回目の起動では作成ログが出ない（rc=$rc）" \
+    [ "$rc" -eq 0 -a "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
+
+  # B: 型不一致（hooks がディレクトリでなく通常ファイル）→ fail-closed
+  rm -rf "$home/.claude/hooks"; echo x > "$home/.claude/hooks"
+  run_launcher
+  check "B: 型不一致は ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'hooks'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$home/.claude/hooks"; mkdir -p "$home/.claude/hooks"
+
+  # B2: symlink（有効なものを含む）は拒否する。:ro の子マウントはリンク先に付くが、
+  # リンク自体は rw の親マウント内に残るため、コンテナ内で rm + mkdir すれば
+  # 書き込み可能な実体に置き換えられてしまう（保護の迂回）。
+  mkdir -p "$home/.claude/projects/hooks-target"
+  rm -rf "$home/.claude/hooks"; ln -s projects/hooks-target "$home/.claude/hooks"
+  run_launcher
+  check "B2: symlink の保護対象は ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'hooks'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$home/.claude/hooks"; mkdir -p "$home/.claude/hooks"
+
+  # C: --check は何も作らず、欠けている項目を WARN で報告する
+  rm -rf "$home/.claude/skills"
+  local tree_before tree_after
+  tree_before="$(find "$home/.claude" | sort)"
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
+  tree_after="$(find "$home/.claude" | sort)"
+  check "C: --check は ~/.claude に何も作らない（rc=$rc）" [ "$rc" -eq 0 -a "$tree_before" = "$tree_after" ]
+  check "C: --check は欠けている項目を WARN で報告する" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARN' && printf '%s' \"\$0\" | grep -q 'skills'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  mkdir -p "$home/.claude/skills"
+
+  # D: 相対パスの CLAUDE_CONFIG_DIR は拒否（compose 側の相対解決基準と食い違うため）
+  run_launcher CLAUDE_CONFIG_DIR=relative/dir
+  check "D: 相対パスの CLAUDE_CONFIG_DIR は ERROR（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CLAUDE_CONFIG_DIR'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E: ~/ 始まりは $HOME に展開され、その基点の .claude/ 配下に作られる
+  # （基点ディレクトリ自体は存在が必須。無ければ他のマウント変数と同じく ERROR）
+  mkdir -p "$home/cfgx"
+  run_launcher CLAUDE_CONFIG_DIR='~/cfgx'
+  check "E: ~/ の CLAUDE_CONFIG_DIR を基点に作成する（rc=$rc）" \
+    [ "$rc" -eq 0 -a -d "$home/cfgx/.claude/hooks" -a -f "$home/cfgx/.claude/settings.json" ]
+  check "E: compose には展開済み絶対パスの CLAUDE_CONFIG_DIR が渡る" \
+    grep -qxF "CLAUDE_CONFIG_DIR=$home/cfgx" "$root/compose-env"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # F: 作業ディレクトリが基点の .claude を含む（= 別の rw 経路で書ける）→ WARNING
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" "$home" 2>&1) && rc=0 || rc=$?
+  check "F: 作業ディレクトリが ~/.claude を含むと WARNING（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING' && printf '%s' \"\$0\" | grep -q '別の rw'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）
+  local after_ctx new_ctx
+  after_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+  while IFS= read -r new_ctx; do
+    [[ -n "$new_ctx" ]] && rm -rf "${SCRIPT_DIR}/.build-context/${new_ctx}"
+  done < <(comm -13 <(echo "$before_ctx" | sort) <(echo "$after_ctx" | sort))
+  rm -rf "$root"
+}
+
 if [[ "${1:-}" == "--validator-only" ]]; then
   run_validator_layer1_and_contract
+  log "========================================"
+  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
+  log "========================================"
+  if [ "$FAIL" -eq 0 ]; then
+    exit 0
+  fi
+  exit 1
+fi
+
+# 保護テストだけを回す入口（イメージはビルド済みの $IMAGE を使う。無ければ FAIL）。
+if [[ "${1:-}" == "--config-ro-only" ]]; then
+  run_config_ro_tests
   log "========================================"
   log "  結果: PASS=${PASS}  FAIL=${FAIL}"
   log "========================================"
@@ -588,6 +793,8 @@ fi
 
 rm -rf "$ENV_TESTROOT"
 log ""
+
+run_config_ro_tests
 
 log "## TZ"
 check "date (UTC確認)"   podman run --rm "$IMAGE" date

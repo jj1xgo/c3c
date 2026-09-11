@@ -81,7 +81,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 
 | 変数 | デフォルト | 説明 |
 |---|---|---|
-| `CLAUDE_CONFIG_DIR` | `~` | `.claude.json` と `.claude/` が置かれているディレクトリ |
+| `CLAUDE_CONFIG_DIR` | `~` | `.claude.json` と `.claude/` が置かれているディレクトリ。後述「ホストの Claude Code 設定の読み取り専用保護」の基点でもある。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する） |
 | `EXTRA_MOUNT` | `/dev/null` | コンテナ内 `/data` に追加でマウントするホスト側パス |
 | `SHARED_MOUNT` | `/dev/null` | コンテナ内 `/shared` に追加でマウントするホスト側パス。複数プロジェクトからの共有ディレクトリ参照向け（`EXTRA_MOUNT` と併用可）。設定済みでパスが無い場合は起動を中止 |
 | `TZ` | ホストから自動検出 | コンテナ内のタイムゾーン |
@@ -340,6 +340,14 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 | 持たせるべきでないパーミッション | — （非 export のため明示読みという一手間が構造的な壁になる） | `Pull requests: write`・`Contents: write`（MCP のツール面に push・マージ等が現れ、スコープを絞らないと実効化するため） |
 | 設定手順・スコープ確認 | 「GitHub トークンの配線」節参照 | 同左 |
 
+**ホストの Claude Code 設定（`~/.claude`）の読み書き**
+
+| 対象 | コンテナ内での可否 |
+|---|---|
+| user scope の設定 11 項目: `hooks/` `skills/` `plugins/` `commands/` `agents/` `workflows/` `rules/` `output-styles/` `settings.json` `CLAUDE.md` `statusline.sh` | 読める・**書けない**（`:ro` 重ねマウント。作成・更新・削除・`/plugin` の install/update・これらへ保存される設定変更はホスト側で行う。ホスト側で更新した内容はコンテナ再起動で反映される） |
+| 認証（`.credentials.json`）・transcript（`projects/`）・auto memory（`projects/<p>/memory/`）・`history.jsonl` 等の状態 | 読み書き可（従来どおり） |
+| project scope の設定（`/workspace/.claude/` 配下の settings・skills・agents・commands・rules・CLAUDE.md、`.mcp.json`） | 読み書き可（従来どおり。ホスト側での扱いは「セキュリティモデル」節参照） |
+
 **hook による追加制限**
 
 この保護は `examples/hooks/block-pr-approve.sh` として本リポジトリに同梱されているが、プロダクト本体には配線されていない。適用するには、対象プロジェクトの `.claude/settings.json` に自分で配線する（設定例・回帰テストは `examples/hooks/README.md` を参照）。フォークにもファイル自体はそのまま同梱されるが、配線しない限り動作しない。
@@ -375,6 +383,8 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 起動時の可視化を実際に確認したい場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1`（または `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`）を書いて起動する。値そのものはログに出さず、キー名のみを一覧する。
 
+**ホストの Claude Code 設定の読み取り専用保護**: ホストの `~/.claude`（`CLAUDE_CONFIG_DIR` 基点）はコンテナへ rw で bind mount される（認証情報・transcript の共有に必要）が、そのうちホスト側で実行・読込される user scope の設定 11 項目（前述「何ができて何ができないか」節の表）は、`compose.yml` が rw マウントの内側に `:ro` の bind mount を重ねることで、**この mount 経由では**コンテナ内から書き換えられない。侵害されたセッションがここへ hook・skill・plugin 等を書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file watcher で稼働中セッションにも反映される）ため。マウント先がホストに無いと podman がサブ uid 所有の実体を作って残骸になるので、`claude-container` が起動直前（全ガードと MCP 承認の後）に欠けている項目をユーザー権限で空のまま作り、その旨を `INFO:` で表示する（`--check` は作らず `[WARN]` で報告する）。11 項目のいずれかが symlink または型の違う実体（ディレクトリ予定位置にファイル等）だと起動を中止する。symlink を拒否するのは、`:ro` の子マウントはリンク先に付く一方でリンク自体は rw の親マウント内に残り、コンテナ内で削除して作り直せば書き込み可能な実体に置き換えられる（保護の迂回）ため。**限界**: (1) 保護はこの mount 経由に限る。`/workspace`（作業ディレクトリ）・`EXTRA_MOUNT`・`SHARED_MOUNT` が `~/.claude` を含む、または保護対象そのものを指す場合は別経路から書けるため、起動時に `WARNING` を出す（検出はパスの包含関係のみで、別マウント内部のリンク等は検出しない）。(2) project scope の設定（`/workspace/.claude/` 配下と `.mcp.json`）は対象外で、ホストでそのフォルダを trust 済みならホストの Claude Code がそれらを読み込む。(3) `~/.claude.json`（trust フラグ・user scope の MCP 登録）、auto memory（`projects/<p>/memory/`）、`agent-memory/`、`shell-snapshots/`、`session-env/` は対象外（Claude Code が実行時に書くため）。前 3 者はホスト側セッションへの指示の再注入経路になりうる。(4) 保護された参照元（`settings.json`・`CLAUDE.md` の import・hook や plugin が読む依存ファイル）が `~/.claude` の外や対象外領域を指していれば、その先は保護されない。(5) `.claude-container.d/env` の `PATH` 等によるホスト側実行経路（`#44`）は本保護と独立で、引き続き未対応。(6) ホスト側で 11 項目のファイルを rename で置換した場合、稼働中のコンテナは旧実体を見続ける（再起動で反映）。
+
 `SECRETS_DIR`（前述「GitHub トークンの配線」節）を設定した場合、上記「許可済みサービス自体への送信」というリスクが受動的なものから能動的なものに変わる: プロンプトインジェクションや悪意あるパッケージがコンテナ内からトークンを読み取り（メイン PAT はファイルとして、MCP／issues 用 PAT は export された環境変数として）、そのスコープ内で GitHub 等に書き込める。緩和策は各 fine-grained PAT のスコープ最小化（対象リポジトリ限定・短期限）で、被害を該当リポジトリでの操作に構造的に限定すること。設計上、export されるのは issues 限定等スコープを絞ったトークンのみに留め、広い権限は非 export（明示読みという一手間の壁の向こう）に置くことでこのリスクの既定値を下げている（「GitHub トークンの配線」節の設計原則参照）。`SECRETS_DIR` は汎用機構であるため、この能動的リスクは GitHub トークンに限らず持ち込んだ全シークレットに及ぶ（1コンテナに持ち込むのは実際に使う最小本数に留めること — 前述）。
 
 `CODEX_DIR`（前述「MCP サーバーの追加」節の Codex レシピ）を設定した場合、コンテナ内のコードは Codex の認証情報（`auth.json`、ChatGPT アカウントのアクセストークン）を読める。`SECRETS_DIR` と異なり rw マウントのため、コンテナ側から書き込みも可能 — 専用ディレクトリ（実 `~/.codex` でない）を指定する設計により、汚染がホスト側の Codex 実行環境（`config.toml` の `notify` フック等）へ波及する経路を遮断している。Codex を stdio 型 MCP サーバーとして `.mcp.json` に登録する場合は前述の MCP 監査ゲート（TOFU）の対象になる。
@@ -401,6 +411,8 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 ```
 
 `lint.sh` は、リポジトリ内の bash スクリプト（gitignore 対象を除く追跡済み・未追跡ファイルから shebang で自動判定するため、スクリプトを追加・削除しても対象リストの更新は不要）への `bash -n` と `shellcheck`、および `podman compose -f compose.yml config` をまとめて実行する。shellcheck 未インストール時はエラーで失敗する（`sudo apt-get install shellcheck` で導入）。podman が無い環境（コンテナ内での開発時）では Compose 検証のみ警告付きでスキップされる。
+
+`compose.yml` の `:ro` 重ねマウント、または `claude-container` の `prepare_claude_config_ro()` を編集した場合は、ビルド済みのテストイメージ `localhost/claude-test`（`./test-build.sh` の全実行で作られる）がある状態で `./test-build.sh --config-ro-only` を実行する。実物の `compose.yml` とイメージで 11 項目への書き込みが拒否されること、実物のランチャーが placeholder 作成・型検査・`--check` の無書き込み・compose への `CLAUDE_CONFIG_DIR` 受け渡しを正しく行うことを、それぞれ別のテストで確認する（両者を通した対話起動は手動で行う）。
 
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 
@@ -501,7 +513,7 @@ Place a `.claude-container.d/env` file at the root of the **target project** to 
 
 | Variable | Default | Description |
 |---|---|---|
-| `CLAUDE_CONFIG_DIR` | `~` | Directory containing `.claude.json` and `.claude/` |
+| `CLAUDE_CONFIG_DIR` | `~` | Directory containing `.claude.json` and `.claude/`. Also the base of the "read-only protection of host Claude Code settings" described below. Must be an absolute path or start with `~/` (a relative path aborts the launch) |
 | `EXTRA_MOUNT` | `/dev/null` | Additional host path to mount at `/data` inside the container |
 | `SHARED_MOUNT` | `/dev/null` | Additional host path to mount at `/shared` inside the container. For sharing a directory across multiple projects (can be used together with `EXTRA_MOUNT`). Launch is aborted if set but the path doesn't exist |
 | `TZ` | Auto-detected from host | Timezone inside the container |
@@ -760,6 +772,14 @@ Containers start with `--rm`, so internal state is lost on exit. However, the fo
 | Permissions it should not have | — (non-export makes the explicit-read step a structural wall) | `Pull requests: write`, `Contents: write` (these show up as live MCP write tools unless the token is scoped tightly) |
 | Setup and scope checking | See "GitHub Token Wiring" above | Same |
 
+**Reading and writing the host's Claude Code settings (`~/.claude`)**
+
+| Target | Inside the container |
+|---|---|
+| The 11 user-scope settings items: `hooks/` `skills/` `plugins/` `commands/` `agents/` `workflows/` `rules/` `output-styles/` `settings.json` `CLAUDE.md` `statusline.sh` | Readable, **not writable** (`:ro` overlay mounts. Create, update or delete them, run `/plugin` install/update, and change settings saved there on the host instead. Host-side updates become visible after a container restart) |
+| State such as credentials (`.credentials.json`), transcripts (`projects/`), auto memory (`projects/<p>/memory/`), `history.jsonl` | Read/write (unchanged) |
+| Project-scope settings (`/workspace/.claude/` settings, skills, agents, commands, rules, CLAUDE.md, and `.mcp.json`) | Read/write (unchanged; see "Security Model" for how the host treats them) |
+
 **Additional restrictions via hooks**
 
 This protection ships as `examples/hooks/block-pr-approve.sh` in this repository, but it isn't wired into the product itself. To apply it, wire it into a target project's own `.claude/settings.json` (see `examples/hooks/README.md` for the wiring example and regression tests). Forks inherit the file as-is, but it does nothing until wired.
@@ -795,6 +815,8 @@ This guardrail only holds if Claude (and its children) cannot rewrite the allowl
 
 To see this visibility in action, write `CLAUDE_CONTAINER_NO_FIREWALL=1` (or `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`) to `.claude-container.d/env` and launch — the value itself is never logged, only the key name.
 
+**Read-only protection of the host's Claude Code settings**: the host's `~/.claude` (based at `CLAUDE_CONFIG_DIR`) is bind-mounted rw into the container (needed to share credentials and transcripts), but the 11 user-scope settings items that the host executes or loads (see the table in "What Works and What Doesn't" above) are overlaid by `compose.yml` with `:ro` bind mounts inside that rw mount, so they cannot be modified from the container **through this mount**. The reason: if a compromised session writes hooks, skills, or plugins there, the host's Claude Code loads and runs them (user-settings hooks are picked up by a file watcher, so even a running host session is affected). Because podman would create sub-uid-owned stubs on the host when a mount target is missing, `claude-container` creates any missing item empty, as your user, right before launch (after all guards and MCP approval) and reports it with `INFO:` (`--check` reports `[WARN]` instead of creating). If any of the 11 items is a symlink or has the wrong type (e.g. a file where a directory is expected), the launch aborts. Symlinks are rejected because the `:ro` child mount attaches to the link target while the link itself stays inside the rw parent mount, so deleting and recreating it from the container would replace it with a writable entity (bypassing the protection). **Limits**: (1) the protection covers this mount only; if `/workspace` (the working directory), `EXTRA_MOUNT` or `SHARED_MOUNT` contains `~/.claude` or points at one of the protected items itself, it is writable through that other path, and the launcher prints a `WARNING` (detection is by path containment only; links inside the other mount are not detected). (2) Project-scope settings (`/workspace/.claude/` and `.mcp.json`) are out of scope; once you trust that folder on the host, the host's Claude Code loads them. (3) `~/.claude.json` (trust flags, user-scope MCP registrations), auto memory (`projects/<p>/memory/`), `agent-memory/`, `shell-snapshots/` and `session-env/` are out of scope because Claude Code writes them at runtime; the first three can re-inject instructions into host sessions. (4) If a protected file (`settings.json`, a `CLAUDE.md` import, a dependency read by a hook or plugin) points outside `~/.claude` or into an unprotected area, that target is not protected. (5) The host-side execution path via `PATH` etc. in `.claude-container.d/env` (`#44`) is independent of this protection and remains open. (6) If a host-side tool replaces one of the 11 files by rename, a running container keeps seeing the old file until restart.
+
 If `SECRETS_DIR` (see "GitHub Token Wiring" above) is set, the "exfiltration to allowed services themselves" risk above stops being passive: prompt injection or a malicious package running in the container can read a token (the main PAT as a file, the MCP/issues PAT as an exported env var) and write to GitHub (or elsewhere) within its scope. The mitigation is scoping each fine-grained PAT down (single repository, short expiration), which structurally limits the blast radius to that repository. By design, only tightly-scoped tokens (e.g. issues-only) are exported at all — broad privilege sits behind the non-exported, explicit-read wall instead, which lowers this risk's default (see the design principle in "GitHub Token Wiring"). Since `SECRETS_DIR` is a generic mechanism, this active risk extends to every secret you bring in, not just GitHub tokens (again, bring in only the minimum set a given project actually needs — see above).
 
 If `CODEX_DIR` is set (see the Codex recipe under "Adding MCP Servers" above), code running in the container can read Codex's credentials (`auth.json`, a ChatGPT account access token). Unlike `SECRETS_DIR`, this mount is rw, so container-side code can also write to it — the design uses a dedicated directory (not the real `~/.codex`) precisely to keep that write access from reaching the host's own Codex environment (e.g. `config.toml`'s `notify` hook). Registering Codex as a stdio-type MCP server in `.mcp.json` puts it under the MCP audit gate (TOFU) described above.
@@ -821,6 +843,8 @@ There is no test suite. After editing the script or Compose/Dockerfile, verify w
 ```
 
 `lint.sh` runs `bash -n` and `shellcheck` on every bash script in the repository (tracked and untracked files minus gitignored ones, detected by shebang, so the target list needs no maintenance when scripts are added or removed), plus `podman compose -f compose.yml config`. It fails with an explicit error if shellcheck is not installed (`sudo apt-get install shellcheck`). When podman is unavailable (e.g. developing inside the container), only the Compose validation is skipped with a warning.
+
+If you edit the `:ro` overlay mounts in `compose.yml` or `prepare_claude_config_ro()` in `claude-container`, run `./test-build.sh --config-ro-only` with the built test image `localhost/claude-test` present (a full `./test-build.sh` run creates it). Separate tests confirm that, with the real `compose.yml` and image, writes to the 11 items are rejected, and that the real launcher creates placeholders, checks types, keeps `--check` write-free, and passes `CLAUDE_CONFIG_DIR` through to compose (an interactive launch through both is done by hand).
 
 Changes to `Dockerfile.claude` (the `ENTRYPOINT`'s `setpriv` wrapper) require a `-b` rebuild plus a real launch to verify (see "Security Model" above). A session losing the ability to run `iptables` without `sudo` is the correct, intended state — to inspect the firewall rules themselves, use `podman exec --user root <container> iptables -S` from the host; running `iptables -S` from inside the session will fail once capabilities are stripped.
 

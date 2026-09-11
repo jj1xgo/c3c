@@ -1,13 +1,5 @@
 # claude-container
 
-[日本語](#日本語) | [English](#english)
-
----
-
-<a id="日本語"></a>
-
-## 日本語
-
 [sethjensen1/claude-container](https://github.com/sethjensen1/claude-container) をフォークした Podman 上の Claude Code コンテナ実行環境。
 
 Podman + Compose を使い、ホストの Claude 認証情報を共有しながら任意のディレクトリを `/workspace` にマウントして Claude Code を起動する。
@@ -27,16 +19,17 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 - [セキュリティモデル](#セキュリティモデル)
 - [Podman 固有の注意](#podman-固有の注意)
 - [変更後の確認](#変更後の確認)
+- [表記](#表記)
 - [バージョニング](#バージョニング)
 - [参考](#参考)
 - [ライセンス](#ライセンス)
 
-### 前提
+## 前提
 
 - [Podman](https://podman.io/) および `podman-compose`
 - ホストに `~/.claude.json`（Claude 認証情報）が存在すること
 
-### 使い方
+## 使い方
 
 ```bash
 # 任意のディレクトリで Claude Code を起動
@@ -58,7 +51,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 
 スクリプトはシンボリックリンク経由でも動作する（`readlink` で自身のパスを解決する）。異なるターゲットプロジェクトを交互に起動・リビルドしても互いのイメージ・ビルドコンテキストを上書きしない（後述「アーキテクチャ」参照）。同時に別々のプロジェクトを起動することもできる。
 
-### 起動前チェック（`--check`）
+## 起動前チェック（`--check`）
 
 複数のファミリープロジェクトが本リポジトリを直接参照して稼働している運用（内部運用issue参照）では、破壊的変更（v3.0.0 の旧設定形式削除、v4.0.0 のトークン配線変更等）の後、各プロジェクトの設定を更新しないと起動が fail-closed ガードで停止する。`--check` は起動せずにこれを事前診断し、リビルド・起動前に必要な移行作業を一括提示する。
 
@@ -75,7 +68,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 - **非対話・対象リポジトリは不変**: `--check` は TTY 確認を一切行わない（MCP stdio 型サーバーが未承認の場合は「初回起動時に確認プロンプトが出ます」と報告するのみ）。台帳に記録があるが実体が見つからないプロジェクトも FAIL として報告するだけで、台帳を黙って書き換えない。**保証の範囲は「対象リポジトリと `.build-context/` を変更しない」こと**（内容診断は `mktemp` 経由で `/tmp` 配下に作業ファイルを必ず作るため、無限定の「書き込みゼロ」ではない）。
 - **終了コード**: 診断対象のいずれかが FAIL の場合は非0、それ以外は0で終了する。`-b` は `--check` と併用しても無視される。
 
-### 環境変数
+## 環境変数
 
 **利用側プロジェクト**のルートに `.claude-container.d/env` を置くと起動前に自動で読み込まれる。読み込まれるのは `KEY=VALUE` 形式の行のみ（クォートやシェル展開は解釈されない。ホスト上でのシェル構文の即時解釈を避けるため、意図的に `source` していない。`PATH` 等の値経由の間接的な経路は別問題として [`#44`](https://github.com/jj1xgo/claude-container/issues/44) で追跡）。これはビルド時に焼き込まれる設定ではなく起動のたび毎回読み込まれるランタイム設定なので、変更してもリビルド（`-b`）は不要。
 
@@ -94,7 +87,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 
 claude-container 自身を対象プロジェクトとして自己ホスト起動する場合（このリポジトリを直接 `./claude-container` の引数に渡す場合）は、`.claude-container.d/env.example` をコピーして `.claude-container.d/env` を作成する。`SECRETS_DIR` 等ホスト固有のパスを含みうるため `.claude-container.d/env` は gitignore 対象で、リポジトリには example のみをコミットする。同様に、GitHub 公式 MCP サーバー（後述「GitHub トークンの配線」節のレシピ参照）を自己ホスト環境でも使いたい場合は、`.mcp.json.example` をコピーして `.mcp.json` を作成する（`.mcp.json` はメンテナ自身のセッション用実設定のため gitignore 対象）。
 
-### 利用側プロジェクトの設定
+## 利用側プロジェクトの設定
 
 bash history はターゲットプロジェクトの `.claude/bash_history` に保存される。誤ってコミットしないよう、ターゲットプロジェクトの `.gitignore` に以下を追加することを推奨する。
 
@@ -125,7 +118,7 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 
 `base-image.txt` はベースイメージをホスト環境に合わせたい場合に使う（例: `debian:testing`。内部運用issue参照）。置かなければ既定の `debian:stable` が使われる（他の3ファイルと異なり WARNING は出ない）。許容範囲は **docker.io の debian 公式イメージのみ**（タグは自由、`debian:stable@sha256:<64桁hex>` のような digest pin も可）。範囲外の値は起動を拒否する（fail-closed）。この制限は「セキュリティ境界」ではなく「サポート範囲の宣言・互換性ガード」と位置づけている — `.claude-container.d/` を書き換えられる主体は `packages.txt` 経由で apt の maintainer script をビルド時 root で実行でき、`requirements.txt` 経由の任意 PyPI 名指定でも sdist の `setup.py` がビルド時 root で実行される経路が原理的に残る（PyPI は open publishing のため）。いずれもベースイメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、内部運用issue参照）。実際の互換性は `Dockerfile.claude` 側のビルド時アサーション（`setpriv`/`tini` の存在・`setpriv --ambient-caps`/`--inh-caps` の受理・apt sources の HTTPS 化）が担保する。ただしこのアサーションは「正直な壊れ方」しか検知できず、悪意を持って `setpriv` 等を偽装するベースイメージは検知できない。`debian:testing`/`debian:sid` のような rolling suite を指定すると、`-b` のたびに未知の apt パッケージ版へ追随するため再現性が下がる — 再現性が必要な場合は日付タグ（`debian:trixie-20260701`）か digest pin を使うこと。値の検証はホスト側の `claude-container` スクリプトが行うため、`podman build` を直接実行する経路では効かない。
 
-### GitHub トークンの配線
+## GitHub トークンの配線
 
 設計原則（v4〜、`jj1xgo/claude-container#24`）: **常時使える（export される）権限は最小に、広い権限は明示操作の壁の向こうに、残るリスクは文書で正直に。** GitHub へ書き込む（`gh` CLI・MCP 経由問わず）トークンは、汎用シークレットディレクトリ（`SECRETS_DIR`）1本に集約する。
 
@@ -233,7 +226,7 @@ GITCONFIG_FILE=~/.gitconfig
 
 **venv 等の言語ランタイム成果物は必ずコンテナ内で作成する。** ホスト側で `python3 -m venv` 等を実行してターゲットプロジェクト配下に作った場合、生成されるスクリプトのシェバン（例: `venv/bin/pip` の1行目）にホストの絶対パス・ユーザー名（例: `/home/alice/myproject/venv/bin/python3`）が焼き込まれる。同じディレクトリはコンテナ内では `/workspace` 配下・ユーザー `node` としてマウントされるため、そのパスは解決できずシェバン経由の実行（`./venv/bin/djlint` 等）が失敗する（`venv/bin/python3 -m djlint` のように venv 内の python3 をモジュール起動すれば回避できる。素の `python3` はシステム Python で venv の site-packages を見ないため不可）。venv はコンテナを起動してからその中で作成すること。
 
-### MCP サーバーの追加
+## MCP サーバーの追加
 
 `.mcp.json` は claude-container が用意する機構ではなく、Claude Code 本体が標準で持つ「プロジェクトルート（`/workspace` 直下）の `.mcp.json` を project-scoped server として自動読み込みする」機能である。そのためタイプ（http／stdio）に応じて、以下の範囲は**claude-container 側を一切変更せず利用側プロジェクトの設定だけで追加できる**。
 
@@ -279,7 +272,7 @@ stdio タイプのサーバーをどうしても使いたい場合は、`npx` �
 
 **運用上の注意**: MCP サーバー経由の呼び出しは Claude Code 側が `cwd` を明示的に渡す必要があり、渡し忘れると意図しない `AGENTS.md` が拾われるリスクがある（[openai/codex#12128](https://github.com/openai/codex/issues/12128)）。諮問時は `/workspace` を起点にする運用を徹底すること。また auth.json のリフレッシュフローには既知の不具合報告（[openai/codex#15502](https://github.com/openai/codex/issues/15502)）があり、この領域は枯れていない可能性がある点に留意する。
 
-### アーキテクチャ
+## アーキテクチャ
 
 主要ファイルが連携して動作する。
 
@@ -291,11 +284,11 @@ stdio タイプのサーバーをどうしても使いたい場合は、`npx` �
 - **`validate-build-input.sh`** — `packages.txt`/`requirements.txt` の正規化・照合を担う POSIX sh スクリプト。ビルド時（`Dockerfile.claude` の `RUN`）・起動前診断（`--check`）・テスト（`test-build.sh`）の3者が同じスクリプトを呼ぶことで、検証ロジックが複数箇所へ複製されドリフトする事態を防ぐ（`claude-container#34`）。責務は正規化と照合のみで、インストール・ネットワークアクセスは行わない。
 - **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト apt/pip パッケージ・許可ドメイン一覧（フォールバック既定値）。プロジェクト側で上書きする場合は `.claude-container.d/` を使う（「利用側プロジェクトの設定」参照）。`node-version.txt`・`allowed-ports.txt` にはこの種の同梱デフォルトは無く、プロジェクト側に無ければ `claude-container` がビルドコンテキスト内に空ファイルをその場で生成する（前者は Node.js 未導入、後者は `init-firewall.sh` 自身が既定値 `443,22` を適用する、という意味。いずれも警告は出さない）。`codex-version.txt` も同じ扱い（Codex CLI 未導入、警告なし）。
 
-#### GitHub meta スナップショット
+### GitHub meta スナップショット
 
 `init-firewall.sh` の許可リストが使う GitHub IP レンジは `https://api.github.com/meta` から取得する。未認証 GitHub API のレート制限（60 req/h/IP）を避けるため、取得は `claude-container` のビルドコンテキスト準備時（`-b` のたび最大1リクエスト）に1箇所だけで行い、`Dockerfile.claude` がその結果をイメージへ焼き込む。コンテナ起動のたびのライブ取得は行わないため、何度再起動してもレート制限は消費しない。取得に失敗した場合は (1) このプロジェクトの前回ステージング分（`.build-context/<PROJECT_NAME>/` に残っている）、(2) それも無ければ他プロジェクトの最新スナップショット（GitHub の IP レンジは変更頻度が低いため実用上問題ない）を警告付きで再利用し、いずれも無い場合のみビルドを中断する。
 
-### イメージの変更
+## イメージの変更
 
 `Dockerfile.claude` を編集して `./claude-container -b /path/to/project` でリビルドする。`-b` を付けると GitHub meta スナップショットの再取得（上記）が試みられ、あわせて `CACHEBUST` にその時点のエポック秒が渡されて install レイヤーのキャッシュが必ず破棄される。これにより、`-b` のたびに `install.sh` が再実行されて最新版の Claude Code が取得される（apt パッケージ等の上位レイヤーはキャッシュを流用するため高速）。再現性が必要な場合は `compose.yml` で `CLAUDE_CODE_VERSION` を固定する。
 
@@ -305,7 +298,7 @@ stdio タイプのサーバーをどうしても使いたい場合は、`npx` �
 
 Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATER: "1"` で無効化している。コンテナは `--rm` で起動するためアップデートを取得しても終了時に消えるためで、バージョン更新は `-b` でのリビルドで行う。
 
-### コンテナ間の永続化
+## コンテナ間の永続化
 
 コンテナは `--rm` で起動するため終了時に内部の状態は消えるが、以下の常時マウントはホストに bind mount されているため**コンテナを再起動しても保持される**（`EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR` 等の opt-in マウントは、設定した本人がホスト側に同じパスを維持する限り同様に保持されるが、任意設定のためここには含めない — 一覧は「環境変数」節参照）。
 
@@ -315,7 +308,7 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 | `/home/node/.claude.json` | `~/.claude.json` | Claude の認証情報 |
 | `/workspace/` | 起動時に指定したディレクトリ | 作業対象プロジェクト |
 
-### 何ができて何ができないか（git / gh / PAT / hook 早見表）
+## 何ができて何ができないか（git / gh / PAT / hook 早見表）
 
 コンテナ内の `git` と `gh` CLI は認証系統が完全に独立している。`git push` が失敗するのは権限不足ではなく credential helper を意図的に配線していないためであり、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）。どちらも `SECRETS_DIR` 配下のトークンファイルを（メイン PAT は明示読みで、MCP／issues 用 PAT は export された値で）使って初めて認証される。
 
@@ -361,7 +354,7 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 - **既知の誤検知**: 残存 false positive（安全方向・許容）＝ 実行コマンドが `gh api` で、ヒアドキュメント本文に `pulls/N/reviews` と `event=APPROVE` の両方を引用したケース、複数行ダブルクォート文字列内の承認文字列。残存 false negative（脅威モデル外）＝ 引用文字列内の `<<X` でヒアドキュメント除去を誤爆させる意図的難読化。脅威モデルは「Claude 自身のうっかり自律承認の抑止」であり意図的な難読化は対象外
 - **参照**: リスクの詳細は「セキュリティモデル」節、hook の実装詳細・配線例・回帰テストは `examples/hooks/README.md`
 
-### セキュリティモデル
+## セキュリティモデル
 
 Claude は `--dangerously-skip-permissions` で起動するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界 — マウントされたワークスペースと `/data`・`/shared` への読み書きアクセスを持つ。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしないこと。`SHARED_MOUNT`（`/shared`）は同じホストパスを設定した全プロジェクトのコンテナが完全な rw アクセスを持つ共有領域のため、相互に信頼できるプロジェクト間でのみ設定すること。
 
@@ -397,12 +390,12 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 - **`Contents: write` を付与しない限りpush・PRマージには至らない**: PRマージ（`PUT …/pulls/{n}/merge`）に必要な権限は `Contents: write` であり、`Pull requests` 権限だけでは実行できない。ただしメイン PAT に `Contents: write` も付与している場合は、この境界は無い（push 節参照）
 - **auto-merge 経由の境界迂回に注意**: PRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。対象リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。auto-merge を無効に保つこと（1枚目の壁）に加え、同梱の PreToolUse hook（`examples/hooks/block-pr-approve.sh`、配線すれば）が承認操作の自律実行を機構的にブロックできる（2枚目の壁 — 適用範囲と限界は「何ができて何ができないか」節参照）。MCP 経由の承認（`mcp__github__pull_request_review_write` 等）はこの hook の検査対象外のため、MCP へは「GitHub トークンの配線」節の `permissions.deny` を別途の壁として使うこと
 
-### Podman 固有の注意
+## Podman 固有の注意
 
 - `userns_mode: keep-id` はホストユーザーの UID/GID をコンテナ内にマップする Podman 固有の機能。Docker に移植する場合は削除する。
 - `--in-pod false` は Podman Compose がデフォルトでサービスを Pod にラップする挙動を抑制する。Docker Compose はこのフラグを無視する。
 
-### 変更後の確認
+## 変更後の確認
 
 テストスイートはない。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
 
@@ -418,9 +411,20 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 
-### バージョニング
+## 表記
 
-[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）で管理し、タグごとに `gh release create <tag> --notes-from-tag` でタグメッセージをそのまま流用した GitHub Release を作成する（CHANGELOG ファイルは作らない）。番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
+この repo の文書・スクリプトのメッセージとコメント・tag メッセージ・Release 本文・Issue と PR は**日本語のみ**で書く。v8.2.1 までは README と tag が日英併記だったが、v8.2.1 を最後に英語版を廃止した（既存の tag と Release は書き換えない）。例外として英語のまま残すのは、`ERROR:` / `WARNING:` / `INFO:` / `[OK]` / `[WARN]` / `[FAIL]` の接頭辞（テストと `--check` の集計が照合する機械可読トークン）、`[y/N]`、環境変数名・関数名・コマンド名・URL、`LICENSE` の法文、git や gh が出す文字列と照合する部分。日本語の文中の技術用語（base image、stdio、hash、fail-closed 等）は英語のまま書いてよく、「行にひらがなかカタカナが含まれる」ことを日本語化済みの判定に使う。
+
+## バージョニング
+
+[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）で管理し、タグごとに、タグメッセージを本文にした GitHub Release を作成する（CHANGELOG ファイルは作らない）。`--notes-from-tag` は `-R` と併用できない（gh 2.100.0 で実測）ので、本文はファイル経由で渡す:
+
+```bash
+git tag -l --format='%(contents)' vX.Y.Z > /tmp/notes.txt
+gh release create vX.Y.Z -R jj1xgo/claude-container --verify-tag --title vX.Y.Z --notes-file /tmp/notes.txt
+```
+
+番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
 
 - **MAJOR** — 後方互換性が壊れる変更（デフォルト挙動の変更、設定形式の削除・非互換化など、利用者が対応しないと従来どおり動かないもの）
 - **MINOR** — 後方互換な機能追加（既存の使い方はそのまま動く）
@@ -428,444 +432,11 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 バージョン履歴は GitHub の [Releases ページ](https://github.com/jj1xgo/claude-container/releases)で一覧・購読できる（`git tag -n1` でも確認可能）。
 
-### 参考
+## 参考
 
 - [Running Claude Code CLI in a Container (Endpoint Dev Blog)](https://www.endpointdev.com/blog/2026/03/claude-code-cli-in-container/) — フォーク元作者 Seth Jensen によるコンテナ化の解説記事
 
-### ライセンス
+## ライセンス
 
 GPL-3.0。フォーク元（sethjensen1/claude-container）は MIT ライセンス。詳細は [LICENSE](LICENSE) を参照。
 
----
-
-<a id="english"></a>
-
-## English
-
-A Podman-based Claude Code container environment, forked from [sethjensen1/claude-container](https://github.com/sethjensen1/claude-container).
-
-Launches Claude Code by mounting any directory as `/workspace`, sharing the host's Claude credentials via Podman + Compose.
-
-apt/pip packages are specified per-project via `.claude-container.d/` (see below) — the claude-container repo itself carries no project-specific packages.
-
-- [Requirements](#requirements)
-- [Usage](#usage)
-- [Pre-launch Check (--check)](#pre-launch-check---check)
-- [Environment Variables](#environment-variables)
-- [Target Project Configuration](#target-project-configuration)
-- [Adding MCP Servers](#adding-mcp-servers)
-- [Architecture](#architecture)
-- [Modifying the Image](#modifying-the-image)
-- [Persistence Across Container Runs](#persistence-across-container-runs)
-- [What Works and What Doesn't (git / gh / PAT / hook quick reference)](#what-works-and-what-doesnt-git--gh--pat--hook-quick-reference)
-- [Security Model](#security-model)
-- [Podman-specific Notes](#podman-specific-notes)
-- [Verifying Changes](#verifying-changes)
-- [Versioning](#versioning)
-- [References](#references)
-- [License](#license)
-
-### Requirements
-
-- [Podman](https://podman.io/) and `podman-compose`
-- `~/.claude.json` (Claude credentials) must exist on the host
-
-### Usage
-
-```bash
-# Launch Claude Code in any directory
-./claude-container /path/to/project
-
-# Force rebuild the image and launch
-./claude-container -b /path/to/project
-
-# Remove that project's image, network, and build context, then exit
-./claude-container --clean /path/to/project
-
-# Remove all projects' images, networks, and build contexts, then exit
-./claude-container --clean
-
-# Diagnose without launching (no directory: check every project in the launch ledger)
-./claude-container --check
-./claude-container --check /path/to/project
-```
-
-The script works via symlink — it resolves its own path using `readlink`. Launching or rebuilding different target projects, even interleaved, no longer overwrites each other's image or build context (see "Architecture" below). Multiple projects can also be run concurrently.
-
-### Pre-launch Check (`--check`)
-
-In a setup where multiple family projects launch by directly invoking this local repo's `claude-container` (internal ops issue), a breaking change (e.g. v3.0.0 dropping the old config format, or v4.0.0's token-wiring change) can leave a project unable to start until its config is updated — the fail-closed guards only surface this at launch time. `--check` diagnoses this without launching, listing the migration steps needed before a rebuild/launch.
-
-```bash
-# Diagnose every project recorded in the launch ledger (see below)
-./claude-container --check
-
-# Diagnose specific directories (multiple allowed)
-./claude-container --check /path/to/project-a /path/to/project-b
-```
-
-- **Launch ledger**: every normal launch (excluding `--clean`/`--check`) automatically records the target directory's host absolute path in `~/.local/state/claude-container/projects` (no manual maintenance needed). Running `--check` with no arguments diagnoses every project in this ledger. `--clean <directory>` also removes that project from the ledger; `--clean` (no directory) removes the ledger file itself. Launching via a symlink vs. the real path records separate entries (same identity rule as `compute_project_name()`).
-- **What's checked**: legacy token variables (e.g. `GH_TOKEN_FILE`), `SHARED_MOUNT`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` existence and layout (e.g. leftover `noexport/`), permissions, presence of `packages.txt`/`requirements.txt`/`allowed-domains.txt`, whether the image is already built (only when `podman` is available), MCP audit gate approval state, and content validation of `packages.txt`/`requirements.txt`. **Launch-time guards and content validation run in separate modes**: the presence checks etc. above share the exact same guard functions used at normal launch time, so the diagnosis can't drift from actual launch behavior. Content validation (allowlist validation of `packages.txt`/`requirements.txt`) is a `--check`-only advisory diagnosis, called separately from the normal-launch enforcement point (the `RUN` in `Dockerfile.claude`) — but both call the same `validate-build-input.sh`, so the validation logic itself can't drift.
-- **Non-interactive, target repo unchanged**: `--check` never prompts over TTY (an unapproved stdio-type MCP server is reported as "a confirmation prompt will appear at first launch" only). A ledger entry whose directory no longer exists is reported as FAIL without silently rewriting the ledger. **The guarantee's scope is "does not modify the target repository or `.build-context/`"** (content validation always creates working files under `/tmp` via `mktemp`, so "no writes" isn't unqualified).
-- **Exit code**: non-zero if any diagnosed project has a FAIL, zero otherwise. `-b` is ignored when combined with `--check`.
-
-### Environment Variables
-
-Place a `.claude-container.d/env` file at the root of the **target project** to have it read automatically before launch. Only `KEY=VALUE` lines are honored (no quoting or shell expansion — the file is deliberately NOT `source`d, to avoid immediate interpretation of shell syntax on the host; value-mediated paths such as `PATH` are a separate concern tracked in [`#44`](https://github.com/jj1xgo/claude-container/issues/44)). This is a runtime setting re-read on every launch, not something baked into the image, so changing it never requires a `-b` rebuild.
-
-| Variable | Default | Description |
-|---|---|---|
-| `CLAUDE_CONFIG_DIR` | `~` | Directory containing `.claude.json` and `.claude/`. Also the base of the "read-only protection of host Claude Code settings" described below. Must be an absolute path or start with `~/` (a relative path aborts the launch) |
-| `EXTRA_MOUNT` | `/dev/null` | Additional host path to mount at `/data` inside the container |
-| `SHARED_MOUNT` | `/dev/null` | Additional host path to mount at `/shared` inside the container. For sharing a directory across multiple projects (can be used together with `EXTRA_MOUNT`). Launch is aborted if set but the path doesn't exist |
-| `TZ` | Auto-detected from host | Timezone inside the container |
-| `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | Set to `1` to disable the egress firewall (see below) |
-| `GITCONFIG_FILE` | (unset) | Path on the host to a git config file to mount read-only as `~/.gitconfig` inside the container (see below) |
-| `SECRETS_DIR` | (unset) | Host path to the sole mechanism for bringing GitHub tokens and other secrets into the container (see "GitHub Token Wiring" below) |
-| `CODEX_DIR` | (unset) | Host path to the Codex CLI credentials directory (`auth.json` etc.), mounted rw into the container. Use a dedicated directory (see the Codex recipe under "Adding MCP Servers" below). Must be an absolute path or start with `~/` (a relative path aborts the launch). Any spelling that resolves to the real host `~/.codex` (including symlinks) aborts the launch |
-
-`TZ` is auto-detected from the host's `/etc/timezone` (or `/etc/localtime` symlink). An explicit value in `.claude-container.d/env` takes precedence.
-
-If you self-host claude-container against itself (passing this repo directly as the argument to `./claude-container`), copy `.claude-container.d/env.example` to `.claude-container.d/env`. It may contain host-specific paths (e.g. `SECRETS_DIR`), so `.claude-container.d/env` is gitignored and only the example is committed. Likewise, if you also want the GitHub official MCP server (see the recipe in "GitHub Token Wiring" below) in your self-hosted setup, copy `.mcp.json.example` to `.mcp.json` (`.mcp.json` holds the maintainer's own session config and is gitignored).
-
-### Target Project Configuration
-
-Bash history is saved to `.claude/bash_history` in the target project. To avoid accidentally committing it, add the following to the target project's `.gitignore`:
-
-```
-.claude/bash_history
-```
-
-Target-project-specific claude-container configuration lives entirely under `.claude-container.d/`. Files there fall into two categories: runtime settings (re-read on every launch) and build-time settings (baked into the image).
-
-```
-.claude-container.d/env                  # runtime settings (KEY=VALUE, see "Environment Variables" above); no -b needed, gitignored
-.claude-container.d/packages.txt         # apt packages, one per line; allowlist-validated (bare package names only); leading # is a comment; requires -b, committed
-.claude-container.d/requirements.txt     # pip packages; allowlist-validated (name + extras + version specifier only — URLs, paths, option lines, environment markers, and inline whitespace are rejected and fail the build); inline # onward is stripped as a comment; requires -b, committed
-.claude-container.d/allowed-domains.txt  # extra domains for the egress firewall, one per line; # for comments; requires -b, committed
-.claude-container.d/node-version.txt     # Node.js version to install (e.g. 22.14.0, single line); requires -b, committed
-.claude-container.d/codex-version.txt    # Codex CLI version to install (e.g. 0.46.0 or latest, single line); requires -b, committed
-.claude-container.d/allowed-ports.txt    # TCP ports the egress firewall permits, one per line or port:port; # for comments; requires -b, committed
-.claude-container.d/base-image.txt       # base image (e.g. debian:testing, single line); requires -b, committed
-```
-
-All except `env` are optional. If `packages.txt`/`requirements.txt`/`allowed-domains.txt` are absent, claude-container's bundled defaults (empty fallbacks) are used. `allowed-domains.txt` lists extra domains the project needs (e.g. for pip: both `pypi.org` and `files.pythonhosted.org` — the latter serves the actual package downloads, so reaching the index alone isn't enough for `pip install` to succeed). These three are baked into the image at build time, so changing them requires a `-b` rebuild (`env` is deliberately excluded from this baking — it may hold host-specific paths that must never end up in the image).
-
-`allowed-ports.txt` changes which TCP ports are reachable on allowed domains (GitHub CIDRs and `allowed-domains.txt` entries) from the default `443,22` (`jj1xgo/claude-container#31`). If absent, `443,22` is used — unlike the other three files, no WARNING fires (same opt-in convention as `node-version.txt`/`codex-version.txt`). This restriction applies only to allowed-domain rules; it does not apply to DNS (port 53) or the host-network rule (see "Architecture" below). At most 15 ports/ranges, per `iptables`' `multiport` match limit. `443` must be included (api.anthropic.com, api.github.com and the startup self-check need it) and `80` cannot be allowed (the startup self-check uses "api.github.com:80 is unreachable" as its blocked-port probe); both also apply when a range (e.g. `79:81`) covers the port, and a violation stops the container at startup with an ERROR stating the reason (`jj1xgo/claude-container#49`).
-
-`node-version.txt` is for Node.js versions apt can't provide on debian:stable (e.g. 22.x — trixie ships 20.x, testing skips straight to 24.x). It fetches the official Linux tarball from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before extracting. **Build-time network is unrestricted, so no `allowed-domains.txt` entry for `nodejs.org` is needed** (the `init-firewall.sh` egress restriction only applies at runtime). If absent, no Node.js is installed — and unlike the other three files, no WARNING fires in this case (it's a new opt-in feature; not having it is the normal state for most projects).
-
-`codex-version.txt` opts into installing OpenAI's Codex CLI (`@openai/codex`) as a second-opinion advisor for consultation and review. Same opt-in design as `node-version.txt`: absent means not installed, no WARNING either. Installed via npm, so **npm is required** — set `node-version.txt` too, or add `nodejs`/`npm` to `packages.txt` (the build fails with an error if a version is specified but npm is missing). Write `latest` instead of a pinned version (e.g. `0.46.0`) to re-resolve npm's `latest` dist-tag and reinstall on every `-b` rebuild, same as Claude Code itself (this case gets its own cache-bust). `node-version.txt` can't do this — it relies on SHA256-verifying a specific nodejs.org tarball, so it only accepts pinned versions; this asymmetry follows from how each is installed. See the Codex recipe under "Adding MCP Servers" below for how to wire it up as an MCP server.
-
-`base-image.txt` lets you match the base image to your host environment (e.g. `debian:testing`; internal ops issue). If absent, the default `debian:stable` is used — unlike the other three files, no WARNING fires. The allowed range is **docker.io's official debian image only** (any tag; digest pins like `debian:stable@sha256:<64-hex>` are also accepted). Out-of-range values are rejected at launch (fail-closed). This restriction is positioned as a **supported-range declaration / compatibility guard, not a security boundary** — anything that can write to `.claude-container.d/` can already run arbitrary apt maintainer scripts as root at build time via `packages.txt`, and naming an arbitrary PyPI package via `requirements.txt` can still run its sdist's `setup.py` as root at build time (PyPI is open publishing, so this path is inherent). Either way, restricting the base image name alone has limited defensive value (per Codex consultation, internal ops issue). Actual compatibility is enforced by build-time assertions in `Dockerfile.claude` (presence of `setpriv`/`tini`, `setpriv --ambient-caps`/`--inh-caps` support, apt sources rewritten to HTTPS) — but these only catch honest breakage, not a base image that maliciously fakes those commands. Pointing this at a rolling suite (`debian:testing`, `debian:sid`) means every `-b` rebuild picks up whatever apt package versions are current, reducing reproducibility — use a dated tag (`debian:trixie-20260701`) or a digest pin if you need reproducibility. Validation happens in the host-side `claude-container` script, so it doesn't apply if you invoke `podman build` directly.
-
-### GitHub Token Wiring
-
-Design principle (v4+, `jj1xgo/claude-container#24`): **keep always-available (exported) privilege minimal; put broad privilege behind an explicit-action wall; be honest in the docs about what risk remains.** Tokens for writing to GitHub (via `gh` CLI or MCP) all live under one generic secrets directory (`SECRETS_DIR`).
-
-| Slot | Location | Exported | Intended use / recommended scope |
-|---|---|---|---|
-| Main PAT | `SECRETS_DIR` root (e.g. `GITHUB_MAIN_PAT`) | No | push, PR review, release creation, etc. Place broad privilege here (e.g. `Contents: write`). Never appears as an env var value — read it explicitly inside the container, e.g. `GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh ...` |
-| MCP / issues-only PAT | `SECRETS_DIR/export/` (e.g. `GITHUB_MCP_PAT`) | Yes | The GitHub official MCP server, and issue-checking hooks. **Recommend an issues-scoped token** (see risk note below) |
-
-**Important**: "where you place `.claude-container.d/env`" and "which repository you select under the PAT's `Repository access`" are two different things. The former is the project that **uses** the token (e.g. myproject); the latter is the repository you're **writing to** (e.g. claude-container). To let myproject write issues to claude-container, place `.claude-container.d/env` inside myproject and select `claude-container` under `Repository access` — not the project that's doing the writing.
-
-Fine-grained PATs apply one permission set uniformly to every repository selected under a single token (you cannot grant different permissions to different repositories within the same token). So if you want "broader permissions on your own repository, Issues-only elsewhere," split tokens by use case as in the table above. See the "What Works and What Doesn't" quick reference below for the full picture of availability and permissions by operation type.
-
-1. Create a token under GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens. **Do not use a classic PAT** — even its narrowest write scope (`repo`) grants read/write on all your repositories, which is too much blast radius for a leaked token. Configure it according to your use case:
-   - Repository access: `Only select repositories` → only the repositories you're writing to (note: if you select more than one, the permissions below apply to all of them uniformly)
-   - Repository permissions: grant only the minimum needed. For the MCP/issues token, `Issues: Read and write` alone is recommended. Adding `Pull requests: Read and write` to the main PAT lets it review PRs on your own repo; adding `Contents: write` lets it push, merge PRs, and create releases from inside the container (push, merge, and release creation stay host-side as long as `Contents: write` is withheld)
-   - Expiration: 90 days or less recommended
-2. Create a directory on the host (e.g. `~/.config/claude-container/secrets.d/<project>`) and `chmod 700` it. **The filename of each file placed inside becomes the environment variable name inside the container — but only under `export/`; files at the root are never exported.** Names not matching `^[A-Za-z_][A-Za-z0-9_]*$` are skipped with a WARNING at startup. `chmod 600` each file; its contents should be a single-line token string (newlines are stripped automatically, so multi-line values get concatenated — not supported). Each file must be a regular file — since only this directory itself is mounted into the container, a symlink pointing outside it cannot be resolved inside the container and is **silently skipped with no warning** (to reuse an existing token file, copy its value instead of symlinking)
-3. Place the main PAT at the `SECRETS_DIR` root (e.g. `SECRETS_DIR/GITHUB_MAIN_PAT`). Place the MCP/issues PAT under `SECRETS_DIR/export/` (`chmod 700` that directory too)
-4. In the target project's `.claude-container.d/env`, set `SECRETS_DIR=~/.config/claude-container/secrets.d/<project>`. `.claude-container.d/env` is gitignored (it may hold host-specific paths), so it's never committed in the first place
-5. Startup aborts (fail-closed) if the directory doesn't exist. A warning is printed if the directory isn't `700` or a file inside isn't `600`
-
-Tokens are only ever files on the host — never passed via the container's `environment:` (so they don't show up in `podman inspect`, etc.). Only the main PAT's *path* is exported, as `GITHUB_MAIN_PAT_FILE` — its value never is. Only tokens under `export/` are exported by value, as an environment variable named after the file. **If the name collides with one already present in the environment (e.g. `PATH`), the existing value is left untouched and a warning is printed instead.**
-
-This is a generic environment-variable-injection mechanism — it isn't limited to GitHub tokens. That said, anything you bring in this way is readable by every process inside the container (Claude itself, hooks, any npm script), so only bring in the minimum set of secrets a given project actually needs. **Placing a file named `GH_TOKEN`/`GITHUB_TOKEN` under `export/` resurrects `gh`'s ambient authentication** — this runs counter to the design intent here, so avoid it unless you understand you're deliberately opting back in (running `gh auth login` inside the container has the same effect and is likewise discouraged).
-
-**Checking configured scope**: **There is currently no way to mechanically retrieve the full list of repositories a fine-grained PAT covers.** GitHub itself has no API that lists a token's accessible repositories at once for personal-account tokens (the equivalent endpoint, `GET /orgs/{org}/personal-access-tokens/{pat_id}/repositories`, is organization-scoped and GitHub-App-only — it doesn't apply to PATs on personal accounts), and this project doesn't track the target repositories either, to avoid drifting out of sync with PAT config changes. So you have to check reachability per repository instead: run `GH_TOKEN=$(cat <token-file>) gh api /repos/<owner>/<repo>` — but the 200/404 result is only meaningful **for private repositories** (200 = in scope, 404 = out of scope). **This does not work for public repositories**: GitHub returns public repository metadata (`GET /repos/{owner}/{repo}` and its `permissions` field) with 200 regardless of the token's `Repository access` setting, so for a public repo neither reachability nor the `permissions` value is evidence of actual scope (verified empirically; see `jj1xgo/claude-container#13`). To check effective scope on a public repository, either attempt a real write operation (e.g. `gh issue create`) or check the `Repository access` list directly in the PAT settings UI. The source of truth for scope always remains the PAT's `Repository access` setting.
-
-**Rotating a token**: When it's nearing expiration, regenerate it on GitHub's side and overwrite the contents of the corresponding file with the new string. This is a runtime mount, not baked in at build time, so no rebuild (`-b`) is needed — the new contents are picked up on the next launch.
-
-**Note**: the startup check only verifies the file exists and its permissions — it does not validate whether the token itself has expired. A container with an expired token still starts normally; the failure only surfaces the first time `gh` actually calls the GitHub API. Keep track of the `Expiration` you set so this doesn't go unnoticed.
-
-**Recipe: using the GitHub official MCP server**: to talk to GitHub via MCP instead of the `gh` CLI, configure as follows.
-
-1. Add `api.githubcopilot.com` to the target project's `.claude-container.d/allowed-domains.txt` (baked in at build time, so requires a `-b` rebuild)
-2. Place a PAT file under `SECRETS_DIR/export/` (e.g. named `GITHUB_MCP_PAT`). **Recommend an issues-scoped token** — the MCP server's tool surface includes write tools for push, PR merge, release creation, etc., and a broadly-scoped token makes them live
-3. In the target project's `.mcp.json` (Claude Code expands `${VAR}` from the environment):
-   ```json
-   {
-     "mcpServers": {
-       "github": {
-         "type": "http",
-         "url": "https://api.githubcopilot.com/mcp/",
-         "headers": {
-           "Authorization": "Bearer ${GITHUB_MCP_PAT}"
-         }
-       }
-     }
-   }
-   ```
-
-The GitHub official remote MCP server's default auth is OAuth (browser login), which a headless container can't do, so passing a PAT via the `Authorization` header is the practical option here. Note that hooks and other shell-based automation can't call an MCP server (MCP is a tool Claude uses, not something shell can invoke directly), so the bundled `gh` CLI stays in the image even after adopting MCP.
-
-**Defense in depth (`permissions.deny`)**: even with a scoped MCP token, guard against a future switch to a broader one by adding a `permissions.deny` for the write-capable MCP tools in the target project's `.claude/settings.json`:
-```json
-{
-  "permissions": {
-    "deny": [
-      "mcp__github__push_files",
-      "mcp__github__merge_pull_request",
-      "mcp__github__pull_request_review_write",
-      "mcp__github__create_or_update_file",
-      "mcp__github__delete_file"
-    ]
-  }
-}
-```
-The primary defense is token scope (an issues-only token gets a 403 from the server on write tools). This deny list is the secondary layer, and it's fail-open with respect to future MCP tool additions (a newly added tool isn't automatically blocked). Leave issue-related tools (`issue_write`, `add_issue_comment`, and the read/list/search tools) out of the deny list so they keep working.
-
-**Migrating from v3 or earlier**: `GH_TOKEN_FILE`, `GH_TOKEN_SECONDARY_FILE`, and `SECRETS_DIR/noexport/` were removed in v4 (no backward-compat aliases).
-
-| Old | New |
-|---|---|
-| `GH_TOKEN_FILE` | `SECRETS_DIR` root (e.g. `GITHUB_MAIN_PAT`) |
-| `GH_TOKEN_SECONDARY_FILE` | `SECRETS_DIR/export/` (e.g. `GITHUB_MCP_PAT`) |
-| `SECRETS_DIR/noexport/GIT_PUSH_TOKEN` | `SECRETS_DIR/GITHUB_MAIN_PAT` (merged into the push/PR token) |
-
-If a legacy variable is still set, startup aborts fail-closed and prints the migration steps above. Before deleting or moving the underlying file, confirm no other project depends on it (deletion itself is out of scope for this migration — keep the file until that's confirmed).
-
-**Recipe: enabling `git push` (`SECRETS_DIR/GITHUB_MAIN_PAT`)**: by default, `push` doesn't work among git's remote operations (see "What Works and What Doesn't" below). Granting the main PAT `Contents: write` enables it.
-
-1. Create a Fine-grained PAT on GitHub. Limit Repository access to only the repository you're pushing to, and grant `Contents: Read and write` under Repository permissions (`push` requires `Contents: write`). Pairing this with GitHub-side branch protection (required reviews, no force-push) is recommended
-2. Save the token string to a file named `SECRETS_DIR/GITHUB_MAIN_PAT` (root, not exported) and `chmod 600` it
-3. Set `SECRETS_DIR=...` in the target project's `.claude-container.d/env` (no extra setup needed if it's already configured for another purpose)
-4. Requires a `-b` rebuild, since it involves a `Dockerfile.claude` change
-
-On launch, `entrypoint.sh` detects `SECRETS_DIR/GITHUB_MAIN_PAT` and automatically sets `GIT_ASKPASS` (the token's value itself is never exported — only its path, as `GITHUB_MAIN_PAT_FILE`). From then on, `git push` to the target repository (**HTTPS remotes only** — this does not work for SSH remotes) goes through without manual intervention, since `git-askpass.sh` reads the token from the file just in time on each prompt. `git-askpass.sh` is fail-closed: it only answers prompts addressed to github.com, and refuses any other host or unexpected prompt.
-
-Note the side effect: this token also enables fetch/pull on private repositories (since it implies `Contents: Read`). The same `Contents: write` token can also be used from the `gh` CLI, e.g. `GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh pr merge ...` — so PR merges, not just pushes, become "possible but never silent" (they require the same explicit-read step) once this is configured.
-
-When `GITHUB_MAIN_PAT` is detected, `entrypoint.sh` also resets `credential.helper` to empty via `GIT_CONFIG_*` environment variables. This prevents a host gitconfig mounted via `GITCONFIG_FILE` (below) that sets `credential.helper = store` (or similar) from persisting the token `git-askpass.sh` reads just-in-time into `~/.git-credentials` in plaintext (the mounted `~/.gitconfig` is read-only, so `git config --global` can't override it — `GIT_CONFIG_*` environment variables, applied after all config files, are the only way to do this).
-
-**Force-push protection**: `GITHUB_MAIN_PAT` also lets through force-overwrites like `git push --force` from inside the container, so a first line of defense is adding `Bash(git push --force:*)` to `permissions.deny` in the target project's `.claude/settings.json`. That deny rule matches by command-string prefix, though, so it lets through the flag-suffixed form (`git push origin master --force`), `git -C <path> push --force`, and `+refspec` syntax (e.g. `git push origin +feature:main`) — a known gap. `--force-with-lease` doesn't start with `--force`, so it needs its own rule (`Bash(git push --force-with-lease:*)`). Closing every gap with deny rules alone gets unwieldy, so pair it with a documented rule ("force push only after explicit user approval") in CLAUDE.md or similar as a second line of defense (a finding from real-world verification in downstream projects).
-
-**Committing from inside the container (`GITCONFIG_FILE`)**: Even if you've set `git config --global user.name`/`user.email` on the host, it isn't reflected inside the container by default, so `git commit` fails with `Author identity unknown`. Fix it by adding this to `.claude-container.d/env`:
-
-```
-GITCONFIG_FILE=~/.gitconfig
-```
-
-- If unset, behavior is unchanged (`git commit` just fails with `Author identity unknown`; nothing else is affected)
-- If set, startup aborts with an error if the file doesn't exist (fail-closed) — this avoids a bind-mount quirk where a nonexistent source path gets silently created as an empty directory on the host
-- The mount is read-only, so `git config --global` cannot be used to edit it from inside the container. Always edit it on the host (it's a runtime mount, so no `-b` rebuild is needed — the next launch picks up the change)
-- A `credential.helper` or `include.path` entry pointing at a host-specific file doesn't affect `git commit` itself (a missing include is silently ignored, and a missing credential helper only warns during authenticated operations). If that's a concern, point `GITCONFIG_FILE` at a dedicated file containing only `user.name`/`user.email` instead
-- If `GITCONFIG_FILE` doesn't seem to take effect, check whether `/workspace` (the target project you launched) has its own `.git/config` with `user.name`/`user.email` set. Git's config precedence (local > global) means the target project's local setting wins over the mounted `~/.gitconfig` (which acts as the global config)
-
-**Always create language-runtime artifacts like venvs inside the container, not on the host.** Running `python3 -m venv` on the host inside the target project directory bakes the host's absolute path and username into the generated scripts' shebangs (e.g. `venv/bin/pip`'s first line becomes `/home/alice/myproject/venv/bin/python3`). Since the same directory is mounted inside the container at `/workspace` under the `node` user, that path doesn't resolve and shebang-based execution (`./venv/bin/djlint`, etc.) fails (invoke the venv's own python3 as a module instead, e.g. `venv/bin/python3 -m djlint` — plain `python3` is the system interpreter and won't see the venv's site-packages). Create the venv from inside a running container instead.
-
-### Adding MCP Servers
-
-`.mcp.json` isn't a claude-container mechanism — it's a standard Claude Code feature that auto-loads a `.mcp.json` at the project root (`/workspace`) as a project-scoped server. Depending on its type (http or stdio), the following range can be added **entirely from the target project's own configuration, with no change to claude-container itself**.
-
-**http/sse type** (servers that connect directly to a remote endpoint — e.g. the GitHub official MCP server; see the "Recipe: using the GitHub official MCP server" subsection under "GitHub Token Wiring" above for a concrete example):
-
-1. Place `.mcp.json` at the target project's root (Claude Code loads it automatically)
-2. If authentication is needed, place a token file under `SECRETS_DIR/export/` under any name (see "GitHub Token Wiring" above) and reference it from `.mcp.json` as `${variable-name}`
-3. Add the target domain to `.claude-container.d/allowed-domains.txt` (baked in at build time, so requires a `-b` rebuild)
-
-**stdio type** (servers that run as a command inside the container) cannot be added unilaterally. `entrypoint.sh` audits `/workspace/.mcp.json` at startup; when it detects a server with a `command` field, it prints the server name and command and requires interactive (TTY) confirmation. If confirmation can't be obtained (non-interactive launch, or declined), startup aborts (fail-closed).
-
-Why this confirmation exists: unlike http-type servers, stdio-type code can be bundled directly in the repository and executed without any network fetch (e.g. via `npx`), so it doesn't pass through the existing firewall/rebuild wall. Since Claude Code's own MCP approval prompt doesn't function under `--dangerously-skip-permissions` (see "Security Model" below), this confirmation is the only remaining wall. **There is deliberately no environment-variable opt-out**: `.claude-container.d/env` exports every key except protected (`readonly`) ones, so an opt-out variable could be set by the untrusted repository itself, making it meaningless as a gate against a malicious one.
-
-If you do need a stdio-type server, prefer baking it in via `.claude-container.d/packages.txt` or a host-side install + bind mount (e.g. `EXTRA_MOUNT`), rather than runtime fetching via `npx` (which fetches unverified code over the network on every session start). **The `packages.txt` path can't pin a version** (`pkg=version` pins are rejected by allowlist validation) — use the bind mount path if you need a pinned version. Relatedly, don't add npm registries (e.g. `registry.npmjs.org`) to `allowed-domains.txt` — doing so would make `npx`-based runtime fetching work, which not only forces the confirmation above on every session but also removes any check on the code being fetched.
-
-**Skipping the confirmation via TOFU (Trust On First Use)** (claude-container#28): answering `y` makes the `claude-container` script record a hash of the approved stdio server definitions on the host, under `~/.local/state/claude-container/mcp-approvals/<project>` (not inside `.mcp.json` or the container — the point is to keep it somewhere the container itself can't alter). On subsequent launches, confirmation is skipped automatically as long as the stdio server definitions in `.mcp.json` still match that record; any change to the definitions triggers a fresh confirmation. Records are per-project; `--clean <directory>` removes the one for that project, and `--clean` with no argument removes all of them.
-
-Note that registering a server via `claude mcp add` at local/user scope (`~/.claude.json`) is outside this gate's scope — since the repository doesn't control that file, it doesn't fall under the "malicious repository's first launch" threat model, and is left to each project's own management.
-
-**Recipe: using the Codex CLI as a second-opinion MCP server** (a concrete `stdio`-type example; internal ops issue):
-
-1. Write the desired Codex version (e.g. `0.46.0`) or `latest` to the target project's `.claude-container.d/codex-version.txt` (see "Target Project Configuration" above). npm is required, so also set `node-version.txt`.
-2. Add `chatgpt.com` to the target project's `.claude-container.d/allowed-domains.txt`. Codex using ChatGPT-account auth (`auth.json`) hardcodes its API base URL to `https://chatgpt.com/backend-api/` (see [openai/codex](https://github.com/openai/codex)'s `CHATGPT_CODEX_BASE_URL` in `codex-rs/model-provider-info/src/lib.rs`); without this, the egress firewall blocks the calls.
-3. Set up a dedicated Codex credentials directory on the host and seed it once with `~/.codex/auth.json` (from a host where you've already run `codex login`). **Do not point `CODEX_DIR` at your real `~/.codex`** — the rw mount needed for auth.json's refresh write-back means a shared real directory lets container-side code rewrite `config.toml` (e.g. its `notify` hook), creating a path to arbitrary command execution on the host next time you run Codex there (see the corresponding comment in `.claude-container.d/env.example`):
-   ```
-   mkdir -p -m 700 ~/.codex-container
-   cp ~/.codex/auth.json ~/.codex-container/auth.json
-   chmod 600 ~/.codex-container/auth.json
-   ```
-4. Set `CODEX_DIR=~/.codex-container` in the target project's `.claude-container.d/env` (no `-b` needed, runtime mount).
-5. Add the following to the target project's `.mcp.json` (`codex mcp-server` is stdio-type, so the confirmation-on-first-use flow above applies):
-   ```json
-   {
-     "mcpServers": {
-       "codex": {
-         "command": "codex",
-         "args": ["mcp-server"]
-       }
-     }
-   }
-   ```
-6. Requires a `-b` rebuild (`codex-version.txt`/`allowed-domains.txt` are both build-time settings).
-
-**Operational notes**: MCP-based calls require Claude Code to pass `cwd` explicitly; forgetting to do so risks picking up an unintended `AGENTS.md` ([openai/codex#12128](https://github.com/openai/codex/issues/12128)) — always anchor consultations at `/workspace`. There's also a known issue report around the auth.json refresh flow ([openai/codex#15502](https://github.com/openai/codex/issues/15502)); treat this area as not fully battle-tested yet.
-
-### Architecture
-
-The main files work together:
-
-- **`claude-container`** (bash) — Entry point. Resolves absolute paths, then computes `PROJECT_NAME` from the target project's directory basename (sanitized) plus the first 8 characters of a sha256 hash of its absolute path (e.g. `myproject-3f2a9c1b`). This separates the image name (`localhost/<PROJECT_NAME>_claude-auth-workspace`) and the staged build context (`.build-context/<PROJECT_NAME>/`) per project, and `-p "$PROJECT_NAME"` is passed to `podman compose` accordingly. Previously the image name and staging path were fixed regardless of the target project, so interleaving builds across different projects would silently overwrite each other's image and staged context. Reads `KEY=VALUE` lines from `.claude-container.d/env` with a literal parser (no `source`, quoting, or shell expansion), auto-detects `TZ`, sets `CONTEXT` / `CLAUDE_CONTAINER_DIR`, and delegates to `podman compose run`. When `-b` is passed, `podman compose build` runs as a separate step before `run` — `run --build` would fall back to the existing stale image when the build fails (fail-open), whereas the separate build step aborts the launch on failure (fail-closed). Before building, it stages `entrypoint.sh`, `init-firewall.sh`, `git-askpass.sh`, `validate-build-input.sh`, the GitHub meta snapshot (see below), plus the project's `.claude-container.d/packages.txt` / `requirements.txt` / `allowed-domains.txt` (or claude-container's bundled defaults if absent) and `node-version.txt` / `codex-version.txt` / `allowed-ports.txt` (an empty file is synthesized on the fly if absent — unlike the other three, none of these has a bundled default and none warns) into that project's `BUILD_CONTEXT_DIR` (only when `-b` is passed, or when the image hasn't been built yet). `--clean <directory>` removes only that project's image, network, and build context; `--clean` (no directory) scans for all existing claude-container images and removes every project's worth (the legacy shared image `localhost/claude-container_claude-auth-workspace` matches the same naming pattern, so upgrading from an older version just requires running `--clean` once to reclaim it).
-- **`compose.yml`** — Defines the `claude-auth-workspace` service. The build context is `${BUILD_CONTEXT_DIR}` (the staged directory above); the Dockerfile is `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude`. Mounts `~/.claude.json`, `~/.claude/`, the target workspace (`/workspace`), and `/etc/localtime`. Uses `userns_mode: keep-id` to match the host user's UID/GID. Adds `NET_ADMIN`/`NET_RAW` capabilities via `cap_add` so `init-firewall.sh` can configure iptables rules inside the container's network namespace (under rootless podman + `userns_mode: keep-id`, these also land in the non-root `node` user's ambient set and are inherited by every child process — stripped by `Dockerfile.claude`'s `ENTRYPOINT` below; see "Security Model"). Sets `net.ipv6.conf.{all,default}.disable_ipv6=1` via `sysctls` to disable IPv6 at the kernel level (see below). When `CODEX_DIR` is set, mounts the Codex CLI credentials directory rw (unlike the other opt-in mounts, no `:ro` — needed for auth.json's token refresh write-back; see the Codex recipe under "Adding MCP Servers" above).
-- **`Dockerfile.claude`** — Based on `debian:stable` by default (overridable via `.claude-container.d/base-image.txt`, see "Target Project Configuration" above; `FROM` is evaluated before `COPY`, so the file can't be read directly — it's passed in via `ARG BASE_IMAGE`). Installs `ca-certificates` via HTTP first, then rewrites every apt source URI (not a hardcoded hostname, so it doesn't silently no-op against a different mirror) to HTTPS before installing remaining packages. Right after the fixed apt layer, a build-time assertion (added alongside base-image configurability) fails the build, fail-closed, if `setpriv`/`tini` are missing, `setpriv` doesn't accept `--ambient-caps`/`--inh-caps`, or an `http://` apt source survived the rewrite — so the security boundary's foundation can't silently break while the build still succeeds. Claude Code is installed via the official native installer (`curl -fsSL https://claude.ai/install.sh | bash`). Runs as the non-root `node` user (UID 1000, created explicitly), executing `CMD ["/usr/local/bin/entrypoint.sh"]` (see next item; placed as a boundary asset in the root-owned `/usr/local/bin`, so `node` cannot alter it). Switched from `node:24` (~1.1 GB) because the native installer only requires glibc — no runtime Node.js needed. Full (not slim) Debian is used to avoid extra setup steps that slim requires. `ENTRYPOINT` is `setpriv --ambient-caps=-all --inh-caps=-all /usr/bin/tini --`, which strips ambient/inheritable capabilities from the whole process tree before starting `tini` (`setpriv` execs, so it doesn't linger; `tini` stays at PID1). This neutralizes `compose.yml`'s `cap_add` landing in the non-root user's ambient set (see previous item), leaving `sudo`-invoked, root-run `init-firewall.sh` (via the unaffected bounding set) as the sole consumer of `NET_ADMIN`/`NET_RAW`. Putting `tini` at PID1: with claude itself as PID1, children reparented to PID1 (e.g. the firewall refresh loop's sudo helpers) were never reaped and accumulated as zombies, and when claude wedged on exit (2026-07-02: a host-kernel workqueue Oops left an unkillable D-state thread), the zombie PID1 could not be signalled at all (`crun kill ... failed` / "No such process") and `podman stop` could not reclaim the container. tini keeps reaping and `podman stop` working (it cannot fix a kernel-side wedge itself). `tini` is kept out of `packages.txt` and installed in the fixed apt layer instead, so a project's `.claude-container.d/packages.txt` can't silently drop it. Right after the `node-version.txt` block, a layer using the same opt-in convention installs the Codex CLI (`@openai/codex`) via npm when `codex-version.txt` specifies a version (aborts the build with an error if npm is missing; internal ops issue). Ingesting `packages.txt`/`requirements.txt` gets the same class of fail-closed build-time check — `validate-build-input.sh` runs allowlist validation before `apt-get`/`pip3` — so, like the setpriv/tini assertion, the security boundary's foundation can't silently break while the build still succeeds (see "Target Project Configuration" above).
-- **`entrypoint.sh`** — The container's `CMD` (PID1 is the `tini` above; this script and the claude process it execs into run as its child). Applies the egress firewall via `init-firewall.sh` at startup (aborts launch on failure), starts a background domain re-resolution loop (~15s interval, see next item), then launches `claude --dangerously-skip-permissions`. Also auto-fixes host-specific paths under `~/.claude/plugins/` to their in-container equivalents, and audits `/workspace/.mcp.json`, requiring interactive confirmation if a stdio-type MCP server is detected (fail-closed; see "Adding MCP Servers" above).
-- **`init-firewall.sh`** — Egress firewall script run as root (via sudo) at container startup. A port of the same-named script from Anthropic's official devcontainer: it blocks all outbound traffic except allowed destinations (deny-by-default iptables rules). Only the endpoints Claude Code needs (api.anthropic.com, GitHub, etc.) and the project's `allowed-domains.txt` are allowed. Rules for allowed domains (GitHub CIDRs and tagged domain rules) are further restricted to the TCP ports listed in `allowed-ports.txt` (default `443,22`; `jj1xgo/claude-container#31`) — this restriction applies only to allowed-domain rules, not to DNS (port 53, resolver-scoped) or the host-network rule (scoped to the gateway's single IP, not its whole `/24`; each is narrowed for its own separate reason). GitHub IP ranges are never fetched live at startup — only the build-time snapshot is read (see "GitHub Meta Snapshot" below). After setup it self-verifies that example.com is **unreachable**, api.github.com / api.anthropic.com **are** reachable, and a non-allowed port on an allowed domain (api.github.com:80) is **unreachable** (the GitHub checks are quota-free TCP connects), and refuses to start the container on failure (fail-closed). The one exception: if an allowed domain (including one from `allowed-domains.txt`) no longer exists at all (NXDOMAIN), that's logged as a warning and startup proceeds — only transient resolution failures still trip fail-closed. IPv6 is primarily disabled via `compose.yml`'s `sysctls`; as a fallback for environments where that doesn't take effect, this script also attempts to write `/proc/sys/net/ipv6/conf/*/disable_ipv6` itself (non-fatal if it fails — logs a warning and continues). Either way, the existing `ip6tables` IPv6 blackhole (the allowlist only resolves A records) remains the last line of defense. Allowed domains' IPs are re-resolved roughly every 15s by a background loop `entrypoint.sh` starts (`init-firewall.sh --refresh-domains`), which diff-adds newly seen IPs and individually removes ones unseen for about 3 minutes — this keeps up with CDNs that rotate IPs on short TTLs, without ever flushing the whole chain (so no gap where new connections fail during a refresh).
-- **`validate-build-input.sh`** — POSIX sh script that normalizes and validates `packages.txt`/`requirements.txt`. Called from three places — build time (the `RUN` in `Dockerfile.claude`), pre-launch diagnosis (`--check`), and tests (`test-build.sh`) — so the validation logic can't drift by being duplicated across them (`claude-container#34`). Its only job is normalization and validation; it never installs anything or touches the network.
-- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container's bundled default apt/pip package and allowed-domain lists (fallback values). Projects override these via `.claude-container.d/` (see "Target Project Configuration" above). `node-version.txt`/`allowed-ports.txt` have no such bundled default — if the project doesn't provide one, `claude-container` synthesizes an empty file in the build context on the fly (meaning "no Node.js install" for the former, and "let `init-firewall.sh` itself apply its default `443,22`" for the latter; neither warns). `codex-version.txt` follows the same convention (no Codex CLI install, no warning).
-
-#### GitHub Meta Snapshot
-
-The GitHub IP ranges used by `init-firewall.sh`'s allowlist come from `https://api.github.com/meta`. To avoid the unauthenticated GitHub API rate limit (60 req/h/IP), the fetch happens in exactly one place — while `claude-container` stages the build context (at most one request per `-b`) — and `Dockerfile.claude` bakes the result into the image. There's no live fetch on container startup, so restarting the container never consumes the rate limit. If the fetch fails, (1) this project's previously staged snapshot (still in `.build-context/<PROJECT_NAME>/`) is reused with a warning, or (2) failing that, another project's most recent snapshot is reused with a warning (GitHub's IP ranges change infrequently enough that this is fine in practice); the build only aborts if neither exists.
-
-### Modifying the Image
-
-Edit `Dockerfile.claude` and rebuild with `./claude-container -b /path/to/project`. The `-b` flag re-fetches the GitHub meta snapshot (see above) and passes a `CACHEBUST` build arg (current epoch seconds) that busts the install-layer cache on every run, so `install.sh` always re-executes and fetches the latest Claude Code. Layers above the install step (apt packages etc.) are still served from cache, keeping rebuilds fast. Pin `CLAUDE_CODE_VERSION` in `compose.yml` if reproducibility matters.
-
-Changes to the package lists, allowed domains (`allowed-domains.txt`), allowed ports (`allowed-ports.txt`), Node.js version (`node-version.txt`), or the base image (`base-image.txt`) under `.claude-container.d/` also require a `-b` rebuild to take effect. So do changes to scripts staged into the build context — `entrypoint.sh`, `init-firewall.sh`, `git-askpass.sh`, `validate-build-input.sh`, or `Dockerfile.claude` itself (see "Architecture" above).
-
-`.build-context/` is a generated build context under the claude-container repo (git-ignored), split into a `.build-context/<PROJECT_NAME>/` subdirectory per project. `./claude-container --clean /path/to/project` removes just that project's; `./claude-container --clean` (no directory) removes all of them.
-
-Claude Code's auto-updater is disabled via `DISABLE_AUTOUPDATER: "1"` in `compose.yml`. Since containers run with `--rm`, any updates downloaded at runtime are discarded on exit anyway — use `-b` to rebuild the image when you want a newer version.
-
-### Persistence Across Container Runs
-
-Containers start with `--rm`, so internal state is lost on exit. However, the following always-on bind mounts are **preserved across restarts** (opt-in mounts such as `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR` persist the same way as long as you keep the host-side path in place, but they're omitted here since they're optional — see the "Environment Variables" section for the full list):
-
-| Container path | Host path | Contents |
-|---|---|---|
-| `/home/node/.claude/` | `~/.claude/` | Claude memory, config, session history |
-| `/home/node/.claude.json` | `~/.claude.json` | Claude credentials |
-| `/workspace/` | Directory specified at launch | Target project |
-
-### What Works and What Doesn't (git / gh / PAT / hook quick reference)
-
-`git` and the `gh` CLI inside the container have completely independent authentication systems. `git push` fails not because of insufficient permissions, but because a credential helper is deliberately left unwired; `gh` is unauthenticated by default (no `GH_TOKEN` or similar ambient export). Both only authenticate once you point them at a token file under `SECRETS_DIR` — the main PAT via an explicit read, the MCP/issues PAT via its exported value.
-
-**Authentication path and availability by operation type**
-
-| Operation | Authentication path | Availability inside the container |
-|---|---|---|
-| git local operations (`commit` / `log` / `diff` / `branch` / `merge`, etc.) | None required (`commit` alone needs `user.name`/`user.email` via `GITCONFIG_FILE`, as above) | Works |
-| git remote operations (`push` / `pull` / `fetch`) | git credential helper (**not wired** by default. Wired via `GIT_ASKPASS` only when `SECRETS_DIR/GITHUB_MAIN_PAT` is set) | By default, **push does not work**. **fetch/pull on public repositories works** (no auth required; private repos' fetch/pull don't work). Setting `SECRETS_DIR/GITHUB_MAIN_PAT` (above) enables push to the target repository (and, as a side effect, fetch/pull on private repositories with the same token) |
-| `gh` CLI (bare) | None | **Unauthenticated and fails by default** (the normal v4+ state) |
-| `gh` CLI (main PAT, explicit read) | `GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh ...` | Works within the main PAT's permissions and repository scope |
-| `gh` CLI (MCP/issues PAT) | `GH_TOKEN="$GITHUB_MCP_PAT" gh ...` (prefixing the ambient-exported value) | Works within the MCP/issues PAT's permissions (usually Issues only) |
-| MCP (GitHub official server) | `${GITHUB_MCP_PAT}` (`.mcp.json`'s Authorization header, via the exported value) | Same as above |
-
-**Main PAT / MCP-issues PAT reference table**
-
-| Item | Main PAT (`SECRETS_DIR` root) | MCP/issues PAT (`SECRETS_DIR/export/`) |
-|---|---|---|
-| Intended use | push, PR review, release creation, etc. — broad operations on your main target repository | Issue communication and MCP-driven operations (including cross-repo) |
-| Exported | No (only the path, as `GITHUB_MAIN_PAT_FILE`) | Yes (filename becomes the env var name, with its value) |
-| Permissions generally fine to grant | Combine `Issues`/`Pull requests`/`Contents` per use case (understand that including `Contents: write` makes push/approve/merge possible via an explicit read) | `Issues: Read and write` only |
-| Permissions it should not have | — (non-export makes the explicit-read step a structural wall) | `Pull requests: write`, `Contents: write` (these show up as live MCP write tools unless the token is scoped tightly) |
-| Setup and scope checking | See "GitHub Token Wiring" above | Same |
-
-**Reading and writing the host's Claude Code settings (`~/.claude`)**
-
-| Target | Inside the container |
-|---|---|
-| The 11 user-scope settings items: `hooks/` `skills/` `plugins/` `commands/` `agents/` `workflows/` `rules/` `output-styles/` `settings.json` `CLAUDE.md` `statusline.sh` | Readable, **not writable** (`:ro` overlay mounts. Create, update or delete them, run `/plugin` install/update, and change settings saved there on the host instead. Host-side updates become visible after a container restart) |
-| State such as credentials (`.credentials.json`), transcripts (`projects/`), auto memory (`projects/<p>/memory/`), `history.jsonl` | Read/write (unchanged) |
-| Project-scope settings (`/workspace/.claude/` settings, skills, agents, commands, rules, CLAUDE.md, and `.mcp.json`) | Read/write (unchanged; see "Security Model" for how the host treats them) |
-
-**Additional restrictions via hooks**
-
-This protection ships as `examples/hooks/block-pr-approve.sh` in this repository, but it isn't wired into the product itself. To apply it, wire it into a target project's own `.claude/settings.json` (see `examples/hooks/README.md` for the wiring example and regression tests). Forks inherit the file as-is, but it does nothing until wired.
-
-| Mechanism | Blocks | Allows |
-|---|---|---|
-| PreToolUse hook `examples/hooks/block-pr-approve.sh` | `gh pr review --approve` (and `-a`, including short-option clusters containing `a`) / `gh api …/pulls/<N>/reviews` with `event=APPROVE` (including via quoted strings or heredoc bodies) | `--comment`, `--request-changes`, and other PR operations, plus `gh` commands in general |
-| `permissions.deny` | (currently unused — this protection's only mechanism is the hook above) | — |
-
-- **Division of labor**: `permissions.deny` suits cases that can be blocked outright by a static prefix/glob pattern. This case needs context-dependent judgment ("block `--approve` under `gh pr review` but allow `--comment`"; "detect `event=APPROVE` even inside a JSON body or heredoc"), which a deny glob would either over-block or fail to catch — hence the hook.
-- **Known false positives/negatives**: Residual false positive (safe direction, accepted) = the executed command is genuinely `gh api` and its heredoc body quotes both `pulls/N/reviews` and `event=APPROVE`, or a multi-line double-quoted string contains an approval string. Residual false negative (outside the threat model) = deliberate obfuscation that plants `<<X` inside a quoted string to misfire heredoc stripping. The threat model is "prevent Claude from autonomously approving by accident" — deliberate obfuscation is explicitly out of scope.
-- **See also**: risk details in "Security Model" below; hook implementation, wiring example, and regression tests in `examples/hooks/README.md`.
-
-### Security Model
-
-Claude runs with `--dangerously-skip-permissions`, meaning it operates without tool-use confirmation prompts. The container boundary is the guardrail — Claude has full read/write access to the mounted workspace, `/data`, and `/shared`. Do not mount directories containing sensitive data outside the intended project scope. `SHARED_MOUNT` (`/shared`) is a shared area where every container that has the same host path configured gets full rw access — only set it across projects that trust each other.
-
-Network access is restricted by default via the `init-firewall.sh` egress allowlist. Outbound traffic to anything other than the endpoints Claude Code needs (Anthropic API, GitHub, etc.) and the domains listed in `.claude-container.d/allowed-domains.txt` is blocked, preventing malicious pip packages or prompt injection from exfiltrating credentials (`~/.claude.json`) or source code to arbitrary hosts. If you need unrestricted network access, set `CLAUDE_CONTAINER_NO_FIREWALL=1` in `.claude-container.d/env` (at your own risk).
-
-This guardrail only holds if Claude (and its children) cannot rewrite the allowlist itself. `compose.yml`'s `cap_add` (`NET_ADMIN`/`NET_RAW`) lands in the non-root user's ambient set under rootless podman and is inherited by every child process — without mitigation, Claude could operate iptables directly without going through sudo (and `CAP_NET_RAW` alone can bypass netfilter entirely via `AF_PACKET`). `Dockerfile.claude`'s `ENTRYPOINT` (see "Architecture" above) strips these capabilities at container startup, leaving `sudo`-invoked, root-run `init-firewall.sh` as the sole consumer of `NET_ADMIN`/`NET_RAW`. **Residual constraint**: the capability bounding set itself cannot be removed (that requires `CAP_SETPCAP`, which is not granted either), so if a project adds a binary with file capabilities (e.g. `iputils-ping`, `wireshark`) via `.claude-container.d/packages.txt`, that specific binary's capability can be restored for its own function (the bundled default `packages.txt` ships no such binary). Processes entering via `podman exec` from the host also bypass `Dockerfile.claude`'s `ENTRYPOINT` and are unaffected by this restriction.
-
-**Residual risks the allowlist cannot prevent**: tunneling over DNS queries, exfiltration to allowed services themselves (e.g. GitHub), and reachability of other sites behind shared CDN IPs. Allowed domains' IPs keep up with rotation via the ~15s background refresh (see Architecture above), but the tens of seconds between a rotation and the next refresh cycle can still see new-connection failures (a large improvement over needing a container restart, but not zero). GitHub IP ranges are fixed at build time, so a container restart does not refresh them — a `-b` rebuild is required instead. Build-time network access (`pip3 install` etc.) is not restricted.
-
-**`packages.txt`/`requirements.txt` build-time injection defenses still have residual risk**: both files go through allowlist validation by `validate-build-input.sh` (see "Target Project Configuration" / "Architecture" above), but because PyPI is open publishing, naming an arbitrary package in `requirements.txt` can still run its sdist's `setup.py` as root at build time (`claude-container#34`) — this path is inherent to the platform. The apt side has no equivalent, since it's limited to packages in configured repositories.
-
-**The claude-in-chrome integration cannot be blocked by the firewall, in principle** (`jj1xgo/claude-container#32`): Claude Code's built-in claude-in-chrome integration (`mcp__claude-in-chrome__*`) doesn't go through `.mcp.json` — it's a native feature, so it's outside the MCP audit gate's scope — and it's reachable and usable from inside the container. Hands-on investigation found that every new TCP connection made when it's used lands on port 443 to `claude.ai`/`api.anthropic.com`, which are domains the egress firewall must allow for Claude Code itself to function — meaning this path piggybacks on the exact thing the firewall is trying to restrict, and can't be closed without removing an allowed domain the tool itself needs. What appears on the host is only Chrome's standard `chrome.debugger` notification ("'claude' started debugging this browser"), which is not prior approval but **after-the-fact notice with an optional cancel** (fail-open — it goes unnoticed unless a human is watching the screen). As a result, code running in the container (including code that may have received a prompt injection) can operate the host's real browser — with its real, logged-in sessions — without any human approval beforehand. This sits **outside** the "the guardrail is the container boundary" premise stated at the top of this section. As a mitigation, you can add `mcp__claude-in-chrome__*` to `permissions.deny` in `.claude/settings.json` — but like the other MCP-related `permissions.deny` entries, this is a **soft gate that code inside the container can rewrite**.
-
-**MCP server approval prompts don't function**: Claude Code's own design shows an approval prompt before using a project-scoped `.mcp.json` server, but we've confirmed empirically that this confirmation doesn't run under `--dangerously-skip-permissions` (the server runs even while `enabledMcpjsonServers` stays empty). A stdio-type server (one that runs a command inside the container) would then execute immediately at session start, with no human or model judgment in between, and would be able to read the container's tokens — so claude-container adds its own interactive confirmation gate in `entrypoint.sh` (see "Adding MCP Servers" above). http/sse-type servers are outside this gate, but their destination is still vetted by the firewall allowlist. **A residual path**: registering a server via `claude mcp add` at local/user scope (`~/.claude.json`) is outside this gate, and could be used to persist access from an already-compromised session.
-
-**`.claude-container.d/env` is an attack surface for untrusted repositories**: since `env` exports every key except protected (`readonly`) ones (see "Environment Variables" above), a security opt-out like `CLAUDE_CONTAINER_NO_FIREWALL=1` takes effect if it's simply present in that project's own `.claude-container.d/env`. Review the contents of `.claude-container.d/env` before launching an untrusted repository.
-
-**`.mcp.json` is the only one that gets an extra gate — because the line is drawn by the severity of the consequence, not by input trustworthiness** (`claude-container#29`): repository-bundled configuration (both `.claude-container.d/env` and `.mcp.json`) is, either way, the operator's responsibility to review before launch — there's no basis for calling one "trusted" and the other "untrusted" when both ship in the same repository. claude-container adds an extra interactive gate only where skipping that review leads to "arbitrary code execution at session start" (i.e. `.mcp.json`'s stdio-type servers). `env` keys don't execute code "at session start" the way a stdio-type server does, but keys tied to runtime name resolution (e.g. `PATH`) can still lead to code execution on the host ([`#44`](https://github.com/jj1xgo/claude-container/issues/44)). That path is outside this gate. Separately, the use of boundary-affecting keys (`EXTRA_MOUNT`, `SHARED_MOUNT`, `SECRETS_DIR`, `GITCONFIG_FILE`, `CODEX_DIR`, etc. — runtime name-resolution keys like `PATH` are not covered by this list) is surfaced at launch time so it can't go unnoticed (`guard_env_boundary_keys()`). This visibility is not fail-closed — the premise that `env` is something the operator writes themselves is unchanged.
-
-To see this visibility in action, write `CLAUDE_CONTAINER_NO_FIREWALL=1` (or `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`) to `.claude-container.d/env` and launch — the value itself is never logged, only the key name.
-
-**Read-only protection of the host's Claude Code settings**: the host's `~/.claude` (based at `CLAUDE_CONFIG_DIR`) is bind-mounted rw into the container (needed to share credentials and transcripts), but the 11 user-scope settings items that the host executes or loads (see the table in "What Works and What Doesn't" above) are overlaid by `compose.yml` with `:ro` bind mounts inside that rw mount, so they cannot be modified from the container **through this mount**. The reason: if a compromised session writes hooks, skills, or plugins there, the host's Claude Code loads and runs them (user-settings hooks are picked up by a file watcher, so even a running host session is affected). Because podman would create sub-uid-owned stubs on the host when a mount target is missing, `claude-container` creates any missing item empty, as your user, right before launch (after all guards and MCP approval) and reports it with `INFO:` (`--check` reports `[WARN]` instead of creating). If any of the 11 items is a symlink or has the wrong type (e.g. a file where a directory is expected), the launch aborts. Symlinks are rejected because the `:ro` child mount attaches to the link target while the link itself stays inside the rw parent mount, so deleting and recreating it from the container would replace it with a writable entity (bypassing the protection). **Limits**: (1) the protection covers this mount only; if `/workspace` (the working directory), `EXTRA_MOUNT` or `SHARED_MOUNT` contains `~/.claude` or points at one of the protected items itself, it is writable through that other path, and the launcher prints a `WARNING` (detection is by path containment only; links inside the other mount are not detected). (2) Project-scope settings (`/workspace/.claude/` and `.mcp.json`) are out of scope; once you trust that folder on the host, the host's Claude Code loads them. (3) `~/.claude.json` (trust flags, user-scope MCP registrations), auto memory (`projects/<p>/memory/`), `agent-memory/`, `shell-snapshots/` and `session-env/` are out of scope because Claude Code writes them at runtime; the first three can re-inject instructions into host sessions. (4) If a protected file (`settings.json`, a `CLAUDE.md` import, a dependency read by a hook or plugin) points outside `~/.claude` or into an unprotected area, that target is not protected. (5) The host-side execution path via `PATH` etc. in `.claude-container.d/env` (`#44`) is independent of this protection and remains open. (6) If a host-side tool replaces one of the 11 files by rename, a running container keeps seeing the old file until restart.
-
-If `SECRETS_DIR` (see "GitHub Token Wiring" above) is set, the "exfiltration to allowed services themselves" risk above stops being passive: prompt injection or a malicious package running in the container can read a token (the main PAT as a file, the MCP/issues PAT as an exported env var) and write to GitHub (or elsewhere) within its scope. The mitigation is scoping each fine-grained PAT down (single repository, short expiration), which structurally limits the blast radius to that repository. By design, only tightly-scoped tokens (e.g. issues-only) are exported at all — broad privilege sits behind the non-exported, explicit-read wall instead, which lowers this risk's default (see the design principle in "GitHub Token Wiring"). Since `SECRETS_DIR` is a generic mechanism, this active risk extends to every secret you bring in, not just GitHub tokens (again, bring in only the minimum set a given project actually needs — see above).
-
-If `CODEX_DIR` is set (see the Codex recipe under "Adding MCP Servers" above), code running in the container can read Codex's credentials (`auth.json`, a ChatGPT account access token). Unlike `SECRETS_DIR`, this mount is rw, so container-side code can also write to it — the design uses a dedicated directory (not the real `~/.codex`) precisely to keep that write access from reaching the host's own Codex environment (e.g. `config.toml`'s `notify` hook). Registering Codex as a stdio-type MCP server in `.mcp.json` puts it under the MCP audit gate (TOFU) described above.
-
-If `SECRETS_DIR/GITHUB_MAIN_PAT` (see "Recipe: enabling `git push`" above) has `Contents: write`, the active risk extends to push and PR merges as well: prompt injection or a malicious package could go through the explicit read (`GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") ...`) to cause unintended commits, pushes, or merges on the target repository. Non-export makes this "never silent," but it's not an absolute wall — any process in the container can read that file path. The mitigation is the same scoping (single repository) combined with GitHub-side branch protection (no force-push, required reviews).
-
-Additional risk if the main PAT grants `Pull requests: Read and write` on your own repository:
-
-- **Larger attack surface**: rewriting other PRs' titles/bodies, spamming review requests, or closing PRs disruptively — similar in kind to issue abuse, but one notch heavier
-- **Push/merge still requires `Contents: write`**: merging a PR (`PUT …/pulls/{n}/merge`) requires the `Contents: write` permission; `Pull requests` permission alone cannot perform it. If the main PAT also has `Contents: write`, this wall doesn't apply (see the push section above)
-- **Watch for auto-merge bypass**: submitting an approving review (`gh pr review --approve`) only requires `Pull requests: write`, not `Contents: write`. If auto-merge is enabled on the target repo, a malicious approval from the container's token could satisfy a required-review branch protection rule and let GitHub complete the merge on its own. Keep auto-merge disabled (the first wall); the bundled PreToolUse hook (`examples/hooks/block-pr-approve.sh`, if wired) can also mechanically block autonomous approval (the second wall — see "What Works and What Doesn't" above for its scope and limits). Approval via MCP (`mcp__github__pull_request_review_write` etc.) is outside this hook's scope — use the `permissions.deny` from "GitHub Token Wiring" as a separate wall for MCP.
-
-### Podman-specific Notes
-
-- `userns_mode: keep-id` maps the host user's UID/GID into the container. This is a Podman feature — remove it if adapting for Docker.
-- `--in-pod false` prevents Podman Compose from wrapping the service in a Pod (default Podman Compose behavior). Docker Compose ignores this flag.
-
-### Verifying Changes
-
-There is no test suite. After editing the script or Compose/Dockerfile, verify with:
-
-```bash
-./lint.sh
-```
-
-`lint.sh` runs `bash -n` and `shellcheck` on every bash script in the repository (tracked and untracked files minus gitignored ones, detected by shebang, so the target list needs no maintenance when scripts are added or removed), plus `podman compose -f compose.yml config`. It fails with an explicit error if shellcheck is not installed (`sudo apt-get install shellcheck`). When podman is unavailable (e.g. developing inside the container), only the Compose validation is skipped with a warning.
-
-If you edit the `:ro` overlay mounts in `compose.yml` or `prepare_claude_config_ro()` in `claude-container`, run `./test-build.sh --config-ro-only` with the built test image `localhost/claude-test` present (a full `./test-build.sh` run creates it). Separate tests confirm that, with the real `compose.yml` and image, writes to the 11 items are rejected, and that the real launcher creates placeholders, checks types, keeps `--check` write-free, and passes `CLAUDE_CONFIG_DIR` through to compose (an interactive launch through both is done by hand).
-
-If you edit the guard functions in `claude-container` (`guard_*`, `prepare_claude_config_ro()`), run `./test-build.sh --launcher-only`. It launches the real launcher in an isolated environment (temporary `HOME`, empty environment, podman replaced by a dummy) and checks each guard's behavior on a normal launch and under `--check`, plus the environment variables handed to compose. No real podman is needed, so it also runs from a development session inside the container or from CI. The full `./test-build.sh` run includes it.
-
-Changes to `Dockerfile.claude` (the `ENTRYPOINT`'s `setpriv` wrapper) require a `-b` rebuild plus a real launch to verify (see "Security Model" above). A session losing the ability to run `iptables` without `sudo` is the correct, intended state — to inspect the firewall rules themselves, use `podman exec --user root <container> iptables -S` from the host; running `iptables -S` from inside the session will fail once capabilities are stripped.
-
-### Versioning
-
-Releases follow [Semantic Versioning](https://semver.org/) and are managed with annotated git tags (`vX.Y.Z`); each tag gets a GitHub Release created with `gh release create <tag> --notes-from-tag`, reusing the tag message verbatim (no separate CHANGELOG file). Version numbers are judged against the user-visible interface (CLI arguments, the `.claude-container.d/` configuration format, and default behavior):
-
-- **MAJOR** — backward-incompatible changes (changed defaults, removed or incompatible configuration formats — anything that breaks existing usage until the user adapts)
-- **MINOR** — backward-compatible feature additions (existing usage keeps working)
-- **PATCH** — backward-compatible bug fixes only
-
-Browse the version history on the [GitHub Releases page](https://github.com/jj1xgo/claude-container/releases) (list and subscribe), or with `git tag -n1`.
-
-### References
-
-- [Running Claude Code CLI in a Container (Endpoint Dev Blog)](https://www.endpointdev.com/blog/2026/03/claude-code-cli-in-container/) — Container setup guide by Seth Jensen, the original fork author
-
-### License
-
-GPL-3.0. The original fork ([sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)) is MIT-licensed. See [LICENSE](LICENSE) for details.

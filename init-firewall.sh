@@ -84,8 +84,13 @@ resolve_allowed_ports() {
   if [ "${#ports[@]}" -eq 0 ]; then
     ports=(443 22)
   fi
-  if [ "${#ports[@]}" -gt 15 ]; then
-    echo "ERROR: $ALLOWED_PORTS_FILE のポート/範囲が ${#ports[@]} 個あります。iptables の multiport マッチは最大 15 個です" >&2
+  # multiport の内部枠数は単一値が1、範囲が2（両端の値）。範囲内のポート数ではない。
+  local entry port_slots=${#ports[@]}
+  for entry in "${ports[@]}"; do
+    if [[ "$entry" == *:* ]]; then port_slots=$((port_slots + 1)); fi
+  done
+  if [ "$port_slots" -gt 15 ]; then
+    echo "ERROR: $ALLOWED_PORTS_FILE の許可ポートは換算すると $port_slots 枠あります。iptables の multiport マッチは最大 15 枠です（単一ポートは1枠、範囲は2枠）" >&2
     exit 1
   fi
   # full_init() の起動時自己検証は、api.github.com への 443 番が到達可能で
@@ -94,7 +99,7 @@ resolve_allowed_ports() {
   # 「ルールが壊れている」ように見えるメッセージ（"port restriction not enforced"）で
   # 失敗していたため、ここで本当の理由とともに検証する（claude-container#49）。
   # 範囲は両端を含む。入力値は上で先頭ゼロのない十進表記へ正規化済み。
-  local entry has_443=0 has_80=0
+  local has_443=0 has_80=0
   for entry in "${ports[@]}"; do
     lo="${entry%%:*}"; hi="${entry##*:}"
     if (( lo <= 443 && 443 <= hi )); then has_443=1; fi

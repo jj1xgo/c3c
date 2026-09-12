@@ -50,7 +50,7 @@ fi
 # 制限なしのままとなる（CHAIN 作成箇所のコメントを参照）。
 resolve_allowed_ports() {
   local -a ports=()
-  local raw
+  local raw lo hi
   if [ -f "$ALLOWED_PORTS_FILE" ]; then
     # `|| [ -n "$raw" ]` により、末尾に改行のない最終行も読む
     # （read はその行で非 0 を返すが変数は埋まっている。これがないと
@@ -61,6 +61,16 @@ resolve_allowed_ports() {
       [ -n "$raw" ] || continue
       if [[ ! "$raw" =~ ^[0-9]{1,5}(:[0-9]{1,5})?$ ]]; then
         echo "ERROR: $ALLOWED_PORTS_FILE に不正なエントリがあります: '$raw'（ポート番号か port:port の範囲を想定。例: 443、8000:8010）" >&2
+        exit 1
+      fi
+      # 書式を確認してから十進数として評価する。単一値は lo == hi になる。
+      lo=$((10#${raw%%:*})); hi=$((10#${raw##*:}))
+      if (( lo < 1 || lo > 65535 || hi < 1 || hi > 65535 )); then
+        echo "ERROR: $ALLOWED_PORTS_FILE に不正なエントリがあります: '$raw'（ポート番号は範囲の両端も含め1〜65535）" >&2
+        exit 1
+      fi
+      if [[ "$raw" == *:* ]] && (( lo >= hi )); then
+        echo "ERROR: $ALLOWED_PORTS_FILE に不正なエントリがあります: '$raw'（開始ポートは終了ポートより小さくしてください。同じ場合は単一ポートで指定。例: 443:443 ではなく 443）" >&2
         exit 1
       fi
       ports+=("$raw")
@@ -80,7 +90,7 @@ resolve_allowed_ports() {
   # 失敗していたため、ここで本当の理由とともに検証する（claude-container#49）。
   # 範囲は両端を含む。10# は 10 進として強制するもので、先頭ゼロ（例: 080）を
   # 8 進として読まないようにする。
-  local entry lo hi has_443=0 has_80=0
+  local entry has_443=0 has_80=0
   for entry in "${ports[@]}"; do
     lo="${entry%%:*}"; hi="${entry##*:}"
     if (( 10#$lo <= 443 && 443 <= 10#$hi )); then has_443=1; fi

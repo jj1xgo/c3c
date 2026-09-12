@@ -550,6 +550,7 @@ run_clean_ledger_launcher_tests() {
   # --clean の chmod は台帳の一時ファイルだけ。ダミーはこのケース後に除去する。
   printf '%s\n' "$proj" "$root/other project" > "$ledger"
   cp "$ledger" "$root/expected-ledger"
+  chmod 600 "$ledger"
   printf '#!/bin/bash\nexit 1\n' > "$bin/chmod"
   chmod +x "$bin/chmod"
   out=$(env -i HOME="$home" PATH="$bin:$PATH" \

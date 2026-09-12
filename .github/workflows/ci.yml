@@ -1,6 +1,6 @@
-# lint.sh と test-build.sh のうち podman を必要としない部分、および同梱 hook の回帰テストを回す。
+# lint.sh（podman compose config を含む）とビルド不要のテスト、および同梱 hook の回帰テストを回す。
 # 全体実行（実 podman build）は対象外。設計: docs/superpowers/specs/2026-09-12-ci-design.md、
-# 追随: docs/superpowers/plans/2026-09-12-ci-review-followup.md
+# 追随: docs/superpowers/plans/2026-09-12-ci-review-followup.md。Compose 検証の追加は #66。
 name: CI
 
 on:
@@ -22,7 +22,7 @@ env:
 
 jobs:
   lint-and-test:
-    name: lint と podman 不要のテスト
+    name: lint とビルド不要のテスト
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -58,6 +58,7 @@ jobs:
           CLAUDE_CONTAINER_DIR: ${{ github.workspace }}
           BUILD_CONTEXT_DIR: ${{ github.workspace }}
         run: |
+          set -euo pipefail
           command -v podman
           test -x "$PODMAN_COMPOSE_PROVIDER"
           podman --version

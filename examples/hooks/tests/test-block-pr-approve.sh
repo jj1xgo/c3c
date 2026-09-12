@@ -137,7 +137,10 @@ run_backtick_cases() {
   for flag in --approve -a -aa; do
     run_case "$mode $flag バッククォート終端" deny 'x=`gh pr review 1 '"$flag"'`' "$hook_path"
   done
+  # コマンド置換を実行せず、hook 入力としてそのまま渡す。
+  # shellcheck disable=SC2016
   run_case "$mode バッククォート内のコメント" pass 'x=`gh pr review 1 --comment`' "$hook_path"
+  # shellcheck disable=SC2016
   run_case "$mode バッククォート内の変更要求" pass 'x=`gh pr review 1 --request-changes`' "$hook_path"
 }
 run_backtick_cases "通常"

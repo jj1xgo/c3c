@@ -607,13 +607,15 @@ SHIM
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$bin/grep" "$bin/real-grep" "$bin/mktemp" "$bin/real-mktemp" "$ledger.tmp"
   # 作成・置き換え・出力を開く処理の失敗でも元台帳を保持し、残置しない。
-  local operation shim_command
+  local operation shim_command expected_error
   for operation in mktemp mv open; do
     printf '%s\n' "$proj" "$root/other project" > "$ledger"
     chmod 600 "$ledger"
     cp "$ledger" "$root/expected-ledger"
     shim_command="$operation"
+    expected_error='ERROR: 起動台帳'
     if [[ "$operation" == open ]]; then
+      expected_error='書き込み用に開けません'
       # chmod の直後に出力先を開けない状態へ変え、root でも open を失敗させる。
       shim_command='chmod'
       cat > "$bin/$shim_command" <<'SHIM'
@@ -628,7 +630,7 @@ SHIM
     out=$(env -i HOME="$home" PATH="$bin:$PATH" \
       "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
     check "$operation 失敗時は元台帳を保持し一時台帳を除去（rc=$rc）" \
-      bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
+      bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"$5"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out" "$expected_error"
     printf '%s\n' "$out" >> "$LOG_FILE"
     rm -f "$bin/$shim_command"
   done

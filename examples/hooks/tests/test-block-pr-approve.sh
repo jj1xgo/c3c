@@ -84,6 +84,31 @@ run_case "N3 git commit -am 引用FP解消" pass 'git commit -am "docs: explain 
 run_case "N4 --comment" pass 'gh pr review 123 --comment --body "note"'
 run_case "N5 --request-changes" pass 'gh pr review 123 --request-changes -b "fix"'
 
+# issue #72: フラグ直後のシェル演算子を終端として扱わない回帰を検出する。
+# 入力は hook に渡す文字列だけであり、承認コマンドやリダイレクトは実行しない。
+# 同じケースを通常経路と jq 不在経路で確認する。
+run_delimiter_cases() {
+  local mode="$1" hook_path="${2:-}" flag
+  for flag in --approve -a -aa; do
+    run_case "$mode $flag セミコロン" deny "gh pr review 1 $flag; echo done" "$hook_path"
+    run_case "$mode $flag AND" deny "gh pr review 1 $flag&&true" "$hook_path"
+    run_case "$mode $flag OR" deny "gh pr review 1 $flag||true" "$hook_path"
+    run_case "$mode $flag パイプ" deny "gh pr review 1 $flag|cat" "$hook_path"
+    run_case "$mode $flag バックグラウンド" deny "gh pr review 1 $flag& wait" "$hook_path"
+    run_case "$mode $flag サブシェル終端" deny "(gh pr review 1 $flag)" "$hook_path"
+    run_case "$mode $flag 入力リダイレクト" deny "gh pr review 1 $flag</dev/null" "$hook_path"
+    run_case "$mode $flag 出力リダイレクト" deny "gh pr review 1 $flag>/dev/null" "$hook_path"
+  done
+  run_case "$mode コメントと区切り文字" pass 'gh pr review 1 --comment; echo done' "$hook_path"
+  run_case "$mode 変更要求と区切り文字" pass 'gh pr review 1 --request-changes&&true' "$hook_path"
+  run_case "$mode 長オプションの接頭辞だけでは承認にしない" pass 'gh pr review 1 --approve-extra;' "$hook_path"
+  run_case "$mode 短オプションの接頭辞だけでは承認にしない" pass 'gh pr review 1 -a1;' "$hook_path"
+}
+run_delimiter_cases "通常"
+run_case "引用した承認フラグと区切り文字" pass 'gh pr review 1 --comment --body "example --approve; -a&&true"'
+run_case "heredoc本文の承認フラグと区切り文字" pass \
+  $'gh pr comment 1 --body-file - <<EOF\ngh pr review 1 --approve;\nEOF'
+
 # --- fail-safe（jq不在） ---
 # hook が使う外部コマンド（bash・cat・grep・sed・awk）だけを symlink した shim ディレクトリを
 # PATH にする。PATH から jq のディレクトリを丸ごと落とす方式だと、usrmerge 環境では bash 自体が
@@ -102,6 +127,7 @@ for c in bash cat grep sed awk; do
 done
 if [ "$shim_ok" -eq 1 ]; then
   run_case "C10 jq不在fail-safe: 真正承認は引き続きDENY" deny 'gh pr review 123 --approve' "$SHIM"
+  run_delimiter_cases "jq不在" "$SHIM"
 else
   echo "FAIL - C10 jq不在fail-safe: 準備に失敗したため未実行"
   fail=$((fail + 1))

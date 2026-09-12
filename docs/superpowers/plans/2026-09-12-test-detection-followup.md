@@ -17,7 +17,7 @@
 - commit メッセージ、PR の題名と本文、PR コメント、スクリプトのコメントとメッセージは日本語のみ（README「表記」節）。`[PASS]`・`[FAIL]`・`ok   - `・`FAIL - `・「全ケース green」などテストや CI が照合する機械可読トークンは変えない。
 - commit の型は `fix:`、`test:`、`docs:` の接頭辞＋日本語の要約。
 - すべての `gh` コマンドに `-R jj1xgo/claude-container` を付ける（この checkout の既定 repo は upstream を指す）。
-- hook のトリガー文字列（承認系のサブコマンド）をシェルのコマンド行、commit メッセージ、PR 本文の見出しに平文で書かない。テストの実行は `bash examples/hooks/tests/test-block-pr-approve.sh` の 1 コマンドだけ。変異注入は `sed` / `python3` のスクリプト内で行う。
+- hook のトリガー文字列（承認系のサブコマンド）を、シェルのコマンド行・commit メッセージ・PR 本文の見出しに素の平文で書かない。単引用符で囲んだリテラル（`jq -n --arg c '...'` の引数など）は稼働中の hook が引用文字列として除去するので可（Task 3 の probe はこの形）。テストの実行は `bash examples/hooks/tests/test-block-pr-approve.sh` の 1 コマンドだけ。変異注入は `sed` / `python3` のスクリプト内で行う。テストファイルの全文置換（Task 4 Step 1）は Bash のヒアドキュメントではなく Write ツールで行う。
 - `lint.sh` が通ること（`bash -n` と shellcheck 0.11.0、compose 検証）。
 
 ---
@@ -306,16 +306,20 @@ Expected: `1`、`結果: PASS=74  FAIL=1` と `rc=1`。`git status --short` は�
 
 - [ ] **Step 6: 全体実行を 1 回回す（#59 と #65 の実証）**
 
-Run:
+全体実行は複数の `podman build --no-cache` を含み、Bash ツールの前景上限（600 秒）を超えうる。次の 2 行を **`run_in_background: true` で起動し**、完了通知を待ってから後続の確認を行う（`sleep` での待機はしない）:
 ```bash
-before=$(sha256sum ~/.local/state/claude-container/projects); echo "$before"
-./test-build.sh > /tmp/test-build-full.out 2>&1; echo "rc=$?"
-tail -4 /tmp/test-build-full.out
+before=$(sha256sum ~/.local/state/claude-container/projects); echo "$before" > /tmp/test-build-ledger-before
+./test-build.sh > /tmp/test-build-full.out 2>&1; echo "rc=$?" >> /tmp/test-build-full.out
+```
+完了通知の後に Run:
+```bash
+before=$(cat /tmp/test-build-ledger-before)
+tail -5 /tmp/test-build-full.out
 grep -E '起動台帳の記録が隔離 HOME に閉じる|結果:' /tmp/test-build-full.out
 after=$(sha256sum ~/.local/state/claude-container/projects); [ "$before" = "$after" ] && echo "実台帳 不変" || echo "実台帳 変化"
 ./claude-container --check 2>&1 | grep -c '/tmp/tmp\.'
 ```
-Expected: `rc=0`。`tail -4` の最後の 3 行が `====`・`結果: PASS=<N>  FAIL=0`・`====`（案内より後に結果が出る）。`起動台帳の記録が隔離 HOME に閉じる` の行が `[PASS]`。`実台帳 不変`。`--check` の出力に `/tmp/tmp.` を含む行が `0`。PASS の件数 `<N>` を控える（Issue #59 の時点は 171、今回は Task 1 の check が 1 件増える）。FAIL が 0 でなければ、`/tmp/test-build-full.out` と `.claude/test-results/` の最新ログで原因を読み、この計画の変更が原因なら直し、環境要因（ネットワーク等）なら再実行する。
+Expected: `tail -5` の末尾が `====`・`結果: PASS=<N>  FAIL=0`・`====`・`rc=0`（案内より後に結果が出て、終了コードは 0）。`起動台帳の記録が隔離 HOME に閉じる` の行が `[PASS]`。`実台帳 不変`。`--check` の出力に `/tmp/tmp.` を含む行が `0`。PASS の件数 `<N>` を控える（Issue #59 の時点は 171、今回は Task 1 の check が 1 件増える）。FAIL が 0 でなければ、`/tmp/test-build-full.out` と `.claude/test-results/` の最新ログで原因を読み、この計画の変更が原因なら直し、環境要因（ネットワーク等）なら再実行する。
 
 ---
 
@@ -421,7 +425,7 @@ git commit -m "fix: block-pr-approve.sh の jq 不在 fail-safe 経路で、生 
 
 - [ ] **Step 1: 全文を置き換える**
 
-`examples/hooks/tests/test-block-pr-approve.sh` を次の内容にする（既存ファイルを上書き）:
+`examples/hooks/tests/test-block-pr-approve.sh` を次の内容にする（既存ファイルを Write ツールで上書きする。Bash のヒアドキュメントでは書かない）:
 
 ```bash
 #!/usr/bin/env bash
@@ -619,7 +623,7 @@ Closes #71
 
 - [ ] **Step 2: CI の緑を確かめる**
 
-「実行者への前提」の完了待ちを実行する。
+「実行者への前提」の完了待ちを実行する（Bash ツールの `timeout` を 600000 にする。CI は 1〜2 分で終わる）。
 Expected: `conclusion=success`。ログに `全ケース green` が 1 件、失敗時ログのステップは skipped。
 
 - [ ] **Step 3: PR 本文を最終値に更新し、ready にする**

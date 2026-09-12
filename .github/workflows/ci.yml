@@ -1,0 +1,54 @@
+# lint.sh と test-build.sh のうち podman を必要としない部分を回す。
+# 全体実行（実 podman build）は対象外。設計: docs/superpowers/specs/2026-09-12-ci-design.md
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # host の開発環境と同じ版に固定する。SHA256 は公式 Releases の tarball のもの。
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+
+jobs:
+  lint-and-test:
+    name: lint と podman 不要のテスト
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: リポジトリを取得する
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck を版固定で取得する
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check
+          tar -xJf shellcheck.tar.xz
+          echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      - name: shellcheck の版を確かめる
+        run: |
+          shellcheck --version | grep -qx "version: ${SHELLCHECK_VERSION}"
+
+      - name: lint.sh を実行する（compose 検証はスキップ）
+        run: LINT_SKIP_COMPOSE=1 ./lint.sh
+
+      - name: test-build.sh --validator-only を実行する
+        run: ./test-build.sh --validator-only
+
+      - name: test-build.sh --launcher-only を実行する
+        run: ./test-build.sh --launcher-only

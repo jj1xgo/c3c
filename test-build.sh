@@ -1155,7 +1155,9 @@ echo "[user]
 echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.claude-container.d/env"
 
 BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
-PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1
+# 他のランチャーテストと同じく env -i で隔離する。隔離しないと record_project_in_ledger() が
+# 実ユーザーの $HOME の起動台帳に一時パスを 1 行残す（claude-container#59）。
+env -i HOME="$ENV_TESTROOT" PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1
 AFTER_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 NEW_BUILD_CONTEXT="$(comm -13 <(echo "$BEFORE_BUILD_CONTEXTS" | sort) <(echo "$AFTER_BUILD_CONTEXTS" | sort) | head -1)"
 
@@ -1166,6 +1168,9 @@ if [[ -n "$NEW_BUILD_CONTEXT" ]]; then
 else
   check ".claude-container.d/env がビルドコンテキストに含まれない" false
 fi
+
+# 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（claude-container#59）
+check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/claude-container/projects"
 
 rm -rf "$ENV_TESTROOT"
 log ""

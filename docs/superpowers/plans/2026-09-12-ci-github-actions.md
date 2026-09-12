@@ -27,6 +27,7 @@
   ```
   `--workflow CI` で絞らないのは、workflow が一度も走っていない時点では `could not find any workflows named CI` で失敗するため（実測）。repo には Dependabot の workflow の run もあるので、jq 側で workflow 名を選ぶ。
   `rc=0` なら緑。`rc` が 0 以外なら赤で、`gh run view -R jj1xgo/claude-container "$id" --log-failed | head -60` で失敗ステップとログを読む。Task 4 の「Expected: 赤」は `rc` が 0 以外になることが意図どおりという意味で、コマンドの異常ではない。run の URL は `https://github.com/jj1xgo/claude-container/actions/runs/$id`。
+  **注記（2026-09-12、実行後の Codex レビュー指摘 2）**: 上の手順は監視コマンドの終了コードを赤・緑と同一視しており、監視自体の失敗（通信、未登録の無期限待ち）と run の失敗を分けていない。実行時は run の `conclusion` と失敗ステップ名・ログで判定し直したので結果に影響は無いが、次の計画でこの手順を写すときは、run の検索待ちに期限を置き、`gh run view --json status,conclusion` と失敗ステップ名で判定する形にする。
 - `./test-build.sh` を引数なしで実行しない（実 podman build が走り、#59 により実台帳に 1 行残る）。使うのは `--validator-only` と `--launcher-only` だけ。
 - runner と host の差: runner のユーザーは `runner`、`env -i` 下のランチャーは C ロケールで動く。`--launcher-only` は日本語リテラルをバイト列として扱うだけなので影響しない想定だが、runner での初回実行が実検証になる（Task 2 Step 5 の「赤なら直す」で対応）。
 
@@ -100,6 +101,8 @@ Expected:
 - 1 回目: `lint NG`、`rc=1`（従来の挙動が変わっていない）。
 - 2 回目: stderr に `WARNING: LINT_SKIP_COMPOSE=1 のため ...`、`lint OK`、`rc=0`。
 - 3 回目: `lint OK`、`rc=0`（host の実 podman で compose 検証も通る。`lint.sh` 自身も shellcheck の対象なので、ここで自分の変更が lint を通ることも確認される）。
+
+**注記（2026-09-12、実行後の Codex レビュー指摘 3）**: 1 回目と 3 回目は `LINT_SKIP_COMPOSE` を指定しないだけで、親環境が export した値を解除していない。今回は 1 回目がダミー podman で `rc=1` になった事実から変数が未設定だったと言えるが、次の計画で写すときは `env -u LINT_SKIP_COMPOSE PATH="$d:$PATH" ./lint.sh` と `env -u LINT_SKIP_COMPOSE ./lint.sh` にする。
 
 - [x] **Step 5: Commit**
 

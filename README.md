@@ -411,7 +411,7 @@ GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push �
 
 `claude-container` のガード関数（`guard_*`・`prepare_claude_config_ro()`）を編集した場合は `./test-build.sh --launcher-only` を実行する。podman をダミーに置き換えた隔離環境（一時 `HOME`・空の環境変数）で実物のランチャーを起動し、各ガードの通常起動と `--check` の挙動、compose へ渡る環境変数を検証する。実 podman が不要なので、コンテナ内の開発セッションや CI からも回せる。通常の `./test-build.sh` にも含まれる。
 
-`init-firewall.sh` の `resolve_allowed_ports()`・`refresh_domains()` を編集した場合も `./test-build.sh --launcher-only` を実行する。ポート検証と DNS 応答の回帰テスト（`tests/test-refresh-domains.sh`）、ルールの世代非更新・期限切れ削除の回帰テスト（`tests/test-domain-rule-lifecycle.sh`）を含む。各テストは `bash tests/<ファイル名>.sh` で単独実行できる。実際の iptables と接続の確認は別途コンテナで行う。
+`init-firewall.sh` の `resolve_allowed_ports()`・`refresh_domains()`・`add_or_touch_domain_ip()`・`prune_stale_domain_rules()` を編集した場合も `./test-build.sh --launcher-only` を実行する。ポート検証と DNS 応答の回帰テスト（`tests/test-refresh-domains.sh`）、ルールの更新順序・世代非更新・期限切れ削除の回帰テスト（`tests/test-domain-rule-lifecycle.sh`）を含む。各テストは `bash tests/<ファイル名>.sh` で単独実行できる。実際の iptables と接続の確認は別途コンテナで行う。
 
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 

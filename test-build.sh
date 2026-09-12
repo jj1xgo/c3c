@@ -455,7 +455,7 @@ case "\$1 \$2" in
   "image exists") exit 0 ;;
   "image inspect") exit 0 ;;
 esac
-[[ "\$1" == "compose" ]] && env > "$root/compose-env"
+[[ "\$1" == "compose" ]] && { env > "$root/compose-env"; printf '%s\n' "\$@" >> "$root/compose-args"; }
 exit 0
 DUMMY
   chmod +x "$bin/podman"
@@ -467,7 +467,7 @@ DUMMY
 # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
 # 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
 run_launcher() {
-  rm -f "$root/compose-env"
+  rm -f "$root/compose-env" "$root/compose-args"
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
 }
 
@@ -495,6 +495,7 @@ run_launcher_tests() {
   run_config_ro_launcher_tests
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
+  run_env_file_launcher_tests
   run_allowed_ports_tests
   log ""
 }
@@ -634,6 +635,128 @@ run_codex_dir_launcher_tests() {
       bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -qE '結果: (PASS|WARN)'" "$out"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
+
+  launcher_sandbox_cleanup
+}
+
+# .claude-container.d/env の許可リスト（claude-container#44）と、対象プロジェクト直下の
+# .env を compose の補間に使わせない遮断（claude-container#60）の検証。env ファイルは
+# 実際に $proj/.claude-container.d/env へ書く（既存テストのようにシェル環境で渡すと、
+# 「ファイルのキーを export するか」という本題を検証できない）。
+run_env_file_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local envf="$proj/.claude-container.d/env"
+  mkdir -p "$proj/.claude-container.d"
+
+  # D1: 対象プロジェクト直下の .env は compose へ --env-file /dev/null で遮断される
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$proj/.env"
+  rm -f "$envf"
+  run_launcher
+  check "D1: compose に --env-file /dev/null が渡る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && tr '\n' ' ' < '$root/compose-args' | grep -q -- '--env-file /dev/null '"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # D2: build 側・run 側の両方に付いている（静的確認。run_launcher は -b を渡せないため本体を数える）
+  check "D2: build と run の両呼び出しに --env-file /dev/null がある" \
+    bash -c "[ \"\$(grep -c 'podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/claude-container')\" -eq 2 ]"
+  rm -f "$proj/.env"
+
+  # 許可リスト（claude-container#44）。偽 grep は実行痕跡を残してから本物へ委譲する
+  # （偽物が動いてもランチャーの流れは壊さず、痕跡の有無だけで判定する）。
+  local evil="$root/evil" marker="$root/evil-ran" real_grep
+  real_grep="$(command -v grep)"
+  mkdir -p "$evil" "$home/.codex" "$home/.codex-container"
+  cat > "$evil/grep" <<DUMMY
+#!/bin/bash
+touch "$marker"
+exec "$real_grep" "\$@"
+DUMMY
+  chmod +x "$evil/grep"
+
+  # E1: env の PATH は export されず、以降の grep はホストの本物が動く。
+  # $bin を含めるのは、修正前（PATH が export される状態）でもダミー podman が解決され続ける
+  # ようにするため（含めないと赤の確認で実 podman の image exists → 実ビルドへ進んでしまう）。
+  # 判定は marker の有無なので赤は成立する。
+  printf 'PATH=%s:%s:/usr/bin:/bin\n' "$evil" "$bin" > "$envf"
+  run_launcher
+  check "E1: env の PATH で偽 grep が実行されない（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && [ ! -e '$marker' ] && ! grep -q '^PATH=$evil' '$root/compose-env'"
+  check "E1: PATH は未対応キーとして WARNING で報告される" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*PATH.*解釈しないため無視'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E2: env の HOME で guard_codex_dir の fail-closed が沈黙しない（2026-09-12 の実測の回帰）
+  printf 'HOME=%s\nCODEX_DIR=%s/.codex\n' "$root/fake-home" "$home" > "$envf"
+  run_launcher
+  check "E2: env の HOME では CODEX_DIR ガードを迂回できない（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CODEX_DIR' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E3: 許可キー 8 件が全て compose へ届く（許可リストからどれか 1 つ落ちたら赤になる対照）。
+  # 3 件だけを見ていると、マウント境界を決める CLAUDE_CONFIG_DIR・EXTRA_MOUNT・SHARED_MOUNT・
+  # SECRETS_DIR が配列から消えても緑のままになる（レビュー指摘に基づく拡張）。
+  : > "$root/gitconfig"
+  mkdir -p "$root/extra" "$root/shared" "$root/secrets" "$home/cfgx/.claude"
+  local e_cfg e_extra e_shared e_secrets e_gitcfg e_codex
+  e_cfg="$(cd "$home/cfgx" && pwd -P)"
+  e_extra="$(cd "$root/extra" && pwd -P)"
+  e_shared="$(cd "$root/shared" && pwd -P)"
+  e_secrets="$(cd "$root/secrets" && pwd -P)"
+  e_gitcfg="$root/gitconfig"
+  e_codex="$(cd "$home/.codex-container" && pwd -P)"
+  {
+    printf 'TZ=Asia/Tokyo\n'
+    printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n'
+    printf 'CLAUDE_CONFIG_DIR=%s\n' "$e_cfg"
+    printf 'EXTRA_MOUNT=%s\n' "$e_extra"
+    printf 'SHARED_MOUNT=%s\n' "$e_shared"
+    printf 'SECRETS_DIR=%s\n' "$e_secrets"
+    printf 'GITCONFIG_FILE=%s\n' "$e_gitcfg"
+    printf 'CODEX_DIR=%s\n' "$e_codex"
+  } > "$envf"
+  run_launcher
+  check "E3: 許可キー 8 件が全て compose へ届く（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] \
+      && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' \
+      && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env' \
+      && grep -qxF 'CLAUDE_CONFIG_DIR=$e_cfg' '$root/compose-env' \
+      && grep -qxF 'EXTRA_MOUNT=$e_extra' '$root/compose-env' \
+      && grep -qxF 'SHARED_MOUNT=$e_shared' '$root/compose-env' \
+      && grep -qxF 'SECRETS_DIR=$e_secrets' '$root/compose-env' \
+      && grep -qxF 'GITCONFIG_FILE=$e_gitcfg' '$root/compose-env' \
+      && grep -qxF 'CODEX_DIR=$e_codex' '$root/compose-env'"
+  check "E3: 許可キーには WARNING が出ない" \
+    bash -c "! printf '%s' \"\$0\" | grep -q '解釈しないため無視'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E4: 廃止変数を env ファイルに書いた場合の移行案内（ERROR）は許可リスト化後も維持される
+  printf 'GH_TOKEN_FILE=/nonexistent\n' > "$envf"
+  run_launcher
+  check "E4: env の GH_TOKEN_FILE は廃止 ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q '廃止されました' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E5: --check は未対応キーを [WARN] として報告し、FAIL にはしない。
+  # 修正前は LD_PRELOAD が export され、外部コマンドの exec ごとに ld.so が stderr へ
+  # 「ERROR: ld.so: object '/nonexistent/evil.so' from LD_PRELOAD cannot be preloaded」を出す。
+  # 単に LD_PRELOAD を grep すると修正前から緑になるので、汎用 WARNING の文言と同一行で結ぶ。
+  printf 'LD_PRELOAD=/nonexistent/evil.so\n' > "$envf"
+  run_launcher_check
+  check "E5: --check は LD_PRELOAD を WARNING で報告し結果は WARN（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING:.*LD_PRELOAD.*解釈しないため無視' && printf '%s' \"\$0\" | grep -q '結果: WARN'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E6: 未対応キーは compose の環境にも現れない
+  run_launcher
+  check "E6: LD_PRELOAD は compose の環境に渡らない（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && ! grep -q '^LD_PRELOAD=' '$root/compose-env'"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E7: 許可リストと README「環境変数」節の表が一致する（静的確認）。両者がずれると、
+  # 表に載っているのに無視されるキー（利用者の設定が黙って消える）か、無検証で通るキーが出る。
+  check "E7: ENV_FILE_ALLOWED_KEYS と README「環境変数」節の表が一致する" \
+    bash -c "diff <(awk '/^ENV_FILE_ALLOWED_KEYS=\(/{f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,\"\");print}' '${SCRIPT_DIR}/claude-container' | sort) \
+                  <(awk '/^## 環境変数/{f=1;next} f&&/^## /{exit} f' '${SCRIPT_DIR}/README.md' | grep -oE '^\| \`[A-Z_]+\`' | tr -d '| \`' | sort)"
 
   launcher_sandbox_cleanup
 }

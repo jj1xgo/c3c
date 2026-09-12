@@ -528,6 +528,7 @@ run_clean_ledger_launcher_tests() {
     bash -c '[ "$1" -eq 0 ] && grep -qxF -- "$2" "$3" && [ "$(stat -c %a "$3")" = 600 ]' _ "$rc" "$proj" "$ledger"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
+  mkdir -p "$(dirname "$ledger")"
   for mask in 000 002 022; do
     printf '%s\n' "$root/other project" "$proj" "$root/last-project" > "$ledger"
     chmod 600 "$ledger"
@@ -545,6 +546,18 @@ run_clean_ledger_launcher_tests() {
   check "最後の対象を clean すると空の600台帳を残す（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [ -f "$2" ] && [ ! -s "$2" ] && [ "$(stat -c %a "$2")" = 600 ]' _ "$rc" "$ledger"
   printf '%s\n' "$out" >> "$LOG_FILE"
+  # root でも確実に失敗するよう、権限設定だけを失敗させる。
+  # --clean の chmod は台帳の一時ファイルだけ。ダミーはこのケース後に除去する。
+  printf '%s\n' "$proj" "$root/other project" > "$ledger"
+  cp "$ledger" "$root/expected-ledger"
+  printf '#!/bin/bash\nexit 1\n' > "$bin/chmod"
+  chmod +x "$bin/chmod"
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" \
+    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+  check "権限設定失敗時は ERROR で停止し元の600台帳を保持（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && [[ "$4" == *"ERROR: 起動台帳の一時ファイル"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$bin/chmod"
   launcher_sandbox_cleanup
 }
 

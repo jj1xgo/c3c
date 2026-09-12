@@ -146,7 +146,10 @@ clean_project() {
     echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
     grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" > "$CC_LEDGER_FILE.tmp" 2>/dev/null || true
     # 新規の一時ファイルは umask に依存するため、台帳へ置き換える前に権限を固定する。
-    chmod 600 "$CC_LEDGER_FILE.tmp"
+    if ! chmod 600 "$CC_LEDGER_FILE.tmp"; then
+      echo "ERROR: 起動台帳の一時ファイルの権限を600に設定できません。元の台帳は変更していません: $CC_LEDGER_FILE.tmp" >&2
+      return 1
+    fi
     mv "$CC_LEDGER_FILE.tmp" "$CC_LEDGER_FILE"
   fi
   echo "dangling イメージを整理しています..."

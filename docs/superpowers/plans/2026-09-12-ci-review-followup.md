@@ -50,7 +50,7 @@
 - 使い捨て PR で 2 通りが赤: (1) ランチャーテストの期待値を改変すると `--launcher-only` が赤になり、失敗時ログのステップがログ本文（`[FAIL]` の行とランチャーの出力）を表示する。(2) hook 回帰テストの期待値を改変すると hook のステップが赤になる。
 - host で `case` 式の版確認が 0.11.0 に一致し、偽の版に一致しない。
 - README の記述が実装と一致する。
-- PR を作る前に `claude-review` skill で Claude のレビューを受け、Critical と Important が無い（あれば直す）。
+- PR を ready にする前に `claude-review` skill で Claude のレビューを受け、Critical と Important が無い（あれば直す）。
 
 ## 実行者への前提
 
@@ -293,7 +293,7 @@ Expected: `conclusion=success`（docs だけの commit でも PR があるので
 
 ---
 
-### Task 3: 本 PR を作る前に Claude のレビューを受ける
+### Task 3: 本 PR を ready にする前に Claude のレビューを受ける
 
 **Files:** なし（レビュー結果は `/tmp/claude-review-<sha>.md`）
 
@@ -303,7 +303,7 @@ Expected: `conclusion=success`（docs だけの commit でも PR があるので
 
 - [ ] **Step 2: 指摘に対応する**
 
-Expected: Critical と Important が 0 件ならそのまま Task 4 へ。あれば直して commit し、直した差分だけを「確認限定」で再レビューする（skill の手順 4）。直した commit は push し、「実行者への前提」の完了待ちで `conclusion=success` を確認する。Minor は直すか、直さない理由を Task 4 Step 5 の PR 本文に書く。レビューが `rc` 0 以外か空なら `not run` と報告して止まり、PR を ready にしない。
+Expected: Critical と Important が 0 件なら Step 3 へ。あれば直して commit し、直した差分だけを「確認限定」で再レビューする（skill の手順 4）。直した commit は push し、「実行者への前提」の完了待ちで `conclusion=success` を確認する。Minor は直すか、直さない理由を Task 4 Step 5 の PR 本文に書く。レビューが `rc` 0 以外か空なら `not run` と報告して止まり、PR を ready にしない。
 
 - [ ] **Step 3: レビュー全文を本 PR に投稿する**
 
@@ -314,7 +314,7 @@ gh pr comment -R jj1xgo/claude-container <本 PR の番号> --body-file /tmp/cla
 
 ---
 
-### Task 4: 本 PR を作り、使い捨て PR で赤 2 通りを確かめる
+### Task 4: 使い捨て PR で赤 2 通りを確かめ、本 PR を ready にする
 
 **Files:** なし（GitHub 上の操作と、使い捨てブランチ上の改変のみ。本ブランチには改変を含めない）
 
@@ -400,7 +400,7 @@ Expected: 使い捨て PR が closed、ブランチが remote と local から�
 
 `gh pr edit -R jj1xgo/claude-container <本 PR の番号> --body-file -` で本文を書き換える。「概要」は Task 1 のものを維持し、README の行を「README「変更後の確認」節を合わせた（<Task 2 の commit>）」に直す。「検証」節を次の実測値で埋める（文言をそのまま残さない）:
 - host: hook 回帰テスト「全ケース green」。`case` 式の版確認が 0.11.0 に一致し、偽の版に一致しない。
-- CI: 最終 commit <sha> の run <URL> が成功。
+- CI: 実装の最終 commit <sha> の run <URL> が成功（Task 5 の記録 commit の後に更新する）。
 - Claude レビュー: モデル、範囲、判定、対応した指摘、未対応の Minor と理由（コメント参照）。
 - 赤の確認: 使い捨て PR #<番号> で 2 通り、結果は Step 4 のコメント参照。
 書き換えたら `gh pr ready -R jj1xgo/claude-container <本 PR の番号>` で draft を解除する。
@@ -412,7 +412,7 @@ Expected: `gh pr view -R jj1xgo/claude-container <本 PR の番号> --json isDra
 
 - [ ] **Step 1: 計画のチェック欄を更新し、実行結果を追記して commit する**
 
-この計画のチェック欄を `[x]` にし、末尾に `## 実行結果（2026-09-12、Codex）` の節を足して次を書く: 本 PR の番号と URL、CI の最終状態（対象 commit の SHA と run の URL）、Claude レビューの判定と対応、赤 2 通りの run、計画から外れた点、`not run` と理由。commit して push し、「実行者への前提」の完了待ちでこの記録 commit の `conclusion=success` を確認する。handover には、この最後の SHA と run を CI の最終状態として書く。
+この計画のチェック欄を `[x]` にし、末尾に `## 実行結果（2026-09-12、Codex）` の節を足して次を書く: 本 PR の番号と URL、CI の最終状態（対象 commit の SHA と run の URL）、Claude レビューの判定と対応、赤 2 通りの run、計画から外れた点、`not run` と理由。commit して push し、「実行者への前提」の完了待ちでこの記録 commit の `conclusion=success` を確認する。確認できたら `gh pr edit -R jj1xgo/claude-container <本 PR の番号> --body-file -` で PR 本文の「CI:」行を記録 commit の SHA と run に更新する。handover にも同じ SHA と run を CI の最終状態として書く。
 
 - [ ] **Step 2: handover を書く**
 

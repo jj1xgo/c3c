@@ -510,7 +510,7 @@ run_launcher_tests() {
   run_env_file_launcher_tests
   run_allowed_ports_tests
   check "DNS 応答の除外・継続・エラー処理" bash "${SCRIPT_DIR}/tests/test-refresh-domains.sh"
-  check "DNS ルールの世代非更新・期限切れ削除" bash "${SCRIPT_DIR}/tests/test-domain-rule-lifecycle.sh"
+  check "DNS ルールの更新順序・世代非更新・期限切れ削除" bash "${SCRIPT_DIR}/tests/test-domain-rule-lifecycle.sh"
   log ""
 }
 

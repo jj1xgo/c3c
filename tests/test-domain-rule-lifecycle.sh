@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DNS 許可ルールの世代非更新・期限切れ削除を実物の関数で検証する（#78）。
+# DNS 許可ルールの更新・世代非更新・期限切れ削除を実物の関数で検証する（#78, #80）。
 # iptables -S は固定一覧を返し、直前の -A/-D を反映しない。
 # 連続更新による状態遷移と、カーネルのルール適用は検証しない。
 set -euo pipefail
@@ -13,11 +13,18 @@ set -euo pipefail
 IFS=$'\n\t'
 CHAIN=CLAUDE_EGRESS
 ALLOWED_PORTS=443,22
-build_domain_list() { printf '%s\n' zero.invalid loop.invalid; }
+build_domain_list() {
+  if [ "$MODE" = renew ]; then
+    printf '%s\n' normal.invalid
+  else
+    printf '%s\n' zero.invalid loop.invalid
+  fi
+}
 dig() {
   case "${!#}" in
     zero.invalid) printf '%s\n' 'zero.invalid. 60 IN A 0.0.0.0' ;;
     loop.invalid) printf '%s\n' 'loop.invalid. 60 IN A 127.0.0.1' ;;
+    normal.invalid) printf '%s\n' 'normal.invalid. 60 IN A 192.0.2.10' ;;
     *) return 1 ;;
   esac
 }
@@ -34,7 +41,10 @@ for name in add_cidr_tagged add_or_touch_domain_ip refresh_domains prune_stale_d
   grep -q "^${name}()" "$tmp/harness"
 done
 cat >> "$tmp/harness" <<'TAIL'
-if [ "$MODE" = refresh ]; then
+if [ "$MODE" = renew ]; then
+  refresh_domains 1000
+  exit 0
+elif [ "$MODE" = refresh ]; then
   refresh_domains 1000
   cp "$RECORD" "$REFRESH_RECORD"
 fi
@@ -53,7 +63,7 @@ run_case() {
     MODE="$mode" CUTOFF="$cutoff" bash "$tmp/harness" > "$tmp/out" 2> "$tmp/err" || rc=$?
   count=$((count + 1))
   if [ "$rc" -eq 0 ] && [ "$(cat "$tmp/record")" = "$expected" ] && \
-    { { [ "$mode" = prune ] && [ ! -s "$tmp/err" ]; } ||
+    { { { [ "$mode" = prune ] || [ "$mode" = renew ]; } && [ ! -s "$tmp/err" ]; } ||
       { [ "$mode" = refresh ] && [ -f "$tmp/refresh-record" ] && [ ! -s "$tmp/refresh-record" ] &&
         grep -qF 'WARNING: zero.invalid -> 0.0.0.0' "$tmp/err" &&
         grep -qF 'WARNING: loop.invalid -> 127.0.0.1' "$tmp/err"; }; }; then
@@ -88,6 +98,33 @@ cat >> "$tmp/rules" <<'RULES'
 -A CLAUDE_EGRESS -d 192.0.2.1/32 -m comment --comment "domain=current.invalid;gen=820" -j ACCEPT
 RULES
 run_case '非期限切れとタグなしのみなら削除なし' prune 820 ''
+
+# 通常 IP では実 refresh_domains → add_or_touch_domain_ip を通す。
+# 期待値は追加引数と手で数えた旧ルール番号。-S は追加を反映しないので、
+# 許可の連続性そのものではなく、追加要求が旧ルール削除より先に出ることを確認する。
+added=$'-A\nCLAUDE_EGRESS\n-d\n192.0.2.10\n-p\ntcp\n-m\nmultiport\n--dports\n443,22\n-m\ncomment\n--comment\ndomain=normal.invalid;gen=1000\n-j\nACCEPT'
+cat > "$tmp/rules" <<'RULES'
+-N CLAUDE_EGRESS
+-A CLAUDE_EGRESS -d 192.0.2.0/24 -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid.extra;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.11/32 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
+RULES
+run_case '通常 IP は新世代を追加してから一致する旧ルールだけを削除' renew 0 "$added"$'\n-D\nCLAUDE_EGRESS\n4'
+cat >> "$tmp/rules" <<'RULES'
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid;gen=901" -j ACCEPT
+RULES
+run_case '一致する旧ルールが複数あれば先頭の一件を削除' renew 0 "$added"$'\n-D\nCLAUDE_EGRESS\n4'
+
+# 同じ IP の別ドメインと同じドメインの別 IP は、削除対象にしない。
+cat > "$tmp/rules" <<'RULES'
+-N CLAUDE_EGRESS
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid.extra;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.11/32 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
+RULES
+run_case 'IP とドメインの組が一致しなければ追加のみ' renew 0 "$added"
+printf '%s\n' '-N CLAUDE_EGRESS' > "$tmp/rules"
+run_case '空チェーンの通常 IP は追加のみ' renew 0 "$added"
 
 echo "DNS ルールの世代テスト: $count 件、失敗 $fail 件"
 [ "$fail" -eq 0 ]

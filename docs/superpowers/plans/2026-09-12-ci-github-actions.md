@@ -1,6 +1,6 @@
 # GitHub Actions による CI 導入 実装計画
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task（この host の Codex には multi_agent が無いので subagent-driven-development は使わない）. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task（この host の Codex には multi_agent が無いので subagent-driven-development は使わない）. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** `lint.sh` と `test-build.sh` の podman 不要な部分を GitHub Actions で PR と main への push のたびに実行し、赤・緑が出る状態にする。
 
@@ -48,7 +48,7 @@
 **Interfaces:**
 - Produces: 環境変数 `LINT_SKIP_COMPOSE`。値が `1` のとき compose 検証をスキップし WARNING を stderr へ出す。未設定または `1` 以外なら従来どおり。Task 2 の workflow がこれを `LINT_SKIP_COMPOSE=1 ./lint.sh` として使う。
 
-- [ ] **Step 1: 変更前の挙動を確かめる（失敗するダミー podman で rc=1）**
+- [x] **Step 1: 変更前の挙動を確かめる（失敗するダミー podman で rc=1）**
 
 Run:
 ```bash
@@ -58,7 +58,7 @@ PATH="$d:$PATH" LINT_SKIP_COMPOSE=1 ./lint.sh; echo "rc=$?"
 ```
 Expected: 1 回目も 2 回目も `lint NG` が出て `rc=1`（変更前は変数を見ないので両方失敗する）。
 
-- [ ] **Step 2: `lint.sh` の compose 分岐を書き換える**
+- [x] **Step 2: `lint.sh` の compose 分岐を書き換える**
 
 `lint.sh:62-66` の次のブロックを:
 ```bash
@@ -79,7 +79,7 @@ else
 fi
 ```
 
-- [ ] **Step 3: 先頭コメントに変数の説明を足す**
+- [x] **Step 3: 先頭コメントに変数の説明を足す**
 
 `lint.sh:2-5` のコメントの末尾（`set -uo pipefail` の前）に次の 2 行を足す:
 ```bash
@@ -87,7 +87,7 @@ fi
 # スキップする（CI 用。.github/workflows/ci.yml が使う）。
 ```
 
-- [ ] **Step 4: 変更後の 3 パターンを確かめる**
+- [x] **Step 4: 変更後の 3 パターンを確かめる**
 
 Run:
 ```bash
@@ -101,7 +101,7 @@ Expected:
 - 2 回目: stderr に `WARNING: LINT_SKIP_COMPOSE=1 のため ...`、`lint OK`、`rc=0`。
 - 3 回目: `lint OK`、`rc=0`（host の実 podman で compose 検証も通る。`lint.sh` 自身も shellcheck の対象なので、ここで自分の変更が lint を通ることも確認される）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add lint.sh
@@ -119,7 +119,7 @@ git commit -m "feat: lint.sh に LINT_SKIP_COMPOSE を足し、CI から compose
 - Consumes: Task 1 の `LINT_SKIP_COMPOSE=1`。`test-build.sh --validator-only` と `--launcher-only`（FAIL が 1 以上なら `exit 1`、既存）。
 - Produces: PR と main への push で走るワークフロー `CI`（ジョブ名 `lint と podman 不要のテスト`）。本 PR の番号（以後 `<本 PR の番号>`）。Task 3 の README が参照し、Task 4 の壊し方がこのワークフローの赤を確かめる。
 
-- [ ] **Step 1: workflow を書く**
+- [x] **Step 1: workflow を書く**
 
 `.github/workflows/ci.yml` を次の内容で作る:
 ```yaml
@@ -179,7 +179,7 @@ jobs:
         run: ./test-build.sh --launcher-only
 ```
 
-- [ ] **Step 2: YAML として読めることと lint を通ることを確かめる**
+- [x] **Step 2: YAML として読めることと lint を通ることを確かめる**
 
 Run:
 ```bash
@@ -188,7 +188,7 @@ python3 -c 'import yaml; d=yaml.safe_load(open(".github/workflows/ci.yml")); pri
 ```
 Expected: 1 行目が `['name', 'runs-on', 'steps', 'timeout-minutes']`、2 行目が 6 つのステップ名。`lint.sh` は `lint OK`、`rc=0`（`ci.yml` は shebang が無いので lint の対象外。対象スクリプト数が Task 1 と同じであることを出力の `対象スクリプト (N)` で見る）。PyYAML は `on` を真偽値として読むが、これは PyYAML の仕様で workflow の誤りではない。
 
-- [ ] **Step 3: Commit と push**
+- [x] **Step 3: Commit と push**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -196,7 +196,7 @@ git commit -m "feat: GitHub Actions で lint.sh と podman 不要のテストを
 git push -u origin ci/github-actions
 ```
 
-- [ ] **Step 4: PR を作る（draft ではない）**
+- [x] **Step 4: PR を作る（draft ではない）**
 
 PR 作成時点では README の追記（Task 3）と赤の確認（Task 4）は未実施なので、本文はその旨を書く。Task 4 の結果はコメントで追記する。
 
@@ -229,7 +229,7 @@ gh pr list -R jj1xgo/claude-container --head ci/github-actions --json number,url
 ```
 Expected: 最後の行に `{"number":N,"url":"https://github.com/jj1xgo/claude-container/pull/N"}` が出る。この `N` が `<本 PR の番号>`。
 
-- [ ] **Step 5: CI が緑になるのを待つ**
+- [x] **Step 5: CI が緑になるのを待つ**
 
 「実行者への前提」の完了待ちの手順を実行する。
 Expected: `rc=0`。赤なら `gh run view -R jj1xgo/claude-container "$id" --log-failed | head -60` で失敗ステップを読んで直し、commit して push し、再び完了待ちの手順を実行する。
@@ -244,7 +244,7 @@ Expected: `rc=0`。赤なら `gh run view -R jj1xgo/claude-container "$id" --log
 **Interfaces:**
 - Consumes: Task 1 の `LINT_SKIP_COMPOSE`、Task 2 の workflow。
 
-- [ ] **Step 1: 冒頭の文を実態に合わせて書き換え、CI の段落を足す**
+- [x] **Step 1: 冒頭の文を実態に合わせて書き換え、CI の段落を足す**
 
 `README.md:400` の次の段落を:
 ```
@@ -257,7 +257,7 @@ Expected: `rc=0`。赤なら `gh run view -R jj1xgo/claude-container "$id" --log
 GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push のたびに `lint.sh`（Compose 検証は `LINT_SKIP_COMPOSE=1` でスキップ）、`./test-build.sh --validator-only`、`./test-build.sh --launcher-only` を `ubuntu-24.04` の runner で実行する。shellcheck はホストの開発環境と同じ版を SHA256 固定で取得する。実 podman が必要な `./test-build.sh` の全体実行は CI の対象外で、ホストで手動実行する。fork からの PR は GitHub の設定により初回の実行が承認待ちになることがあり、その間は赤でも緑でもない。
 ```
 
-- [ ] **Step 2: `lint.sh` の説明文に変数の 1 文を足す**
+- [x] **Step 2: `lint.sh` の説明文に変数の 1 文を足す**
 
 `README.md` の `lint.sh` を説明する段落は次の文で終わる:
 ```
@@ -268,7 +268,7 @@ podman が無い環境（コンテナ内での開発時）では Compose 検証�
 `LINT_SKIP_COMPOSE=1` を与えると、podman の有無に関わらず Compose 検証だけを警告付きでスキップする（CI 用）。
 ```
 
-- [ ] **Step 3: 記述と実装の一致を確かめる**
+- [x] **Step 3: 記述と実装の一致を確かめる**
 
 Run:
 ```bash
@@ -278,7 +278,7 @@ grep -c "テストスイートはない" README.md
 ```
 Expected: 1 行目は 3 ファイルとも 1 以上。2 行目は workflow に `--validator-only` と `--launcher-only` の両方。3 行目は `0`。
 
-- [ ] **Step 4: Commit と push、CI の完了待ち**
+- [x] **Step 4: Commit と push、CI の完了待ち**
 
 ```bash
 git add README.md
@@ -299,7 +299,7 @@ Expected: `rc=0`。
 - Consumes: Task 2 の workflow と `<本 PR の番号>`。
 - Produces: 使い捨て PR の番号（以後 `<使い捨て PR の番号>`）と 3 つの run の URL。
 
-- [ ] **Step 1: 使い捨てブランチと draft PR を作り、shellcheck 違反で赤を確かめる**
+- [x] **Step 1: 使い捨てブランチと draft PR を作り、shellcheck 違反で赤を確かめる**
 
 ```bash
 git switch -c ci-red-probe
@@ -312,7 +312,7 @@ gh pr list -R jj1xgo/claude-container --head ci-red-probe --json number -q '.[0]
 Expected: 最後の行の番号が `<使い捨て PR の番号>`。続けて「実行者への前提」の完了待ちの手順を実行する。
 Expected: `rc` が 0 以外。`gh run view -R jj1xgo/claude-container "$id" --log-failed | grep -m3 SC2086` に SC2086（`echo $probe` の未クォート）が出る。失敗したステップ名が `lint.sh を実行する（compose 検証はスキップ）`。run の URL を控える。
 
-- [ ] **Step 2: 1 を戻し、ベクタ表の期待値を 1 件改変して赤を確かめる**
+- [x] **Step 2: 1 を戻し、ベクタ表の期待値を 1 件改変して赤を確かめる**
 
 ```bash
 git revert --no-commit HEAD && git commit -m "probe: shellcheck 違反を戻す（使い捨て）"
@@ -331,7 +331,7 @@ git push
 続けて完了待ちの手順を実行する。
 Expected: `rc` が 0 以外。失敗したステップ名が `test-build.sh --validator-only を実行する`。run の URL を控える。
 
-- [ ] **Step 3: 2 を戻し、SHA256 を 1 文字改変して赤を確かめる**
+- [x] **Step 3: 2 を戻し、SHA256 を 1 文字改変して赤を確かめる**
 
 ```bash
 git revert --no-commit HEAD && git commit -m "probe: ベクタ表の改変を戻す（使い捨て）"
@@ -343,7 +343,7 @@ git push
 続けて完了待ちの手順を実行する。
 Expected: `rc` が 0 以外。失敗したステップ名が `shellcheck を版固定で取得する`、ログに sha256sum の不一致（runner の英語ロケールでは `1 computed checksum did NOT match`）。`curl` の失敗で先に止まった場合は不一致の確認になっていないので、再実行する。run の URL を控える。
 
-- [ ] **Step 4: 結果を本 PR にコメントし、使い捨て PR を閉じる**
+- [x] **Step 4: 結果を本 PR にコメントし、使い捨て PR を閉じる**
 
 `<本 PR の番号>`、`<使い捨て PR の番号>`、`<run の URL>` は実行時の値で埋める。
 ```bash
@@ -367,7 +367,7 @@ Expected: 使い捨て PR が closed、ブランチが remote と local から�
 
 ### Task 5: 完了報告
 
-- [ ] **Step 1: 報告を書く**
+- [x] **Step 1: 報告を書く**
 
 作業の最後に次を報告する（handover の skill があればそれで、無ければ本 PR のコメントで）:
 - 本 PR の番号と URL、CI の最終状態。
@@ -381,3 +381,15 @@ Expected: 使い捨て PR が closed、ブランチが remote と local から�
 - `test-build.sh` 全体実行の終了コードが常に 0 である件の Issue 起票（#59 との関係を含む）。
 - `podman compose config` を CI で回す件の Issue 起票（runner に compose provider が無い。lint.sh の `LINT_SKIP_COMPOSE` で外している）。
 - PR のレビュー（Fable と Codex の二重）とマージ。
+
+
+## 実行結果（2026-09-12、Codex）
+
+- Task 1〜5 を実行。本 PR は #63、マージしていない。
+- 検証結果: https://github.com/jj1xgo/claude-container/pull/63#issuecomment-5642463793
+- 本体・README の CI: https://github.com/jj1xgo/claude-container/actions/runs/34664059099 （成功、対象 d95c8e3）。
+- 使い捨て PR #64 で shellcheck 違反、期待値改変、SHA256 不一致が各ステップで失敗することを確認し、PR を閉じてリモート・ローカルの検証用ブランチを削除した。
+- ホスト: ダミー podman で未設定 rc=1、変数 1 は rc=0、追加の変数 0 は rc=1。実 podman を使う lint は sandbox の制約で失敗後、ホスト実行で rc=0。validator は 82 件、launcher は 75 件成功。
+- not run: test-build.sh 全体実行（計画による禁止、実ビルドと #59 の台帳書き込みを伴う）、main push と fork PR の承認待ち（今回の範囲外）。
+- 手順の調整: CI は完全な commit SHA に対応する実行の状態とログで確認。期待値の変更は行番号依存を避け、一致件数を検査して置換した。設計上の変更はない。
+- 次の担当はレビュー、範囲外の Issue 起票、マージ判断を行う。

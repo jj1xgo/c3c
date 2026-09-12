@@ -43,7 +43,3 @@ case "$prompt" in
     exit 1
     ;;
 esac
-
-# 赤の確認用（使い捨て）
-probe="a b"
-echo $probe

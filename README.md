@@ -397,9 +397,9 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 ## 変更後の確認
 
-テストは `lint.sh` と `test-build.sh`（ベクタ表・契約テスト・ランチャーテスト・実イメージのビルドと起動確認）で行う。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
+テストは `lint.sh`、`test-build.sh`（ベクタ表・契約テスト・ランチャーテスト・実イメージのビルドと起動確認）、`examples/hooks/tests/test-block-pr-approve.sh`（同梱 hook の回帰テスト）で行う。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
 
-GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push のたびに `lint.sh`（Compose 検証は `LINT_SKIP_COMPOSE=1` でスキップ）、`./test-build.sh --validator-only`、`./test-build.sh --launcher-only` を `ubuntu-24.04` の runner で実行する。shellcheck はホストの開発環境と同じ版を SHA256 固定で取得する。実 podman が必要な `./test-build.sh` の全体実行は CI の対象外で、ホストで手動実行する。fork からの PR は GitHub の設定により初回の実行が承認待ちになることがあり、その間は赤でも緑でもない。
+GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push のたびに `lint.sh`（Compose 検証は `LINT_SKIP_COMPOSE=1` でスキップ）、`./test-build.sh --validator-only`、`./test-build.sh --launcher-only`、`bash examples/hooks/tests/test-block-pr-approve.sh` を `ubuntu-24.04` の runner で実行する。`test-build.sh` は検査の詳細を `.claude/test-results/` のログにしか書かないので、CI はどれかが失敗したときだけそのログを Actions に出す。shellcheck はホストの開発環境と同じ版を SHA256 固定で取得する。実 podman が必要な `./test-build.sh` の全体実行は CI の対象外で、ホストで手動実行する。fork からの PR は GitHub の設定により初回の実行が承認待ちになることがあり、その間は赤でも緑でもない。
 
 ```bash
 ./lint.sh

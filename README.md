@@ -101,7 +101,7 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 .claude-container.d/env                  # ランタイム設定（KEY=VALUE、上記「環境変数」参照）。-b 不要、gitignore 対象
 .claude-container.d/packages.txt         # apt パッケージ（1行1パッケージ、素のパッケージ名のみの allowlist 検証あり。行頭 # はコメント）。-b 必須、コミット対象
 .claude-container.d/requirements.txt     # pip パッケージ（名前＋extras＋バージョン指定子のみの allowlist 検証あり。URL・パス・オプション行・環境マーカー・行内空白は拒否しビルド停止。行内 # 以降はコメントとして剥がされる）。-b 必須、コミット対象
-.claude-container.d/allowed-domains.txt  # エグレス制限に追加する許可ドメイン（1行1ドメイン、# はコメント）。-b 必須、コミット対象
+.claude-container.d/allowed-domains.txt  # エグレス制限に追加する許可ドメイン（1行1ホスト名、行頭 # はコメント。起動・更新時の入力検証あり）。-b 必須、コミット対象
 .claude-container.d/node-version.txt     # 導入する Node.js のバージョン（例: 22.14.0、1行のみ）。-b 必須、コミット対象
 .claude-container.d/codex-version.txt    # 導入する Codex CLI のバージョン（例: 0.46.0 または latest、1行のみ）。-b 必須、コミット対象
 .claude-container.d/allowed-ports.txt    # エグレス許可を限定するTCPポート（1行1ポートまたはport:port、# はコメント）。-b 必須、コミット対象
@@ -109,6 +109,8 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 ```
 
 `env` 以外は任意。`packages.txt`/`requirements.txt`/`allowed-domains.txt` を置かなければ claude-container 同梱のデフォルト（空のフォールバック）が使われる。`allowed-domains.txt` にはプロジェクトの作業に必要な追加ドメイン（例: pip なら `pypi.org` と、パッケージ本体の実ダウンロード先である `files.pythonhosted.org` の両方— index への到達だけでは `pip install` は完走しない）を書く。ビルド時にイメージへ焼き込まれるため、変更を反映するには `-b` での再ビルドが必要（`env` はこのビルド時焼き込みの対象外 — ホスト固有パスをイメージに含めないため）。
+
+`allowed-domains.txt` は前後のスペース・タブと行末 CR を除き、空行と行頭 `#` のコメント行を無視する。各行は ASCII 英数字・ハイフン・ドットで表すホスト名（各ラベル1〜63文字、ラベルの先頭と末尾は英数字、末尾ドットを除き全長253文字以下）とする。大文字、数字で始まる名前、単一ラベル、末尾ドット、punycode 表記は使える。これは DNS ホスト名の書式上の上限である。世代タグを保存する iptables コメントは255バイト以内のため、UNIX時刻が10桁の現在、実際に許可できる名前は末尾ドット込みで233文字までとなる。タグ長は DNS 解決後に検査し、超過した場合は切り詰めず、該当ルールの適用直前に ERROR で拒否する。行内空白・行内コメント・URL・ワイルドカード・アンダースコア・制御文字・NUL は拒否し、複数の名前を空白削除で結合しない。従来は警告だけで継続していた不正な行も起動エラーになるため、既存設定の行内コメントや複数名を含む行は再ビルド前に修正する。ホスト名の書式は全行を検証してから DNS 解決へ渡すため、書式に反する行があると部分的なリストを使わず ERROR になる。起動時は起動を中止し、更新時は警告して次のサイクルへ進む。ホストの `--check` はこの内容検証を行わないため、変更後は `-b` で再ビルドして起動時の検査結果を確認する。
 
 `allowed-ports.txt` は許可ドメイン（GitHub CIDR・`allowed-domains.txt` 指定分）への到達を許すTCPポートを既定の `443,22` から変更したい場合に使う（`jj1xgo/claude-container#31`）。置かなければ `443,22` が使われる（他の3ファイルと異なり WARNING は出ない — `node-version.txt`/`codex-version.txt` と同じ任意機能の流儀）。この制限は許可ドメイン宛のルールにのみ適用され、DNS（53番）とホストネットワーク宛のルールには適用されない（後述「アーキテクチャ」節参照）。`iptables` の `multiport` マッチは最大15枠で、単一ポートは1枠、範囲指定は両端で2枠として数える（範囲内のポート数にはよらない）。例えば単一1件＋範囲7件は15枠で受理し、範囲8件は16枠のため理由付きの ERROR で拒否する。`443` は必ず含めること（api.anthropic.com・api.github.com への到達と起動時の自己検証に必要）、`80` は許可できない（起動時の自己検証が「api.github.com:80 へ到達できない」ことを遮断のプローブに使う）。どちらも範囲指定（`79:81` 等）で含む場合も同様で、違反するとコンテナ起動時に理由付きの ERROR で停止する（`jj1xgo/claude-container#49`）。
 
@@ -413,7 +415,7 @@ GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push �
 
 `claude-container` のガード関数（`guard_*`・`prepare_claude_config_ro()`）を編集した場合は `./test-build.sh --launcher-only` を実行する。podman をダミーに置き換えた隔離環境（一時 `HOME`・空の環境変数）で実物のランチャーを起動し、各ガードの通常起動と `--check` の挙動、compose へ渡る環境変数を検証する。実 podman が不要なので、コンテナ内の開発セッションや CI からも回せる。通常の `./test-build.sh` にも含まれる。
 
-`init-firewall.sh` の `resolve_allowed_ports()`・`refresh_domains()`・`add_or_touch_domain_ip()`・`prune_stale_domain_rules()` を編集した場合も `./test-build.sh --launcher-only` を実行する。ポート検証と DNS 応答の回帰テスト（`tests/test-refresh-domains.sh`）、ルールの更新順序・世代非更新・期限切れ削除の回帰テスト（`tests/test-domain-rule-lifecycle.sh`）を含む。各テストは `bash tests/<ファイル名>.sh` で単独実行できる。実際の iptables と接続の確認は別途コンテナで行う。
+`init-firewall.sh` の `resolve_allowed_ports()`・`build_domain_list()`・`refresh_domains()`・`add_or_touch_domain_ip()`・`prune_stale_domain_rules()` を編集した場合も `./test-build.sh --launcher-only` を実行する。ポート検証、許可ドメイン入力検証（`tests/test-allowed-domains.sh`）と DNS 応答の回帰テスト（`tests/test-refresh-domains.sh`）、ルールの更新順序・世代非更新・期限切れ削除の回帰テスト（`tests/test-domain-rule-lifecycle.sh`）を含む。各テストは `bash tests/<ファイル名>.sh` で単独実行できる。実際の iptables と接続の確認は別途コンテナで行う。
 
 `Dockerfile.claude`（`ENTRYPOINT` の `setpriv` ラップ）を編集した場合は `-b` でのリビルドと実機起動が必須（前述「セキュリティモデル」節参照）。コンテナ内セッションから `sudo` 無しの `iptables` 操作ができないことが正しい状態であり、ファイアウォールルール自体の確認は `podman exec --user root <container> iptables -S`（ホスト側から）で行う——セッション内からの `iptables -S` 単体実行は権限剥奪後には失敗するようになる。
 

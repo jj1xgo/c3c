@@ -1,5 +1,6 @@
-# lint.sh と test-build.sh のうち podman を必要としない部分を回す。
-# 全体実行（実 podman build）は対象外。設計: docs/superpowers/specs/2026-09-12-ci-design.md
+# lint.sh と test-build.sh のうち podman を必要としない部分、および同梱 hook の回帰テストを回す。
+# 全体実行（実 podman build）は対象外。設計: docs/superpowers/specs/2026-09-12-ci-design.md、
+# 追随: docs/superpowers/plans/2026-09-12-ci-review-followup.md
 name: CI
 
 on:
@@ -34,15 +35,20 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          curl -fsSL -o shellcheck.tar.xz \
+          curl -fsSL --retry 3 --retry-all-errors --max-time 120 -o shellcheck.tar.xz \
             "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
           echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check
           tar -xJf shellcheck.tar.xz
           echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
 
       - name: shellcheck の版を確かめる
+        # パイプラインを使わない（shell: bash を後から足しても pipefail の影響を受けない）
         run: |
-          shellcheck --version | grep -Fqx "version: ${SHELLCHECK_VERSION}"
+          v=$(shellcheck --version)
+          case "$v" in
+            *$'\n'"version: ${SHELLCHECK_VERSION}"$'\n'*) echo "shellcheck ${SHELLCHECK_VERSION}" ;;
+            *) echo "ERROR: 期待した版 ${SHELLCHECK_VERSION} と一致しない:"; printf '%s\n' "$v"; exit 1 ;;
+          esac
 
       - name: lint.sh を実行する（compose 検証はスキップ）
         run: LINT_SKIP_COMPOSE=1 ./lint.sh
@@ -52,3 +58,18 @@ jobs:
 
       - name: test-build.sh --launcher-only を実行する
         run: ./test-build.sh --launcher-only
+
+      - name: block-pr-approve.sh の回帰テストを実行する
+        run: bash examples/hooks/tests/test-block-pr-approve.sh
+
+      - name: 失敗時にテストログを出す
+        # test-build.sh は検査コマンドとランチャーの出力を .claude/test-results/ にしか書かない。
+        # 赤の原因を Actions で読めるよう、失敗時だけ全文を出す。
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in .claude/test-results/*.log; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done

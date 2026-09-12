@@ -19,6 +19,8 @@
 - **PR のマージは行わない。** PR 作成まで行い、レビューとマージは別の担当（Fable）が行う。
 - commit メッセージ、PR の題名と本文は日本語のみ（repo の表記方針。README「表記」節）。既存の commit の型は `fix: ...`、`docs: ...` のような接頭辞＋日本語の要約。
 - 外部操作は `git push` と `gh pr create`、使い捨て PR の `gh pr create --draft`・`gh pr close --delete-branch` に限る。Issue の起票は行わない（Fable がレビュー時に行う）。
+- **この checkout の `gh` の既定 repo は upstream の `sethjensen1/claude-container` を指している**（`gh repo set-default --view` で確認済み）。計画内の `gh` コマンドはすべて `-R jj1xgo/claude-container` を付けている。付け忘れると upstream を操作するので、`-R` を省略しないこと。既定を変更しない。
+- `gh pr checks --watch` は push 直後でチェックがまだ登録されていないと待たずに終了することがある。その場合は 30 秒ほど待って再実行する。
 - `./test-build.sh` を引数なしで実行しない（実 podman build が走り、#59 により実台帳に 1 行残る）。使うのは `--validator-only` と `--launcher-only` だけ。
 
 ## Global Constraints
@@ -189,7 +191,7 @@ git push -u origin ci/github-actions
 - [ ] **Step 4: PR を作る（draft ではない）**
 
 ```bash
-gh pr create --base main --title "feat: GitHub Actions による CI を導入する（lint と podman 不要のテスト）" --body-file - <<'PRBODY'
+gh pr create -R jj1xgo/claude-container --base main --title "feat: GitHub Actions による CI を導入する（lint と podman 不要のテスト）" --body-file - <<'PRBODY'
 ## 概要
 
 `lint.sh` と `test-build.sh` の podman を必要としない部分（`--validator-only`、`--launcher-only`）を GitHub Actions で PR と main への push のたびに実行する。
@@ -218,9 +220,9 @@ PRBODY
 
 Run:
 ```bash
-gh pr checks --watch
+gh pr checks -R jj1xgo/claude-container --watch
 ```
-Expected: `CI / lint と podman 不要のテスト` が pass。赤なら `gh run list --branch ci/github-actions --limit 1` で run ID を取り、`gh run view <ID> --log-failed` で失敗ステップを読んで直す。直したら commit して push し、再び待つ。
+Expected: `CI / lint と podman 不要のテスト` が pass。赤なら `gh run list -R jj1xgo/claude-container --branch ci/github-actions --limit 1` で run ID を取り、`gh run view -R jj1xgo/claude-container <ID> --log-failed` で失敗ステップを読んで直す。直したら commit して push し、再び待つ。
 
 ---
 
@@ -265,7 +267,7 @@ Expected: 3 ファイルとも 1 以上。workflow に `--validator-only` と `-
 git add README.md
 git commit -m "docs: README の変更後の確認節に CI で回す 3 本と LINT_SKIP_COMPOSE を書く"
 git push
-gh pr checks --watch
+gh pr checks -R jj1xgo/claude-container --watch
 ```
 Expected: CI が pass。
 
@@ -286,10 +288,10 @@ git switch -c ci-red-probe
 printf '\n# 赤の確認用（使い捨て）\nprobe="a b"\necho $probe\n' >> git-askpass.sh
 git commit -am "probe: shellcheck 違反で CI が赤になることを確かめる（使い捨て）"
 git push -u origin ci-red-probe
-gh pr create --draft --base ci/github-actions --title "probe: CI の赤を確かめる（使い捨て、マージしない）" --body "壊し方 3 通りで CI が赤になることの確認。確認後に閉じてブランチを削除する。"
-gh pr checks --watch
+gh pr create -R jj1xgo/claude-container --draft --base ci/github-actions --title "probe: CI の赤を確かめる（使い捨て、マージしない）" --body "壊し方 3 通りで CI が赤になることの確認。確認後に閉じてブランチを削除する。"
+gh pr checks -R jj1xgo/claude-container --watch
 ```
-Expected: fail。`gh run list --branch ci-red-probe --limit 1` で run ID を取り、`gh run view <ID> --log-failed | grep -m3 SC2086` に SC2086（`echo $probe` の未クォート）が出る。失敗したステップ名が `lint.sh（compose 検証はスキップ）` であること。
+Expected: fail。`gh run list -R jj1xgo/claude-container --branch ci-red-probe --limit 1` で run ID を取り、`gh run view -R jj1xgo/claude-container <ID> --log-failed | grep -m3 SC2086` に SC2086（`echo $probe` の未クォート）が出る。失敗したステップ名が `lint.sh（compose 検証はスキップ）` であること。
 
 - [ ] **Step 2: 1 を戻し、ベクタ表の期待値を 1 件改変する**
 
@@ -306,7 +308,7 @@ Expected: `FAIL=1`、`rc=1`（host で先に赤を確認）。
 ```bash
 git commit -am "probe: ベクタ表の期待値を改変して --validator-only が赤になることを確かめる（使い捨て）"
 git push
-gh pr checks --watch
+gh pr checks -R jj1xgo/claude-container --watch
 ```
 Expected: fail。失敗したステップ名が `test-build.sh --validator-only`。
 
@@ -318,14 +320,14 @@ sed -i 's/8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198/8c3be
 git diff --stat
 git commit -am "probe: SHA256 を改変して shellcheck の取得が止まることを確かめる（使い捨て）"
 git push
-gh pr checks --watch
+gh pr checks -R jj1xgo/claude-container --watch
 ```
 Expected: fail。失敗したステップ名が `shellcheck を版固定で取得する`、ログに sha256sum の不一致（runner の英語ロケールでは `1 computed checksum did NOT match`、host の日本語ロケールでは `1 個の計算したチェックサムが一致しませんでした`）。
 
 - [ ] **Step 4: 結果を本 PR にコメントし、使い捨て PR を閉じる**
 
 ```bash
-gh pr comment <本 PR の番号> --body-file - <<'CMT'
+gh pr comment -R jj1xgo/claude-container <本 PR の番号> --body-file - <<'CMT'
 ## 赤の確認（使い捨て PR #<番号>）
 
 | 壊し方 | 失敗したステップ | run |
@@ -334,7 +336,7 @@ gh pr comment <本 PR の番号> --body-file - <<'CMT'
 | ベクタ表の期待値改変 | test-build.sh --validator-only | <run の URL> |
 | SHA256 改変 | shellcheck を版固定で取得する | <run の URL> |
 CMT
-gh pr close <使い捨て PR の番号> --delete-branch
+gh pr close -R jj1xgo/claude-container <使い捨て PR の番号> --delete-branch
 git switch ci/github-actions
 git branch -D ci-red-probe 2>/dev/null || true
 git status --short --branch

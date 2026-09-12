@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DNS 許可ルールの世代非更新・期限切れ削除を実物の関数で検証する（#78）。
-# iptables は固定一覧と呼び出し記録のみ。カーネルのルール適用は検証しない。
+# iptables -S は固定一覧を返し、直前の -A/-D を反映しない。
+# 連続更新による状態遷移と、カーネルのルール適用は検証しない。
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
@@ -43,6 +44,7 @@ TAIL
 fail=0
 count=0
 # 固定の一覧から選ばれる行番号と順序を照合する。-D の適用自体はモデル化しない。
+# refresh の非更新は refresh-record が空であることで判定し、prune の出力とは区別する。
 run_case() {
   local label="$1" mode="$2" cutoff="$3" expected="$4" rc=0
   : > "$tmp/record"

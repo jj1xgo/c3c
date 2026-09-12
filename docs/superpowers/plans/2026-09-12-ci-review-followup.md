@@ -24,6 +24,7 @@
 - host で `case "$(shellcheck --version)" in *$'\n'"version: 0.11.0"$'\n'*)` は一致し、`0x11y0` は一致しない（実測）。
 - host の curl は 8.21.0。`--retry-all-errors` は curl 7.71 以降で使える。runner の curl はそれより新しい。
 - `lint.sh` は `git ls-files` と shebang で対象を決めるので、`examples/hooks/` 配下のスクリプトも既に shellcheck の対象に入っている。
+- 赤の確認に使う改変を host の一時 worktree で実測した: `test-build.sh` の `cfgx/.claude/hooks" -a` は 1 か所で、`hooks-probe` に変えると `--launcher-only` が `PASS=74  FAIL=1`、rc=1。`test-block-pr-approve.sh` の `run_case "N5 --request-changes" pass` は 1 か所で、`deny` に変えると `1 件 FAIL`、rc=1。
 
 ### 変更
 
@@ -59,6 +60,7 @@
 - 必要な権限: リポジトリの作業ツリーと `.git` への書き込み、`git push`、`gh`（PR の作成・コメント・使い捨て PR の close）、`claude -p` のためのネットワーク。sandbox は workspace-write でネットワーク許可（`-c sandbox_workspace_write.network_access=true`）か、持ち主が承認する運用のどちらか。読み取り専用 sandbox では Task 2 以降が進まない。
 - commit メッセージ、PR の題名と本文、PR コメント、workflow の表示名とコメントは日本語のみ（README「表記」節）。commit の型は `fix:`、`feat:`、`docs:` の接頭辞＋日本語の要約。
 - 外部操作は次に限る: `git push`、本 PR の `gh pr create --draft`・`gh pr comment`・`gh pr edit`・`gh pr ready`、使い捨て PR の `gh pr create --draft` と `gh pr close --delete-branch`。Issue の起票はしない。
+- `<本 PR の番号>`、`<使い捨て PR の番号>`、`<sha>`、`<run の URL>`、`<Task 2 の commit>` は実行時に埋める値。計画の未記入ではない。
 - **CI は `pull_request` と main への push でしか走らない。** 作業ブランチへ push しただけでは run が登録されないので、Task 1 の最初の push の直後に本 PR を draft で作り、以降の CI 待ちはその PR の run を見る。draft は Task 4 の最後に ready にする。
 - **この checkout の `gh` の既定 repo は upstream の `sethjensen1/claude-container` を指す。** すべての `gh` コマンドに `-R jj1xgo/claude-container` を付ける。`-R` 付きの `gh pr checks` / `gh pr comment` / `gh pr close` は PR 番号の引数が必須。既定 repo は変更しない。
 - `./test-build.sh` を引数なしで実行しない（実 podman build が走り、#59 により実台帳に 1 行残る）。使うのは `--validator-only` と `--launcher-only` だけ。
@@ -422,3 +424,19 @@ Expected: `gh pr view -R jj1xgo/claude-container <本 PR の番号> --json isDra
 
 - PR のレビュー（Fable と Codex の二重）。マージは持ち主。
 - #67（Dependabot）の扱い。
+
+## Codex への受け渡し
+
+**実装: Codex（host）。** 理由: host の checkout で完結し、手順と Expected が逐語で確定していて、設計判断が残らない（CLAUDE.md「モデルと実装者の使い分け」の 4）。
+
+起動（持ち主が host で、cwd はこの checkout、ブランチ `ci/review-followup`）:
+
+```bash
+codex --sandbox workspace-write -c 'sandbox_workspace_write.network_access=true'
+```
+
+`/goal` に渡す文面:
+
+> docs/superpowers/plans/2026-09-12-ci-review-followup.md を最初に読み、superpowers:executing-plans で計画を Task 1 から順に実装して、本 PR が ready の状態になるまで進める。検証は計画の各 Task の Expected と、使い捨て draft PR で 2 通りの壊し方が赤になり失敗時ログが出ること。PR を ready にする前に ~/.agents/skills/claude-review/SKILL.md の手順で Claude のレビューを受ける。./test-build.sh を引数なしで実行しない。gh コマンドは必ず -R jj1xgo/claude-container を付ける。PR のマージはしない。runner の制約や計画の矛盾で進めないときは、試した経路と証拠と必要な判断を報告して止まる。最後に handover skill で引き継ぎを残す。
+
+前回（PR #63）との違いとして観測したい点: 起動時に sandbox とネットワークを指定すると実行中の承認の往復が消えるか、Task 3 の `claude-review` が手順どおり発火するか、PR 本文が最終状態で ready になるか。

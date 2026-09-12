@@ -143,7 +143,14 @@ add_cidr_tagged() {
     echo "ERROR: 安全でないドメイン文字列のため、ルールにタグを付けられません: $domain" >&2
     return 1
   fi
-  iptables -A "$CHAIN" -d "$cidr" -p tcp -m multiport --dports "$ALLOWED_PORTS" -m comment --comment "domain=${domain};gen=${generation}" -j ACCEPT
+  local comment="domain=${domain};gen=${generation}"
+  # xt_comment は終端NULを含め256バイト。libxtables は超過を黙って切り詰める。
+  # 世代タグの破損で更新・期限切れ削除が崩れないよう、適用前に拒否する。
+  if [[ ${#comment} -gt 255 ]]; then
+    echo "ERROR: ドメインの世代タグが iptables comment の上限255バイトを超えます: $domain" >&2
+    return 1
+  fi
+  iptables -A "$CHAIN" -d "$cidr" -p tcp -m multiport --dports "$ALLOWED_PORTS" -m comment --comment "$comment" -j ACCEPT
 }
 
 # (domain, ip) の組に対して新しいタグ付きルールを追加する。その組にちょうど
@@ -370,7 +377,7 @@ full_init() {
   # CDN 由来のドメインが IP をローテーションするにつれて古いエントリを見つけて
   # 期限切れにできる。
   if ! refresh_domains "$(date +%s)"; then
-    echo "ERROR: 初期ファイアウォール設定中に解決できなかったドメインがあります" >&2
+    echo "ERROR: 初期ファイアウォール設定中に許可ドメインの検証・解決・ルール適用に失敗しました" >&2
     exit 1
   fi
 

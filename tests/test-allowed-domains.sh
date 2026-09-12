@@ -61,6 +61,7 @@ run_case 'DNSサーバー指定形' '@example\n' 1
 # shellcheck disable=SC2016
 run_case 'シェル式' '$(id).example\n' 1
 run_case '非ASCII' '例.example\n' 1
+run_case 'ラテン拡張文字' 'caf\303\251.example\n' 1
 run_case 'BOM' '\357\273\277api.example\n' 1
 run_case '空ラベル' 'api..example\n' 1
 run_case '先頭ドット' '.api.example\n' 1
@@ -114,5 +115,33 @@ if [[ "$rc" -eq 0 && "$(cat "$tmp/record")" = "$base"$'\napi.example' ]]; then
 else
   echo "FAIL - 検証済みリストの解決 (rc=$rc)"; fail=$((fail + 1))
 fi
+# 世代タグは iptables の comment 領域に完全に収まる必要がある。
+cat > "$tmp/comment-harness" <<'HEAD'
+#!/bin/bash
+set -euo pipefail
+CHAIN=TEST
+ALLOWED_PORTS=443
+iptables() { printf '%s\n' "$@" > "$RECORD"; }
+HEAD
+sed -n '/^add_cidr_tagged()/,/^}/p' "$ROOT/init-firewall.sh" >> "$tmp/comment-harness"
+# shellcheck disable=SC2016
+printf '%s\n' 'add_cidr_tagged 192.0.2.1 "$1" "$2"' >> "$tmp/comment-harness"
+name233="$label63.$label63.$label63.${label63:0:41}"
+for item in '255 1700000000 0' '256 1700000000 1' 'future 17000000000 1'; do
+  IFS=' ' read -r label generation expected_rc <<< "$item"
+  domain="$name233"
+  [[ "$label" != 256 ]] || domain+='0'
+  : > "$tmp/record"
+  rc=0
+  RECORD="$tmp/record" bash "$tmp/comment-harness" "$domain" "$generation" > "$tmp/out" 2> "$tmp/err" || rc=$?
+  count=$((count + 1))
+  if [[ "$rc" -eq "$expected_rc" ]] &&
+     { { [[ "$rc" -eq 0 ]] && grep -qxF "domain=$domain;gen=$generation" "$tmp/record"; } ||
+       { [[ "$rc" -eq 1 && ! -s "$tmp/record" ]] && grep -q 'ERROR:' "$tmp/err"; }; }; then
+    echo "ok - comment $label"
+  else
+    echo "FAIL - comment $label (rc=$rc)"; fail=$((fail + 1))
+  fi
+done
 echo "$count cases, $fail failures"
 [[ "$fail" -eq 0 ]]

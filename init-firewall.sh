@@ -173,8 +173,7 @@ build_domain_list() {
 # 致命的として扱い（fail-closed の起動ゲート）、do_refresh はログに残して次の
 # サイクルで再試行する（fail-open のバックグラウンドの手直し）。
 #
-# NXDOMAIN（ドメイン自体がもう存在しない。例: statsig.anthropic.com は
-# 2026-07 時点でそう）は警告として扱い、失敗としない。一時的な失敗
+# NXDOMAIN（ドメイン自体が存在しない）は警告として扱い、失敗としない。一時的な失敗
 # （タイムアウト・SERVFAIL・リゾルバ到達不能。これらは下で引き続きエラーとして
 # 数える）とは区別する: どちらの場合も ACCEPT ルールは追加されないので
 # セキュリティ境界は変わらないが、ここで致命的として扱うと、このスクリプトを
@@ -204,6 +203,15 @@ refresh_domains() {
       continue
     fi
     while read -r ip; do
+      # DNS の sinkhole 応答や loopback はドメイン由来の許可に使わない（#53）。
+      # private/link-local は内部ホストの明示的な許可に使えるため変更しない。
+      # 既存の該当ルールは世代を更新せず、通常の猶予期間後に prune で除去する。
+      case "$ip" in
+        0.*|127.*)
+          echo "WARNING: $domain -> $ip は特殊用途の IPv4 アドレスのためスキップします（0.0.0.0/8・127.0.0.0/8。ACCEPT ルールは追加・更新しません）" >&2
+          continue
+          ;;
+      esac
       if ! add_or_touch_domain_ip "$ip" "$domain" "$generation"; then
         echo "WARNING: $domain -> $ip のルール適用に失敗しました" >&2
         had_errors=1

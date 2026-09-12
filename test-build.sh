@@ -509,6 +509,7 @@ run_launcher_tests() {
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
   run_allowed_ports_tests
+  check "DNS 応答の除外・継続・エラー処理" bash "${SCRIPT_DIR}/tests/test-refresh-domains.sh"
   log ""
 }
 

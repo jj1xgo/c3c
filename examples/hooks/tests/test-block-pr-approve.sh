@@ -109,6 +109,28 @@ run_case "引用した承認フラグと区切り文字" pass 'gh pr review 1 --
 run_case "heredoc本文の承認フラグと区切り文字" pass \
   $'gh pr comment 1 --body-file - <<EOF\ngh pr review 1 --approve;\nEOF'
 
+# issue #75: 値付き承認フラグは値の真偽によらず拒否する。
+# 真値の見逃しと、安全側に倒す false・不正値・引用値の契約を両経路で確認する。
+run_value_cases() {
+  local mode="$1" hook_path="${2:-}" flag value
+  for flag in --approve -a -aa; do
+    for value in true 1 t T TRUE True false 0 f F FALSE False bogus ''; do
+      run_case "$mode 値付き $flag=$value" deny "gh pr review 1 $flag=$value" "$hook_path"
+    done
+    run_case "$mode 値付き $flag と区切り文字" deny "gh pr review 1 $flag=true; echo done" "$hook_path"
+    run_case "$mode 値付き $flag の引用値" deny "gh pr review 1 $flag=\"true\"" "$hook_path"
+    run_case "$mode 値付き $flag の引用した偽値" deny "gh pr review 1 $flag='false'" "$hook_path"
+  done
+  run_case "$mode 値付きコメント" pass 'gh pr review 1 --comment=true --body "note"' "$hook_path"
+  run_case "$mode 値付き変更要求" pass 'gh pr review 1 --request-changes=true --body "fix"' "$hook_path"
+  run_case "$mode 値付き別の長オプション" pass 'gh pr review 1 --approve-extra=true' "$hook_path"
+  run_case "$mode コメント併用でも偽値を拒否" deny 'gh pr review 1 --approve=false --comment --body "note"' "$hook_path"
+}
+run_value_cases "通常"
+run_case "引用文の値付き承認フラグ" pass 'gh pr review 1 --comment --body "example --approve=true"'
+run_case "heredoc本文の値付き承認フラグ" pass \
+  $'gh pr comment 1 --body-file - <<EOF\ngh pr review 1 --approve=true\nEOF'
+
 # --- fail-safe（jq不在） ---
 # hook が使う外部コマンド（bash・cat・grep・sed・awk）だけを symlink した shim ディレクトリを
 # PATH にする。PATH から jq のディレクトリを丸ごと落とす方式だと、usrmerge 環境では bash 自体が
@@ -128,6 +150,7 @@ done
 if [ "$shim_ok" -eq 1 ]; then
   run_case "C10 jq不在fail-safe: 真正承認は引き続きDENY" deny 'gh pr review 123 --approve' "$SHIM"
   run_delimiter_cases "jq不在" "$SHIM"
+  run_value_cases "jq不在" "$SHIM"
 else
   echo "FAIL - C10 jq不在fail-safe: 準備に失敗したため未実行"
   fail=$((fail + 1))

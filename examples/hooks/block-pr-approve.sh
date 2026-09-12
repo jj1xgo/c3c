@@ -28,6 +28,8 @@
 #     pulls/N/reviews と event=APPROVE の両方を引用しているケース
 #   - 複数行にまたがるダブルクォート文字列内に承認コマンド文字列があるケース
 #     （sed の引用符除去が行単位のため。ヒアドキュメント以外は対象外）
+#   - --approve=false / -a=false など、値付き承認フラグの偽値・不正値
+#     （引用符除去後の文字列で値を評価せず、= が続けば安全側に拒否する）
 # 既知の残存 false negative（意図的な難読化、脅威モデル外）:
 #   - 引用文字列内に `<<X` を含む行を挟んでヒアドキュメント除去を誤爆させ、
 #     その直後に真正の承認コマンドを紛れ込ませるようなケース
@@ -71,7 +73,7 @@ nq > 0 {
 }
 AWKEOF
 
-reason='gh pr review --approve（PR 承認）の自律実行は禁止です（issue #10）。承認は auto-merge の引き金になりうるため、承認とマージは人間がホスト側で行います。レビュー補助が目的なら --comment / --request-changes を使ってください。'
+reason='gh pr review --approve（PR 承認）の自律実行は禁止です（issue #10）。承認は auto-merge の引き金になりうるため、承認とマージは人間がホスト側で行います。値付き承認フラグは --approve=false 等でも拒否します。レビュー補助が目的なら承認フラグ自体を省き、--comment / --request-changes を使ってください。'
 
 emit_deny() {
   if command -v jq >/dev/null 2>&1; then
@@ -117,8 +119,10 @@ printf '%s' "$stripped_hd" | grep -qE '(^|[^[:alnum:]])gh([[:space:]]|$)' || exi
 #     -c / -r / -b / -F 等 a を含まない短オプションは通す。
 #     空白・行末だけでなくシェルの区切り文字もフラグの終端になる（issue #72）。
 #     例: --approve; echo done、-a&&true、(gh pr review 1 --approve)。
+#     = は値付き指定（--approve=true / -a=1 等）。引用値は除去されうるため
+#     真偽値を評価せず、false・不正値も含めて拒否する（issue #75）。
 if printf '%s' "$stripped_hd" | grep -qE '(^|[^[:alnum:]])gh[[:space:]]+pr[[:space:]]+review([[:space:]]|$)'; then
-  if printf '%s' "$stripped_hd" | grep -qE '(^|[[:space:]])(--approve|-[[:alpha:]]*a[[:alpha:]]*)([[:space:];&|()<>]|$)'; then
+  if printf '%s' "$stripped_hd" | grep -qE '(^|[[:space:]])(--approve|-[[:alpha:]]*a[[:alpha:]]*)([[:space:];&|()<>=]|$)'; then
     emit_deny "$reason"
   fi
 fi

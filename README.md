@@ -347,11 +347,11 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 | 機構 | ブロックするもの | 通すもの |
 |---|---|---|
-| PreToolUse hook `examples/hooks/block-pr-approve.sh` | `gh pr review --approve`（短縮形 `-a`、短オプションクラスタ内の `a` を含む）／ `gh api …/pulls/<N>/reviews` への `event=APPROVE`（引用符・ヒアドキュメント本文経由を含む） | `--comment`・`--request-changes` 等その他の PR 操作、および gh コマンド全般 |
+| PreToolUse hook `examples/hooks/block-pr-approve.sh` | `gh pr review --approve`（短縮形 `-a`、短オプションクラスタ内の `a`、`--approve=true` / `-a=1` 等の値付き指定も含み、偽値・不正値も拒否）／ `gh api …/pulls/<N>/reviews` への `event=APPROVE`（引用符・ヒアドキュメント本文経由を含む） | `--comment`・`--request-changes` 等その他の PR 操作、および gh コマンド全般 |
 | `permissions.deny` | （現状未使用 — この保護の機構は上記 hook のみ） | — |
 
 - **役割分担の基準**: `permissions.deny` はコマンドプレフィックス/glob の静的パターンで丸ごと禁止できる場合に向く。本件は「`gh pr review` のうち `--approve` だけ拒否し `--comment` は通す」「生 API の `event=APPROVE` を JSON 本文・ヒアドキュメント内でも検出する」という文脈依存判定が必要で、deny の glob では過剰ブロックか検出漏れのどちらかになるため hook を採用している
-- **既知の誤検知**: 残存 false positive（安全方向・許容）＝ 実行コマンドが `gh api` で、ヒアドキュメント本文に `pulls/N/reviews` と `event=APPROVE` の両方を引用したケース、複数行ダブルクォート文字列内の承認文字列。残存 false negative（脅威モデル外）＝ 引用文字列内の `<<X` でヒアドキュメント除去を誤爆させる意図的難読化。脅威モデルは「Claude 自身のうっかり自律承認の抑止」であり意図的な難読化は対象外
+- **既知の誤検知**: 残存 false positive（安全方向・許容）＝ 実行コマンドが `gh api` で、ヒアドキュメント本文に `pulls/N/reviews` と `event=APPROVE` の両方を引用したケース、複数行ダブルクォート文字列内の承認文字列、値付き承認フラグの偽値・不正値（値を評価せず拒否。コメント・変更要求では承認フラグ自体を省く）。残存 false negative（脅威モデル外）＝ 引用文字列内の `<<X` でヒアドキュメント除去を誤爆させる意図的難読化。脅威モデルは「Claude 自身のうっかり自律承認の抑止」であり意図的な難読化は対象外
 - **参照**: リスクの詳細は「セキュリティモデル」節、hook の実装詳細・配線例・回帰テストは `examples/hooks/README.md`
 
 ## セキュリティモデル

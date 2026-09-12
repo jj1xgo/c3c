@@ -17,7 +17,7 @@
 - commit メッセージ、PR の題名と本文、PR コメント、スクリプトのコメントとメッセージは日本語のみ（README「表記」節）。`[PASS]`・`[FAIL]`・`ok   - `・`FAIL - `・「全ケース green」などテストや CI が照合する機械可読トークンは変えない。
 - commit の型は `fix:`、`test:`、`docs:` の接頭辞＋日本語の要約。
 - すべての `gh` コマンドに `-R jj1xgo/claude-container` を付ける（この checkout の既定 repo は upstream を指す）。
-- hook のトリガー文字列（承認系のサブコマンド）を、シェルのコマンド行・commit メッセージ・PR 本文の見出しに素の平文で書かない。単引用符で囲んだリテラル（`jq -n --arg c '...'` の引数など）は稼働中の hook が引用文字列として除去するので可（Task 3 の probe はこの形）。テストの実行は `bash examples/hooks/tests/test-block-pr-approve.sh` の 1 コマンドだけ。変異注入は `sed` / `python3` のスクリプト内で行う。テストファイルの全文置換（Task 4 Step 1）は Bash のヒアドキュメントではなく Write ツールで行う。
+- hook のトリガー文字列（承認系のサブコマンド）を、シェルのコマンド行・commit メッセージ・PR 本文の見出しに素の平文で書かない。単引用符で囲んだリテラル（`jq -n --arg c '...'` の引数など）は稼働中の hook が引用文字列として除去するので可（Task 3 の probe はこの形）。テストの入力をコマンド行へ展開せず、テストスクリプト（`/tmp` のコピーを含む）の実行とそのパイプだけにする。変異注入は `sed` / `python3` のスクリプト内で行う。テストファイルの全文置換（Task 4 Step 1）は Bash のヒアドキュメントではなく Write ツールで行う。
 - `lint.sh` が通ること（`bash -n` と shellcheck 0.11.0、compose 検証）。
 
 ---
@@ -30,15 +30,16 @@
 - `test-build.sh` の「結果 3 行と exit」は `--validator-only`・`--config-ro-only`・`--launcher-only` の 3 か所で同一の 7 行、全体実行の末尾（1180 行以降）は結果 3 行の後に手動確認の案内を出して exit せず終わる（終了コードは最後の `log` の 0）。3 か所を関数 `finish_by_result` に置き換え、全体実行の末尾で案内の後に同関数を呼ぶ形を `git archive` のコピーで試し、`bash -n`・shellcheck 成功、`--launcher-only` PASS=75 rc=0、`--validator-only` PASS=82 rc=0、ランチャー期待値を改変すると PASS=74 / FAIL=1 rc=1。
 - `examples/hooks/tests/test-block-pr-approve.sh` の `run_case` は「stdout と stderr を合流した出力が非空＝deny」で判定する。hook のコピーで deny 応答を allow に置換しても全ケース green（rc=0）。C10 の `NOJQ_PATH` は jq と同居する `/usr/bin` を丸ごと落とすので `bash` 自体が見つからず（rc=127）、その stderr を deny と誤判定する。
 - 新しい判定（rc・stdout の JSON・stderr を分離）と shim PATH（`type -P` で解決した bash・cat・grep・sed・awk の symlink）で C10 を回すと、**現行の hook は rc=0・無出力で「pass」になり FAIL する**。`bash -x` で追うと、jq 不在分岐は `cmd=$input` で生 JSON をそのまま判定にかけるため、`--approve"`（直後が JSON の閉じ引用符）が承認フラグの正規表現 `(^|[[:space:]])(--approve([[:space:]]|$)|...)` に当たらない。整形 JSON でも 1 行 JSON でも同じ。これが #71。
-- #71 の修正候補（jq 不在分岐で `\"` と `"` を空白に置換してから判定）を hook のコピーに当て、shim PATH で deny 期待 6 ケース（`--approve`、`-a 123`、`--approve --body`、`event=APPROVE` の引用なし・あり、ヒアストリング併用）がすべて deny、`--comment`・`--request-changes` は無出力。`git commit -am "...gh pr review --approve..."` は jq 不在では deny（偽陽性側。引用文字列の除去に jq が要るため。hook 自身のコメントが安全方向としている挙動と一致）。通常経路は新テストで 15 ケース green、shellcheck 成功。
+- #71 の修正候補（jq 不在分岐で `\"`・`"` と `\n`・`\t`・`\r` のエスケープを空白に置換してから判定）を hook のコピーに当て、shim PATH で deny 期待 6 ケース（`--approve`、`-a 123`、`--approve --body`、`event=APPROVE` の引用なし・あり、ヒアストリング併用）がすべて deny、`--comment`・`--request-changes` は無出力。`git commit -am "...gh pr review --approve..."` は jq 不在では deny（偽陽性側。引用文字列の除去に jq が要るため。hook 自身のコメントが安全方向としている挙動と一致）。通常経路は新テストで 15 ケース green、shellcheck 成功。引用符だけを置換する案は、command 値の `--approve` の直後に改行やタブが続く形（JSON では `--approve\necho`）を通してしまうことを Codex の計画レビューが静的に指摘し、host で再現した（`\n`・`\t`・`\r` も置換する案では deny）。
 - 新テストの変異検出: 修正済み hook のコピーで deny を allow に置換すると「10 件 FAIL」、shim から bash を除くと C10 が `rc=127` で FAIL。
 - host に podman 5.8.6 と `localhost/claude-test` イメージがある。実台帳は 4 行。
+- Codex の計画レビューが静的に指摘し host で再現した別件: 通常経路（jq あり）でも `gh pr review 1 --approve;` のように承認フラグの直後に `;`・`&&`・`|`・`)` が続くと deny しない（終端を空白か行末に限定しているため）。#72 として起票し、この計画の範囲外。
 
 ### 変更
 
 1. `test-build.sh` env 非混入テスト: 起動を `env -i HOME="$ENV_TESTROOT" PATH="$ENV_TESTROOT/bin:$PATH"` に変え、台帳が隔離 HOME に書かれたことを `check` 1 件で確かめる（#59）。
 2. `test-build.sh`: 関数 `finish_by_result` を層 1 の関数定義の前に置き、3 サブモードと全体実行の末尾から呼ぶ。全体実行では手動確認の案内を結果 3 行の前に移し、結果 3 行がログの最後になる（#65。出力順の変更は意図したもの）。
-3. `examples/hooks/block-pr-approve.sh` jq 不在分岐: `cmd=$(printf '%s' "$input" | sed -E 's/\\"/ /g; s/"/ /g')`、`stripped_hd=$cmd`（#71）。
+3. `examples/hooks/block-pr-approve.sh` jq 不在分岐: `cmd=$(printf '%s' "$input" | sed -E 's/\\["ntr]/ /g; s/"/ /g')`、`stripped_hd=$cmd`（#71）。
 4. `examples/hooks/tests/test-block-pr-approve.sh`: 全文を Task 4 の内容に置き換える（#70）。出力形式（`ok   - `、`FAIL - `、「全ケース green」、「N 件 FAIL」）は維持。
 
 ### 捨てた案と理由
@@ -46,8 +47,11 @@
 - 全体実行の末尾に `[ "$FAIL" -eq 0 ] || exit 1` を 1 行足すだけ: 4 か所の複製が残り、サブモードで実証した赤の挙動が全体実行に及ぶ保証が構造にならない。関数化で「赤はサブモードで実証、全体実行は緑 1 回」の検証方針が成り立つ。
 - #70 の変異確認をテストスクリプトに常設する: 持ち主が「計画の検証手順として 1 回実測」を選択。テストは判定方式の修正と C10 の shim 化に絞る。
 - #71 を別 PR にする: #70 の新判定で C10 が #71 を赤にするため、同じ PR で直さないと CI が緑にならない。持ち主が 1 PR・Opus 実装を選択。
-- jq 不在時に「承認らしき語を含めば拒否」の緩い判定に変える: 既存の判定を活かす引用符置換の方が変更が小さく、通常経路と同じ正規表現を通る。
+- jq 不在時に「承認らしき語を含めば拒否」の緩い判定に変える: 既存の判定を活かす引用符・エスケープの置換の方が変更が小さく、通常経路と同じ正規表現を通る。
+- 引用符だけを置換する（最初の候補）: `--approve` の直後に `\n` などのエスケープが続く command を通す。実測で確認し、エスケープも置換する形にした。
 - #59 の回帰テストを「実台帳の sha256 が前後で同じ」にする: 実台帳に依存し、CI や別環境で意味が変わる。隔離台帳への正の検査にした。
+- PR 作成前に `claude-review` skill で Claude のレビューを受ける（Codex の計画レビューの should-fix）: その手順は Codex が実装するときの規則（`~/.codex/AGENTS.md`）。実装者が Claude（Opus）の今回は、独立レビューは PR 後の新しい Fable セッションと Codex が担う（CLAUDE.md「モデルと実装者の使い分け」）。
+- テストの deny 判定を `jq -r` の抽出値だけで行う（最初の案）: stdout に deny の JSON と余分な断片が続いても deny と判定する（Codex の指摘、host で再現）。`jq -es` で「単一の JSON オブジェクトで permissionDecision が deny」を要求する形にした。
 
 ### 合格条件
 
@@ -62,11 +66,11 @@
 
 - 実行者はこのセッションの Claude（Opus）。最初の編集の前に、持ち主が `/model` ピッカーで Opus を選び `s`（このセッションだけ）で切り替える。Claude は切替を要求して待つだけで、自分では切り替えない。
 - 作業ブランチは `fix/test-detection-59-65-70-71`（main の abde4e8 から切り、この計画がコミット済み）。この checkout は 1 つだけで、他の worktree は無い。
-- **PR のマージは行わない。** PR を ready にしたら止まり、レビューは新しい Fable セッション（Fable と Codex の二重）、マージは持ち主。
-- 外部操作は次に限る: `git push`、`gh pr create --draft`・`gh pr edit`・`gh pr ready`・`gh pr comment`（本 PR）、差分外の指摘が出たときの `gh issue create --label bug --label priority-low`（本文に根拠と実測を書く）。
-- `./test-build.sh` の全体実行は Task 2 の Step 6 で 1 回だけ行う（Task 1 の #59 修正が入った後）。それ以外はサブモードだけを使う。全体実行は実 podman build を含み数分かかる。
+- **PR のマージは行わない。** Task 6（実行結果の記録と handover）まで進めて止まる。レビューは新しい Fable セッション（Fable と Codex の二重）、マージは持ち主。
+- 書き込みを伴う外部操作は次に限る: `git push`、`gh pr create --draft`・`gh pr edit`・`gh pr ready`・`gh pr comment`（本 PR）、差分外の指摘が出たときの `gh issue create --label bug --label priority-low`（本文に根拠と実測を書く）。読み取りの `git fetch`、`gh run list/watch/view`、`gh pr view`、`gh issue view` は制限しない。
+- `./test-build.sh` の全体実行は Task 2 の Step 6 で行う（Task 1 の #59 修正が入った後）。通常は 1 回。FAIL が出たときだけ Step 6 の手順に従って再実行する。それ以外はサブモードだけを使う。全体実行は実 podman build を含み数分かかる。
 - hook のトリガー文字列をコマンド行に書かない（Global Constraints）。テストの実行は 1 コマンド、変異は下記のスクリプトで行う。
-- CI は `pull_request` でしか走らないので、最初の push の直後に本 PR を draft で作り、以降の CI 待ちはその PR の run を見る。CI の完了待ちは commit 単位で、run の `conclusion` と失敗ステップ名で判定する:
+- CI は `pull_request` と main への push で走り、作業ブランチへの push だけでは走らない。最初の push の直後に本 PR を draft で作り、以降の CI 待ちはその PR の run を見る。CI の完了待ちは commit 単位で、run の `conclusion` と失敗ステップ名で判定する:
 
   ```bash
   sha=$(git rev-parse HEAD); id=""
@@ -91,7 +95,7 @@
 
 **Files:** なし
 
-- [ ] **Step 1: 作業ツリーがきれいで main が origin と同期していることを確かめる**
+- [ ] **Step 1: 作業ツリーがきれいで origin/main の先頭を確かめる**
 
 Run:
 ```bash
@@ -126,10 +130,10 @@ Expected: `fix/test-detection-59-65-70-71`。違えば `git switch fix/test-dete
 
 Run:
 ```bash
-grep -c 'PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1' test-build.sh
-grep -c '^rm -rf "$ENV_TESTROOT"$' test-build.sh
+grep -cF 'PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1' test-build.sh
+grep -cxF 'rm -rf "$ENV_TESTROOT"' test-build.sh
 ```
-Expected: どちらも `1`。
+Expected: どちらも `1`（この host の Bash ツールでは `grep` が ugrep を包む関数なので、`$` や `{}` を含むパターンは `-F` の固定文字列で照合する）。
 
 - [ ] **Step 2: 置換する**
 
@@ -160,8 +164,8 @@ Expected: `bash -n ok`、lint 成功（終了コード 0）。
 
 Run（test-build.sh の該当部分と同じ手順を手で回す）:
 ```bash
-before=$(sha256sum ~/.local/state/claude-container/projects)
-T=$(mktemp -d); mkdir -p "$T/bin"
+before=$(sha256sum ~/.local/state/claude-container/projects) || { echo "実台帳を読めない"; exit 1; }
+T=$(mktemp -d) || exit 1; mkdir -p "$T/bin"
 printf '#!/bin/bash\ncase "$1" in\n  image) [[ "$2" == "exists" ]] && exit 1 ;;\nesac\nexit 0\n' > "$T/bin/podman"; chmod +x "$T/bin/podman"
 mkdir -p "$T/proj/.claude-container.d"; printf '[user]\n\tname = dummy\n' > "$T/dummy-gitconfig"
 echo "GITCONFIG_FILE=$T/dummy-gitconfig" > "$T/proj/.claude-container.d/env"
@@ -169,10 +173,10 @@ ctx_before="$(ls -1 .build-context/ 2>/dev/null || true)"
 env -i HOME="$T" PATH="$T/bin:$PATH" ./claude-container "$T/proj" >/dev/null 2>&1; echo "rc=$?"
 ctx_after="$(ls -1 .build-context/ 2>/dev/null || true)"
 grep -qxF -- "$T/proj" "$T/.local/state/claude-container/projects" && echo "隔離台帳に記録"
-after=$(sha256sum ~/.local/state/claude-container/projects); [ "$before" = "$after" ] && echo "実台帳 不変"
+after=$(sha256sum ~/.local/state/claude-container/projects) || { echo "実台帳を読めない"; exit 1; }; [ "$before" = "$after" ] && echo "実台帳 不変"
 for d in $(comm -13 <(echo "$ctx_before" | sort) <(echo "$ctx_after" | sort)); do rm -rf ".build-context/$d"; done; rm -rf "$T"
 ```
-Expected: `rc=0`、`隔離台帳に記録`、`実台帳 不変`。
+Expected: `rc=0`、`隔離台帳に記録`、`実台帳 不変`。この間、この host で別の `claude-container` を起動しない（`.build-context/` の差分で後始末するため）。
 
 - [ ] **Step 5: Commit**
 
@@ -308,7 +312,7 @@ Expected: `1`、`結果: PASS=74  FAIL=1` と `rc=1`。`git status --short` は�
 
 全体実行は複数の `podman build --no-cache` を含み、Bash ツールの前景上限（600 秒）を超えうる。次の 2 行を **`run_in_background: true` で起動し**、完了通知を待ってから後続の確認を行う（`sleep` での待機はしない）:
 ```bash
-before=$(sha256sum ~/.local/state/claude-container/projects); echo "$before" > /tmp/test-build-ledger-before
+before=$(sha256sum ~/.local/state/claude-container/projects) || exit 1; echo "$before" > /tmp/test-build-ledger-before
 ./test-build.sh > /tmp/test-build-full.out 2>&1; echo "rc=$?" >> /tmp/test-build-full.out
 ```
 完了通知の後に Run:
@@ -316,10 +320,10 @@ before=$(sha256sum ~/.local/state/claude-container/projects); echo "$before" > /
 before=$(cat /tmp/test-build-ledger-before)
 tail -5 /tmp/test-build-full.out
 grep -E '起動台帳の記録が隔離 HOME に閉じる|結果:' /tmp/test-build-full.out
-after=$(sha256sum ~/.local/state/claude-container/projects); [ "$before" = "$after" ] && echo "実台帳 不変" || echo "実台帳 変化"
+after=$(sha256sum ~/.local/state/claude-container/projects) || { echo "実台帳を読めない"; exit 1; }; [ -n "$before" ] && [ "$before" = "$after" ] && echo "実台帳 不変" || echo "実台帳 変化または取得失敗"
 ./claude-container --check 2>&1 | grep -c '/tmp/tmp\.'
 ```
-Expected: `tail -5` の末尾が `====`・`結果: PASS=<N>  FAIL=0`・`====`・`rc=0`（案内より後に結果が出て、終了コードは 0）。`起動台帳の記録が隔離 HOME に閉じる` の行が `[PASS]`。`実台帳 不変`。`--check` の出力に `/tmp/tmp.` を含む行が `0`。PASS の件数 `<N>` を控える（Issue #59 の時点は 171、今回は Task 1 の check が 1 件増える）。FAIL が 0 でなければ、`/tmp/test-build-full.out` と `.claude/test-results/` の最新ログで原因を読み、この計画の変更が原因なら直し、環境要因（ネットワーク等）なら再実行する。
+Expected: `tail -5` の末尾が `====`・`結果: PASS=<N>  FAIL=0`・`====`・`rc=0`（案内より後に結果が出て、終了コードは 0）。`起動台帳の記録が隔離 HOME に閉じる` の行が `[PASS]`。`実台帳 不変`。`--check` の出力に `/tmp/tmp.` を含む行が `0`。PASS の件数 `<N>` を控える（Issue #59 の時点は 171、今回は Task 1 の check が 1 件増える）。FAIL が 0 でなければ、`/tmp/test-build-full.out` と `.claude/test-results/` の最新ログで原因を読み、この計画の変更が原因なら直して commit した後に再実行し、環境要因（ネットワーク等）なら原因を控えて再実行する。再実行の回数と理由は Task 6 の実行結果に書く。`/tmp/test-build-full.out` と `/tmp/test-build-ledger-before` は Task 6 の handover の後に削除する。
 
 ---
 
@@ -350,11 +354,12 @@ Expected: `1`。
 
 Run:
 ```bash
-SHIM=$(mktemp -d); for c in bash cat grep sed awk; do ln -s "$(type -P "$c")" "$SHIM/$c"; done
+SHIM=/tmp/hook-shim; rm -rf "$SHIM"; mkdir -p "$SHIM" || exit 1
+for c in bash cat grep sed awk; do ln -s "$(type -P "$c")" "$SHIM/$c" || exit 1; done; ls -l "$SHIM" | grep -c -- '->'
 input=$(jq -n --arg c 'gh pr review 123 --approve' '{tool_input:{command:$c}}')
 out=$(printf '%s' "$input" | PATH="$SHIM" bash examples/hooks/block-pr-approve.sh 2>&1); echo "rc=$? out=[${out}]"
 ```
-Expected: `rc=0 out=[]`（deny を出さずに通す。これが #71）。`$SHIM` は Step 4 でも使うので消さない。
+Expected: `5`（symlink 5 本）、`rc=0 out=[]`（deny を出さずに通す。これが #71）。`$SHIM` は固定パスなので Step 4 は別の Bash 呼び出しでもよい。
 
 - [ ] **Step 3: 置換する**
 
@@ -366,10 +371,12 @@ old='''  # jq 不在は環境異常。承認判定は生 JSON 文字列に対し
   stripped_hd=$input
 '''
 new='''  # jq 不在は環境異常。承認判定は生 JSON 文字列に対して継続する（fail-safe）。JSON の
-  # 引用符と \\" を空白に置き換えてから判定する。置き換えないと command 値の末尾が
-  # `--approve"` のように引用符で閉じられ、末尾を空白か行末に限定した判定に当たらない
-  # （claude-container#71）。引用文字列の除去はできないので偽陽性側に倒れる（安全方向）。
-  cmd=$(printf '%s' "$input" | sed -E 's/\\\\"/ /g; s/"/ /g')
+  # 引用符（\\"、"）と改行・タブ・復帰のエスケープ（\\n、\\t、\\r）を空白に置き換えてから
+  # 判定する。置き換えないと command 値の末尾が `--approve"` のように引用符で閉じられ、
+  # または `--approve\\necho` のようにエスケープが続き、末尾を空白か行末に限定した判定に
+  # 当たらない（claude-container#71）。引用文字列の除去はできないので、引用内の承認語は偽陽性側に
+  # 倒れる。JSON の Unicode エスケープ（\\u0022 など）は復号しないので、その形の入力は検出しない。
+  cmd=$(printf '%s' "$input" | sed -E 's/\\\\["ntr]/ /g; s/"/ /g')
   stripped_hd=$cmd
 '''
 assert s.count(old)==1
@@ -377,24 +384,27 @@ open(p,"w").write(s.replace(old,new)); print("ok")
 EOF
 sed -n '/jq 不在は環境異常/,/^fi$/p' examples/hooks/block-pr-approve.sh
 ```
-Expected: `ok`。表示されるコードの行が `cmd=$(printf '%s' "$input" | sed -E 's/\\"/ /g; s/"/ /g')` と `stripped_hd=$cmd`（sed の式はバックスラッシュ 2 つ＋引用符）。
+Expected: `ok`。表示されるコードの行が `cmd=$(printf '%s' "$input" | sed -E 's/\\["ntr]/ /g; s/"/ /g')` と `stripped_hd=$cmd`（sed の式はバックスラッシュ 2 つ＋文字クラス `["ntr]`）。
 
 - [ ] **Step 4: 修正後の挙動を shim PATH で確かめる**
 
 Run:
 ```bash
-probe() { input=$(jq -n --arg c "$1" '{tool_input:{command:$c}}'); out=$(printf '%s' "$input" | PATH="$SHIM" bash examples/hooks/block-pr-approve.sh 2>/dev/null); rc=$?; d=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null); echo "rc=$rc decision=${d:-none} :: $1"; }
+SHIM=/tmp/hook-shim
+probe() { input=$(jq -n --arg c "$1" '{tool_input:{command:$c}}'); out=$(printf '%s' "$input" | PATH="$SHIM" bash examples/hooks/block-pr-approve.sh 2>/tmp/hook-shim-stderr); rc=$?; d=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null); printf 'rc=%s decision=%s stdout_bytes=%s stderr_bytes=%s :: %s\n' "$rc" "${d:-none}" "${#out}" "$(wc -c < /tmp/hook-shim-stderr)" "$1"; }
 probe 'gh pr review 123 --approve'
 probe 'gh pr review -a 123'
 probe 'gh pr review 123 --approve --body "lgtm"'
 probe 'gh api repos/o/r/pulls/1/reviews -f event=APPROVE'
 probe 'gh api repos/o/r/pulls/1/reviews -f "event=APPROVE"'
 probe 'gh pr review 1 --approve <<< "x"'
+probe $'gh pr review 1 --approve\necho done'
+probe $'gh pr review 1 --approve\tx'
 probe 'gh pr review 123 --comment --body "note"'
 probe 'gh pr review 123 --request-changes -b "fix"'
-rm -rf "$SHIM"
+rm -rf "$SHIM" /tmp/hook-shim-stderr
 ```
-Expected: 最初の 6 行が `decision=deny`、最後の 2 行が `decision=none`、すべて `rc=0`。
+Expected: 最初の 8 行が `decision=deny`（7・8 行目は command 値の中に改行・タブがあり、JSON では `\n`・`\t` のエスケープになる形）、最後の 2 行が `decision=none stdout_bytes=0 stderr_bytes=0`（無出力）、すべて `rc=0`。
 
 - [ ] **Step 5: 通常経路（jq あり）が変わっていないことと lint を確かめる**
 
@@ -438,15 +448,16 @@ git commit -m "fix: block-pr-approve.sh の jq 不在 fail-safe 経路で、生 
 # のみで完結させること。
 #
 # 判定（claude-container#70）: hook の stdout・stderr・終了コードを別々に取り、
-# deny 期待は「終了コード 0 かつ stdout の JSON の permissionDecision が deny」、
-# pass 期待は「終了コード 0 かつ stdout も stderr も空」を要求する。出力の有無だけで
+# deny 期待は「終了コード 0 かつ stdout が単一の JSON オブジェクトで permissionDecision が
+# deny」、pass 期待は「終了コード 0 かつ stdout も stderr も空」を要求する。出力の有無だけで
 # 判定すると、deny 応答が allow に変わる回帰や hook 自体の起動失敗を見逃す。
 set -u
 
-ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd) || { echo "FAIL - 準備: ROOT を解決できない"; exit 1; }
 HOOK="$ROOT/examples/hooks/block-pr-approve.sh"
+[ -f "$HOOK" ] || { echo "FAIL - 準備: $HOOK が無い"; exit 1; }
 
-TMPDIR_T=$(mktemp -d)
+TMPDIR_T=$(mktemp -d) || { echo "FAIL - 準備: mktemp -d に失敗"; exit 1; }
 trap 'rm -rf "$TMPDIR_T"' EXIT
 
 fail=0
@@ -457,18 +468,29 @@ run_case() {
   expect="$2"
   cmdstr="$3"
   path_override="${4:-}"
-  input=$(jq -n --arg c "$cmdstr" '{tool_input:{command:$c}}')
+  outfile="$TMPDIR_T/stdout"
   errfile="$TMPDIR_T/stderr"
-  if [ -n "$path_override" ]; then
-    out=$(printf '%s' "$input" | PATH="$path_override" bash "$HOOK" 2>"$errfile") && rc=0 || rc=$?
-  else
-    out=$(printf '%s' "$input" | bash "$HOOK" 2>"$errfile") && rc=0 || rc=$?
+  if ! input=$(jq -n --arg c "$cmdstr" '{tool_input:{command:$c}}'); then
+    echo "FAIL - $desc (準備: 入力 JSON を生成できない)"
+    fail=$((fail + 1))
+    return
   fi
+  if [ -n "$path_override" ]; then
+    printf '%s' "$input" | PATH="$path_override" bash "$HOOK" >"$outfile" 2>"$errfile" && rc=0 || rc=$?
+  else
+    printf '%s' "$input" | bash "$HOOK" >"$outfile" 2>"$errfile" && rc=0 || rc=$?
+  fi
+  out=$(cat "$outfile")
   err=$(cat "$errfile")
-  decision=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
-  if [ "$rc" -eq 0 ] && [ "$decision" = "deny" ]; then
+  # stdout 全体が単一の JSON オブジェクトで、permissionDecision が deny か（jq -e: 真なら 0、偽なら 1、解析失敗は 2 以上）
+  if printf '%s' "$out" | jq -es 'length == 1 and (.[0] | type == "object") and (.[0].hookSpecificOutput.permissionDecision == "deny")' >/dev/null 2>&1; then
+    deny_json=1
+  else
+    deny_json=0
+  fi
+  if [ "$rc" -eq 0 ] && [ "$deny_json" -eq 1 ]; then
     actual="deny"
-  elif [ "$rc" -eq 0 ] && [ -z "$out" ] && [ -z "$err" ]; then
+  elif [ "$rc" -eq 0 ] && [ ! -s "$outfile" ] && [ ! -s "$errfile" ]; then
     actual="pass"
   else
     actual="invalid"
@@ -476,7 +498,7 @@ run_case() {
   if [ "$actual" = "$expect" ]; then
     echo "ok   - $desc"
   else
-    echo "FAIL - $desc (expected $expect, got $actual; rc=$rc decision=${decision:-none} stdout=${out:0:80} stderr=${err:0:80})"
+    echo "FAIL - $desc (expected $expect, got $actual; rc=$rc stdout=${out:0:80} stderr=${err:0:80})"
     fail=$((fail + 1))
   fi
 }
@@ -507,12 +529,23 @@ run_case "N5 --request-changes" pass 'gh pr review 123 --request-changes -b "fix
 # PATH にする。PATH から jq のディレクトリを丸ごと落とす方式だと、usrmerge 環境では bash 自体が
 # 消えて hook が起動せず、テストが空振りする（claude-container#70）。
 SHIM="$TMPDIR_T/shim"
-mkdir -p "$SHIM"
+shim_ok=1
+mkdir -p "$SHIM" || shim_ok=0
 for c in bash cat grep sed awk; do
-  p=$(type -P "$c") || { echo "FAIL - C10 準備: $c が PATH に無い"; fail=$((fail + 1)); }
-  [ -n "$p" ] && ln -s "$p" "$SHIM/$c"
+  if p=$(type -P "$c") && [ -n "$p" ] && ln -s "$p" "$SHIM/$c"; then
+    :
+  else
+    echo "FAIL - C10 準備: $c を shim に置けない"
+    fail=$((fail + 1))
+    shim_ok=0
+  fi
 done
-run_case "C10 jq不在fail-safe: 真正承認は引き続きDENY" deny 'gh pr review 123 --approve' "$SHIM"
+if [ "$shim_ok" -eq 1 ]; then
+  run_case "C10 jq不在fail-safe: 真正承認は引き続きDENY" deny 'gh pr review 123 --approve' "$SHIM"
+else
+  echo "FAIL - C10 jq不在fail-safe: 準備に失敗したため未実行"
+  fail=$((fail + 1))
+fi
 
 echo ''
 if [ "$fail" -eq 0 ]; then
@@ -537,17 +570,18 @@ Expected: `ok   - ` が 15 行（C1〜C10、N1〜N5）、「全ケース green�
 
 Run:
 ```bash
-M=$(mktemp -d); mkdir -p "$M/examples/hooks/tests"
-git show main:examples/hooks/block-pr-approve.sh > "$M/examples/hooks/block-pr-approve.sh"
+M=/tmp/hook-test-mut; rm -rf "$M"; mkdir -p "$M/examples/hooks/tests" || exit 1
+git show abde4e8:examples/hooks/block-pr-approve.sh > "$M/examples/hooks/block-pr-approve.sh"
 cp examples/hooks/tests/test-block-pr-approve.sh "$M/examples/hooks/tests/"
 bash "$M/examples/hooks/tests/test-block-pr-approve.sh" | grep -E 'C10|件 FAIL|green'; echo "rc=${PIPESTATUS[0]}"
 ```
-Expected: `FAIL - C10 ... (expected deny, got pass; rc=0 decision=none ...)`、`1 件 FAIL`、`rc=1`。`$M` は Step 4 でも使う。
+Expected: `FAIL - C10 ... (expected deny, got pass; rc=0 stdout= stderr=)`、`1 件 FAIL`、`rc=1`。修正前の hook は main の `abde4e8`（この計画の基準）に固定する。`$M` は固定パスなので Step 4・5 は別の Bash 呼び出しでもよい。
 
 - [ ] **Step 4: deny を allow に置換した hook で FAIL になることを確かめる**
 
 Run:
 ```bash
+M=/tmp/hook-test-mut
 cp examples/hooks/block-pr-approve.sh "$M/examples/hooks/block-pr-approve.sh"
 sed -i 's/permissionDecision:"deny"/permissionDecision:"allow"/; s/"permissionDecision":"deny"/"permissionDecision":"allow"/' "$M/examples/hooks/block-pr-approve.sh"
 grep -c '"allow"' "$M/examples/hooks/block-pr-approve.sh"
@@ -559,12 +593,13 @@ Expected: `2`、`10 件 FAIL`、`rc=1`（deny 期待の C1〜C10 がすべて FA
 
 Run:
 ```bash
+M=/tmp/hook-test-mut
 cp examples/hooks/block-pr-approve.sh "$M/examples/hooks/block-pr-approve.sh"
 sed -i 's/for c in bash cat grep sed awk; do/for c in cat grep sed awk; do/' "$M/examples/hooks/tests/test-block-pr-approve.sh"
 bash "$M/examples/hooks/tests/test-block-pr-approve.sh" | grep -E 'C10|件 FAIL'; echo "rc=${PIPESTATUS[0]}"
 rm -rf "$M"
 ```
-Expected: `FAIL - C10 ... (expected deny, got invalid; rc=127 ...)`、`1 件 FAIL`、`rc=1`。
+Expected: `FAIL - C10 ... (expected deny, got invalid; rc=127 stdout= stderr=...bash: command not found)`、`1 件 FAIL`、`rc=1`。
 
 - [ ] **Step 6: Commit**
 
@@ -623,8 +658,12 @@ Closes #71
 
 - [ ] **Step 2: CI の緑を確かめる**
 
-「実行者への前提」の完了待ちを実行する（Bash ツールの `timeout` を 600000 にする。CI は 1〜2 分で終わる）。
-Expected: `conclusion=success`。ログに `全ケース green` が 1 件、失敗時ログのステップは skipped。
+「実行者への前提」の完了待ちを実行する（Bash ツールの `timeout` を 600000 にする。CI は 1〜2 分で終わる）。続けて:
+```bash
+gh run view -R jj1xgo/claude-container "$id" --log | grep -c '全ケース green'
+gh run view -R jj1xgo/claude-container "$id" --json jobs --jq '.jobs[].steps[] | select(.name=="失敗時にテストログを出す") | .conclusion'
+```
+Expected: `conclusion=success`、`1`、`skipped`。
 
 - [ ] **Step 3: PR 本文を最終値に更新し、ready にする**
 
@@ -651,10 +690,12 @@ Expected: `false OPEN <HEAD の SHA>`。
 ## 範囲外（Fable がレビュー時に行う）
 
 - PR のレビュー（Fable と Codex の二重。Codex を先に background で起動する）。マージは持ち主。
+- #72（承認フラグ直後の区切り文字で通常経路を迂回できる）は別 PR。修正時に回帰テストへ `--approve;` などの deny ケースを足す。
+- jq 不在時の Unicode エスケープ（`\u0022` など）は復号しない。jq 不在は環境異常であり、この限界は hook のコメントに書く。
 - #66・#67・#62 ほかの priority-low は対象外。
 
 ## Claude への受け渡し
 
 **実装: Opus（このセッション）。** 理由: hook 本体の改修を含む（CLAUDE.md「モデルと実装者の使い分け」の 2）。持ち主が「1 つの PR で hook 修正も含め、実装は Opus」を選択（2026-09-12）。
 
-手順: この計画を commit した後、持ち主が `/model` で Opus を選び `s` で切り替える。Opus は `superpowers:executing-plans` で Task 0 Step 1 から順に進め、Task 5 Step 3 の ready で止まる。
+手順: この計画を commit した後、持ち主が `/model` で Opus を選び `s` で切り替える。Opus は `superpowers:executing-plans` で Task 0 Step 1 から順に進め、Task 6 Step 2 の handover まで行って止まる。

@@ -556,9 +556,84 @@ run_clean_ledger_launcher_tests() {
   out=$(env -i HOME="$home" PATH="$bin:$PATH" \
     "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
   check "権限設定失敗時は ERROR で停止し元の600台帳を保持（rc=$rc）" \
-    bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && [[ "$4" == *"ERROR: 起動台帳の一時ファイル"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
+    bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳の一時ファイル"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$bin/chmod"
+
+  # grep が一部出力した後に失敗しても、元台帳を置き換えない（#84）。
+  # stdout の実ファイル属性を調べ、書き込み前から600であることも検証する（#85）。
+  ln -s "$(command -v grep)" "$bin/real-grep"
+  cat > "$bin/grep" <<'SHIM'
+#!/bin/bash
+if [[ "${!#}" == "$HOME/.local/state/claude-container/projects" ]]; then
+  stat -Lc %a "/proc/$$/fd/1" > "$HOME/ledger-write-mode"
+  case "${LEDGER_TEST_FAILURE:-}" in
+    empty) exit 2 ;;
+    partial) printf '%s\n' partial-output; exit 2 ;;
+  esac
+fi
+exec real-grep "$@"
+SHIM
+  chmod +x "$bin/grep"
+  local failure
+  for failure in empty partial; do
+    printf '%s\n' "$proj" "$root/other project" > "$ledger"
+    chmod 600 "$ledger"
+    cp "$ledger" "$root/expected-ledger"
+    out=$(umask 000; env -i HOME="$home" PATH="$bin:$PATH" LEDGER_TEST_FAILURE="$failure" \
+      "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+    check "grep $failure 失敗時は元台帳を保持し一時台帳を除去（rc=$rc）" \
+      bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+  # 旧版の残置 .tmp があっても内容やモードを変更せず、別の一時ファイルを使う。
+  ln -s "$(command -v mktemp)" "$bin/real-mktemp"
+  cat > "$bin/mktemp" <<'SHIM'
+#!/bin/bash
+created=$(real-mktemp "$@") || exit 1
+stat -c %a "$created" > "$HOME/ledger-create-mode"
+printf '%s\n' "$created"
+SHIM
+  chmod +x "$bin/mktemp"
+  printf '%s\n' old-temp > "$ledger.tmp"
+  chmod 666 "$ledger.tmp"
+  cp "$ledger.tmp" "$root/old-temp"
+  printf '%s\n' "$proj" "$root/other project" > "$ledger"
+  printf '%s\n' "$root/other project" > "$root/expected-ledger"
+  out=$(umask 000; env -i HOME="$home" PATH="$bin:$PATH" \
+    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+  check "旧tmpを再利用せず、生成時・書き込み前・更新後の権限は600（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2")" = 600 ] && [ "$(cat "$6")" = 600 ] && [ "$(stat -c %a "$3")" = 600 ] && cmp -s "$3" "$4" && cmp -s "$3.tmp" "$5" && [ "$(stat -c %a "$3.tmp")" = 666 ] && ! compgen -G "$3.tmp.*" >/dev/null' _ "$rc" "$home/ledger-write-mode" "$ledger" "$root/expected-ledger" "$root/old-temp" "$home/ledger-create-mode"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$bin/grep" "$bin/real-grep" "$bin/mktemp" "$bin/real-mktemp" "$ledger.tmp"
+  # 作成・置き換え・出力を開く処理の失敗でも元台帳を保持し、残置しない。
+  local operation shim_command expected_error
+  for operation in mktemp mv open; do
+    printf '%s\n' "$proj" "$root/other project" > "$ledger"
+    chmod 600 "$ledger"
+    cp "$ledger" "$root/expected-ledger"
+    shim_command="$operation"
+    expected_error='ERROR: 起動台帳'
+    if [[ "$operation" == open ]]; then
+      expected_error='書き込み用に開けません'
+      # chmod の直後に出力先を開けない状態へ変え、root でも open を失敗させる。
+      shim_command='chmod'
+      cat > "$bin/$shim_command" <<'SHIM'
+#!/bin/bash
+rm -f -- "${!#}" || exit 1
+ln -s "$HOME/missing-dir/ledger" "${!#}"
+SHIM
+    else
+      printf '#!/bin/bash\nexit 1\n' > "$bin/$shim_command"
+    fi
+    chmod +x "$bin/$shim_command"
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" \
+      "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+    check "$operation 失敗時は元台帳を保持し一時台帳を除去（rc=$rc）" \
+      bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"$5"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out" "$expected_error"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    rm -f "$bin/$shim_command"
+  done
   launcher_sandbox_cleanup
 }
 

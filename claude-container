@@ -144,13 +144,40 @@ clean_project() {
   rm -f "$MCP_APPROVAL_RECORD" && echo "削除しました。" || echo "見つからないのでスキップします。"
   if [[ -f "$CC_LEDGER_FILE" ]]; then
     echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
-    grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" > "$CC_LEDGER_FILE.tmp" 2>/dev/null || true
-    # 新規の一時ファイルは umask に依存するため、台帳へ置き換える前に権限を固定する。
-    if ! chmod 600 "$CC_LEDGER_FILE.tmp"; then
-      echo "ERROR: 起動台帳の一時ファイルの権限を600に設定できません。元の台帳は変更していません: $CC_LEDGER_FILE.tmp" >&2
-      return 1
-    fi
-    mv "$CC_LEDGER_FILE.tmp" "$CC_LEDGER_FILE"
+    # 一時台帳は毎回別名・生成時から所有者のみ。旧版の固定 .tmp は再利用しない。
+    # trap はこのサブシェルだけに閉じ、失敗時も今回作ったファイルだけを後始末する。
+    # || の左側では errexit に頼れないため、失敗する処理は個別に確認する。
+    (
+      umask 077
+      ledger_tmp=$(mktemp "$CC_LEDGER_FILE.tmp.XXXXXX") || {
+        echo "ERROR: 起動台帳の一時ファイルを作成できません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      }
+      trap 'if ! rm -f -- "$ledger_tmp"; then echo "WARNING: 起動台帳の一時ファイルを削除できません: $ledger_tmp" >&2; fi' EXIT
+      if ! chmod 600 "$ledger_tmp"; then
+        echo "ERROR: 起動台帳の一時ファイルの権限を600に設定できません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+      # 出力を開く失敗（rc1）を grep の「残す行なし」と混同しない。
+      if ! exec {ledger_fd}> "$ledger_tmp"; then
+        echo "ERROR: 起動台帳の一時ファイルを書き込み用に開けません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+      # grep の1は残す行なしの正常系。2以上の読み取り・書き込み失敗は区別する。
+      if grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" >&"$ledger_fd"; then
+        :
+      else
+        grep_status=$?
+        if [[ $grep_status -ne 1 ]]; then
+          echo "ERROR: 起動台帳を更新できません（grep 終了コード $grep_status）。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+          exit 1
+        fi
+      fi
+      if ! mv -- "$ledger_tmp" "$CC_LEDGER_FILE"; then
+        echo "ERROR: 起動台帳を置き換えられません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+    ) || return 1
   fi
   echo "dangling イメージを整理しています..."
   podman image prune -f

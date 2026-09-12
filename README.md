@@ -70,7 +70,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 
 ## 環境変数
 
-**利用側プロジェクト**のルートに `.claude-container.d/env` を置くと起動前に自動で読み込まれる。読み込まれるのは `KEY=VALUE` 形式の行のうち **下表のキーだけ**で、クォートやシェル展開は解釈されない（ホスト上でのシェル構文の即時解釈を避けるため、意図的に `source` していない）。下表にないキーは export されず `WARNING` を出して無視する（[`#44`](https://github.com/jj1xgo/claude-container/issues/44)。`PATH`・`HOME`・`LD_PRELOAD` 等、ホスト側で動くランチャーや podman・git・gh の挙動を変えうるキーをリポジトリ側から書けないようにするため）。また、対象プロジェクト直下の `.env` は compose の変数補間に使わない（`podman compose` を `--env-file /dev/null` で呼ぶ。[`#60`](https://github.com/jj1xgo/claude-container/issues/60)）。ランタイム設定の入口は `.claude-container.d/env` の 1 つだけである。これはビルド時に焼き込まれる設定ではなく起動のたび毎回読み込まれるランタイム設定なので、変更してもリビルド（`-b`）は不要。
+**利用側プロジェクト**のルートに `.claude-container.d/env` を置くと起動前に自動で読み込まれる。読み込まれるのは `KEY=VALUE` 形式の行のうち **下表のキーだけ**で、クォートやシェル展開は解釈されない（ホスト上でのシェル構文の即時解釈を避けるため、意図的に `source` していない）。下表にないキーは export されず `WARNING` を出して無視する（[`#44`](https://github.com/jj1xgo/claude-container/issues/44)。`PATH`・`HOME`・`LD_PRELOAD` 等、ホスト側で動くランチャーや podman・git・gh の挙動を変えうるキーをリポジトリ側から書けないようにするため）。また、対象プロジェクト直下の `.env` は compose の変数補間に使わない（`podman compose` を `--env-file /dev/null` で呼ぶ。[`#60`](https://github.com/jj1xgo/claude-container/issues/60)）。リポジトリ同梱のファイルから設定できる入口は `.claude-container.d/env` の 1 つだけである（シェル環境から渡した変数は従来どおり有効なので、以前 `env` に書いて効いていた `PATH`・`PODMAN_COMPOSE_PROVIDER`・`CLAUDE_CODE_VERSION` 等はシェル環境へ移すこと。例: `CLAUDE_CODE_VERSION=1.2.3 ./claude-container <dir>`）。これはビルド時に焼き込まれる設定ではなく起動のたび毎回読み込まれるランタイム設定なので、変更してもリビルド（`-b`）は不要。
 
 | 変数 | デフォルト | 説明 |
 |---|---|---|
@@ -83,7 +83,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 | `SECRETS_DIR` | (unset) | GitHub トークン等のシークレットをコンテナへ持ち込む唯一の機構のホスト側パス（後述「GitHub トークンの配線」節） |
 | `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「MCP サーバーの追加」節の Codex レシピ）。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する）。実ホストの `~/.codex` と同じ実体を指す指定（表記ゆれ・シンボリックリンクを含む）は起動を中止する |
 
-`TZ` は起動スクリプトがホストの `/etc/timezone`（なければ `/etc/localtime` シンボリックリンク）から自動検出する。`.claude-container.d/env` で明示した場合はそちらが優先される。
+`TZ` は起動スクリプトがホストの `/etc/timezone`（なければ `/etc/localtime` シンボリックリンク）から自動検出する。`.claude-container.d/env` またはシェル環境で明示した場合はそちらが優先される。
 
 claude-container 自身を対象プロジェクトとして自己ホスト起動する場合（このリポジトリを直接 `./claude-container` の引数に渡す場合）は、`.claude-container.d/env.example` をコピーして `.claude-container.d/env` を作成する。`SECRETS_DIR` 等ホスト固有のパスを含みうるため `.claude-container.d/env` は gitignore 対象で、リポジトリには example のみをコミットする。同様に、GitHub 公式 MCP サーバー（後述「GitHub トークンの配線」節のレシピ参照）を自己ホスト環境でも使いたい場合は、`.mcp.json.example` をコピーして `.mcp.json` を作成する（`.mcp.json` はメンテナ自身のセッション用実設定のため gitignore 対象）。
 
@@ -290,7 +290,7 @@ stdio タイプのサーバーをどうしても使いたい場合は、`npx` �
 
 ## イメージの変更
 
-`Dockerfile.claude` を編集して `./claude-container -b /path/to/project` でリビルドする。`-b` を付けると GitHub meta スナップショットの再取得（上記）が試みられ、あわせて `CACHEBUST` にその時点のエポック秒が渡されて install レイヤーのキャッシュが必ず破棄される。これにより、`-b` のたびに `install.sh` が再実行されて最新版の Claude Code が取得される（apt パッケージ等の上位レイヤーはキャッシュを流用するため高速）。再現性が必要な場合は `compose.yml` で `CLAUDE_CODE_VERSION` を固定する。
+`Dockerfile.claude` を編集して `./claude-container -b /path/to/project` でリビルドする。`-b` を付けると GitHub meta スナップショットの再取得（上記）が試みられ、あわせて `CACHEBUST` にその時点のエポック秒が渡されて install レイヤーのキャッシュが必ず破棄される。これにより、`-b` のたびに `install.sh` が再実行されて最新版の Claude Code が取得される（apt パッケージ等の上位レイヤーはキャッシュを流用するため高速）。再現性が必要な場合は `CLAUDE_CODE_VERSION=1.2.3 ./claude-container -b /path/to/project` のようにシェル環境で固定する（`.claude-container.d/env` は許可リスト外のため無視される。理由は [`#62`](https://github.com/jj1xgo/claude-container/issues/62)）。
 
 `.claude-container.d/` のパッケージ一覧・許可ドメイン（`allowed-domains.txt`）・許可ポート（`allowed-ports.txt`）・Node バージョン指定（`node-version.txt`）・ベースイメージ指定（`base-image.txt`）を変更した場合も、イメージへ反映するには `-b` での再ビルドが必要。`entrypoint.sh`・`init-firewall.sh`・`git-askpass.sh`・`validate-build-input.sh`・`Dockerfile.claude` 自体などビルドコンテキストへステージされるスクリプトの変更も同様（前述「アーキテクチャ」節参照）。
 
@@ -374,7 +374,7 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 **`.mcp.json` にだけ追加ゲートがあるのは、入力の信頼度でなく帰結の重大性で線を引いているため**（`claude-container#29`）: リポジトリ同梱の設定（`.claude-container.d/env` と `.mcp.json` の両方）は、いずれも起動前に運用者がレビューする責任範囲にある——同じリポジトリに同梱される以上、どちらか一方だけを「信頼できる」「信頼できない」と区別する根拠は無い。claude-container が追加の対話ゲートを設けるのは、レビューを怠った場合の帰結が「セッション開始と同時の任意コード実行」になる場合に限る（＝ `.mcp.json` の stdio 型）。`env` で受け付けるキーは許可リスト（前述「環境変数」節の表）に限られ、`PATH`・`HOME` 等ホスト側の実行や基点に影響するキーは export されない（[`#44`](https://github.com/jj1xgo/claude-container/issues/44)）。対象プロジェクト直下の `.env` も compose の補間に使わない（[`#60`](https://github.com/jj1xgo/claude-container/issues/60)）。別軸として、境界へ影響するキー（`EXTRA_MOUNT`・`SHARED_MOUNT`・`SECRETS_DIR`・`GITCONFIG_FILE`・`CODEX_DIR` 等）の使用は起動時に一覧して気づけるようにしている（`guard_env_boundary_keys()`）。この可視化は fail-closed ではない——`env` は運用者自身が書く設定という前提は変えていないため。
 
-起動時の可視化を実際に確認したい場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1`（または `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`）を書いて起動する。値そのものはログに出さず、キー名のみを一覧する。
+起動時の可視化を実際に確認したい場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1`（または `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`/`CLAUDE_CONFIG_DIR`）を書いて起動する。値そのものはログに出さず、キー名のみを一覧する。
 
 **ホストの Claude Code 設定の読み取り専用保護**: ホストの `~/.claude`（`CLAUDE_CONFIG_DIR` 基点）はコンテナへ rw で bind mount される（認証情報・transcript の共有に必要）が、そのうちホスト側で実行・読込される user scope の設定 11 項目（前述「何ができて何ができないか」節の表）は、`compose.yml` が rw マウントの内側に `:ro` の bind mount を重ねることで、**この mount 経由では**コンテナ内から書き換えられない。侵害されたセッションがここへ hook・skill・plugin 等を書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file watcher で稼働中セッションにも反映される）ため。マウント先がホストに無いと podman がサブ uid 所有の実体を作って残骸になるので、`claude-container` が起動直前（全ガードと MCP 承認の後）に欠けている項目をユーザー権限で空のまま作り、その旨を `INFO:` で表示する（`--check` は作らず `[WARN]` で報告する）。11 項目のいずれかが symlink または型の違う実体（ディレクトリ予定位置にファイル等）だと起動を中止する。symlink を拒否するのは、`:ro` の子マウントはリンク先に付く一方でリンク自体は rw の親マウント内に残り、コンテナ内で削除して作り直せば書き込み可能な実体に置き換えられる（保護の迂回）ため。**限界**: (1) 保護はこの mount 経由に限る。`/workspace`（作業ディレクトリ）・`EXTRA_MOUNT`・`SHARED_MOUNT` が `~/.claude` を含む、または保護対象そのものを指す場合は別経路から書けるため、起動時に `WARNING` を出す（検出はパスの包含関係のみで、別マウント内部のリンク等は検出しない）。(2) project scope の設定（`/workspace/.claude/` 配下と `.mcp.json`）は対象外で、ホストでそのフォルダを trust 済みならホストの Claude Code がそれらを読み込む。(3) `~/.claude.json`（trust フラグ・user scope の MCP 登録）、auto memory（`projects/<p>/memory/`）、`agent-memory/`、`shell-snapshots/`、`session-env/` は対象外（Claude Code が実行時に書くため）。前 3 者はホスト側セッションへの指示の再注入経路になりうる。(4) 保護された参照元（`settings.json`・`CLAUDE.md` の import・hook や plugin が読む依存ファイル）が `~/.claude` の外や対象外領域を指していれば、その先は保護されない。(5) `.claude-container.d/env` の `HOME`・`PATH` 等でホスト側の実行や基点をずらす経路は、受け付けるキーを許可リストに限定したことで閉じた（`#44`）。許可キーのうち `CLAUDE_CONFIG_DIR` は基点そのものを指定するキーなので、`guard_env_boundary_keys()` の一覧表示の対象にしている。(6) ホスト側で 11 項目のファイルを rename で置換した場合、稼働中のコンテナは旧実体を見続ける（再起動で反映）。
 

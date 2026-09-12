@@ -214,15 +214,22 @@ record_project_in_ledger() {
 # 取り込む。source だとシェル構文がホスト上で即時解釈され任意コード実行になりうるため、変数代入以外の
 # 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
 #
-# 許可リスト（claude-container#44）: compose.yml が補間するキーとコンテナへ渡す 2 キー
-# （TZ・CLAUDE_CONTAINER_NO_FIREWALL）以外、env のキーには正当な機能がない。一方 PATH・HOME・
+# 許可リスト（claude-container#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
+# 影響しないものと、コンテナへ渡す 2 キー（TZ・CLAUDE_CONTAINER_NO_FIREWALL）。一方 PATH・HOME・
 # LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
 # ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
 # ことを実測）。拒否リストは列挙が閉じないので、許可リストで受け付けるキーを固定し、それ以外は
 # WARNING を出して無視する（export しなければ無害なので ERROR にはしない。--check では [WARN]）。
-# 新しいキーを compose.yml へ足したら、この配列と README「環境変数」節の表を同時に更新する。
+# 新しいキーを compose.yml へ足したら、この配列と README「環境変数」節の表を同時に更新する
+# （両者の一致は test-build.sh の E7 が検査する）。compose.yml が補間するキーでも
+# CLAUDE_CODE_VERSION は意図的に除外している — 値は Dockerfile.claude の
+# `install.sh | bash -s ${CLAUDE_CODE_VERSION}` へクォートなしで展開され、リポジトリ側から
+# 書けるとビルド時 root でのコマンド注入経路になる（claude-container#62）。シェル環境から
+# 渡す経路は従来どおり有効。
 # 保護変数（readonly）は許可リストに含まれないので上書きされない。readonly 宣言自体は
-# スクリプト内部の直接代入に対する防御として残す（claude-container#39）。
+# スクリプト内部の直接代入に対する防御として残す（claude-container#39）。許可リストのキーを
+# readonly にしないこと — 下の export は無条件なので、readonly だと set -euo pipefail 下で
+# bash の生エラーのまま起動が落ちる。
 # ローカル変数名を _lef_ で名前空間化しているのは、bash の動的スコープにより関数内ローカルと同名の
 # キーが export してもグローバルへ出ないため（許可リストのキーをこの名前にしないこと）。
 ENV_FILE_ALLOWED_KEYS=(
@@ -237,17 +244,23 @@ ENV_FILE_ALLOWED_KEYS=(
 )
 readonly -a ENV_FILE_ALLOWED_KEYS
 load_env_file() {
-  local _lef_file="$1" _lef_line _lef_key
+  local _lef_file="$1" _lef_line _lef_key _lef_ignored=0
   while IFS= read -r _lef_line || [[ -n "$_lef_line" ]]; do
     [[ "$_lef_line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
     _lef_key="${_lef_line%%=*}"
     if [[ " ${ENV_FILE_ALLOWED_KEYS[*]} " != *" $_lef_key "* ]]; then
-      guard_warn "WARNING: $_lef_file のキー $_lef_key は claude-container が解釈しないため無視します（受け付けるキー: ${ENV_FILE_ALLOWED_KEYS[*]}。README「環境変数」節）。"
+      # 受け付けるキーの一覧は行ごとに繰り返さず、末尾で 1 回だけ出す（無関係なキーが数個あると
+      # 一覧の反復でログが埋まり、後続の専用ガードの具体的な案内が埋もれるため）。
+      guard_warn "WARNING: $_lef_file のキー $_lef_key は claude-container が解釈しないため無視します。"
+      _lef_ignored=1
       continue
     fi
     # shellcheck disable=SC2163  # 変数名でなく KEY=VALUE 文字列の export が意図
     export "$_lef_line"
   done < "$_lef_file"
+  if [[ $_lef_ignored -eq 1 ]]; then
+    guard_warn "  受け付けるキー: ${ENV_FILE_ALLOWED_KEYS[*]}（README「環境変数」節）。ホスト側で使う変数はシェル環境から渡してください。"
+  fi
 }
 
 # ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では

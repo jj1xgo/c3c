@@ -692,12 +692,39 @@ DUMMY
     bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CODEX_DIR' && [ ! -e '$root/compose-env' ]" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # E3: 許可キーは従来どおり compose へ届く（許可リストを狭めすぎたら落ちる対照）
+  # E3: 許可キー 8 件が全て compose へ届く（許可リストからどれか 1 つ落ちたら赤になる対照）。
+  # 3 件だけを見ていると、マウント境界を決める CLAUDE_CONFIG_DIR・EXTRA_MOUNT・SHARED_MOUNT・
+  # SECRETS_DIR が配列から消えても緑のままになる（レビュー指摘に基づく拡張）。
   : > "$root/gitconfig"
-  printf 'TZ=Asia/Tokyo\nGITCONFIG_FILE=%s\nCLAUDE_CONTAINER_NO_FIREWALL=1\n' "$root/gitconfig" > "$envf"
+  mkdir -p "$root/extra" "$root/shared" "$root/secrets" "$home/cfgx/.claude"
+  local e_cfg e_extra e_shared e_secrets e_gitcfg e_codex
+  e_cfg="$(cd "$home/cfgx" && pwd -P)"
+  e_extra="$(cd "$root/extra" && pwd -P)"
+  e_shared="$(cd "$root/shared" && pwd -P)"
+  e_secrets="$(cd "$root/secrets" && pwd -P)"
+  e_gitcfg="$root/gitconfig"
+  e_codex="$(cd "$home/.codex-container" && pwd -P)"
+  {
+    printf 'TZ=Asia/Tokyo\n'
+    printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n'
+    printf 'CLAUDE_CONFIG_DIR=%s\n' "$e_cfg"
+    printf 'EXTRA_MOUNT=%s\n' "$e_extra"
+    printf 'SHARED_MOUNT=%s\n' "$e_shared"
+    printf 'SECRETS_DIR=%s\n' "$e_secrets"
+    printf 'GITCONFIG_FILE=%s\n' "$e_gitcfg"
+    printf 'CODEX_DIR=%s\n' "$e_codex"
+  } > "$envf"
   run_launcher
-  check "E3: 許可キー TZ/GITCONFIG_FILE/NO_FIREWALL が compose へ届く（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' && grep -qxF 'GITCONFIG_FILE=$root/gitconfig' '$root/compose-env' && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env'"
+  check "E3: 許可キー 8 件が全て compose へ届く（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] \
+      && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' \
+      && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env' \
+      && grep -qxF 'CLAUDE_CONFIG_DIR=$e_cfg' '$root/compose-env' \
+      && grep -qxF 'EXTRA_MOUNT=$e_extra' '$root/compose-env' \
+      && grep -qxF 'SHARED_MOUNT=$e_shared' '$root/compose-env' \
+      && grep -qxF 'SECRETS_DIR=$e_secrets' '$root/compose-env' \
+      && grep -qxF 'GITCONFIG_FILE=$e_gitcfg' '$root/compose-env' \
+      && grep -qxF 'CODEX_DIR=$e_codex' '$root/compose-env'"
   check "E3: 許可キーには WARNING が出ない" \
     bash -c "! printf '%s' \"\$0\" | grep -q '解釈しないため無視'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -724,6 +751,12 @@ DUMMY
   check "E6: LD_PRELOAD は compose の環境に渡らない（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && ! grep -q '^LD_PRELOAD=' '$root/compose-env'"
   printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E7: 許可リストと README「環境変数」節の表が一致する（静的確認）。両者がずれると、
+  # 表に載っているのに無視されるキー（利用者の設定が黙って消える）か、無検証で通るキーが出る。
+  check "E7: ENV_FILE_ALLOWED_KEYS と README「環境変数」節の表が一致する" \
+    bash -c "diff <(awk '/^ENV_FILE_ALLOWED_KEYS=\(/{f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,\"\");print}' '${SCRIPT_DIR}/claude-container' | sort) \
+                  <(awk '/^## 環境変数/{f=1;next} f&&/^## /{exit} f' '${SCRIPT_DIR}/README.md' | grep -oE '^\| \`[A-Z_]+\`' | tr -d '| \`' | sort)"
 
   launcher_sandbox_cleanup
 }

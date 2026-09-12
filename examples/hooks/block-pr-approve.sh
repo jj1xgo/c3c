@@ -33,6 +33,8 @@
 # 既知の残存 false negative（意図的な難読化、脅威モデル外）:
 #   - 引用文字列内に `<<X` を含む行を挟んでヒアドキュメント除去を誤爆させ、
 #     その直後に真正の承認コマンドを紛れ込ませるようなケース
+#   - 通常経路ではダブルクォート内や heredoc 本文内のコマンド置換も除去される。
+#     引用しない区切り語の heredoc では本文の置換が実行されるが、検出できない。
 #
 # 注意: このファイルのコメント行を「# shellcheck」で始めないこと
 # （directive として解釈されパースエラーになる）。
@@ -121,8 +123,10 @@ printf '%s' "$stripped_hd" | grep -qE '(^|[^[:alnum:]])gh([[:space:]]|$)' || exi
 #     例: --approve; echo done、-a&&true、(gh pr review 1 --approve)。
 #     = は値付き指定（--approve=true / -a=1 等）。引用値は除去されうるため
 #     真偽値を評価せず、false・不正値も含めて拒否する（issue #75）。
+#     バッククォート終端の単純な置換形も拒否する（issue #76）。引用符除去で
+#     消える形や難読化を含む、コマンド置換全般の解析は行わない。
 if printf '%s' "$stripped_hd" | grep -qE '(^|[^[:alnum:]])gh[[:space:]]+pr[[:space:]]+review([[:space:]]|$)'; then
-  if printf '%s' "$stripped_hd" | grep -qE '(^|[[:space:]])(--approve|-[[:alpha:]]*a[[:alpha:]]*)([[:space:];&|()<>=]|$)'; then
+  if printf '%s' "$stripped_hd" | grep -qE '(^|[[:space:]])(--approve|-[[:alpha:]]*a[[:alpha:]]*)([[:space:];&|()<>=`]|$)'; then
     emit_deny "$reason"
   fi
 fi

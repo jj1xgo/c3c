@@ -676,8 +676,8 @@ ALLOWED_PORTS_VECTORS=(
   'accept|00443\n|443'
   'accept|443\n0120\n|443,120'
   'accept|443\n00008\n|443,8'
-  'reject|443\n100000\n|不正なエントリ'
-  'reject|000443\n|不正なエントリ'
+  'reject|443\n100000\n|ポート番号か port:port'
+  'reject|000443\n|ポート番号か port:port'
   'reject|443\n080\n|80 番を許可できません'
   # 既存挙動の固定
   'accept|443\n22\n8000:8010\n|443,22,8000:8010'

@@ -93,13 +93,12 @@ resolve_allowed_ports() {
   # そこで「ネットワークの問題」に見えるメッセージ（"unable to reach ...:443"）や
   # 「ルールが壊れている」ように見えるメッセージ（"port restriction not enforced"）で
   # 失敗していたため、ここで本当の理由とともに検証する（claude-container#49）。
-  # 範囲は両端を含む。10# は 10 進として強制するもので、先頭ゼロ（例: 080）を
-  # 8 進として読まないようにする。
+  # 範囲は両端を含む。入力値は上で先頭ゼロのない十進表記へ正規化済み。
   local entry has_443=0 has_80=0
   for entry in "${ports[@]}"; do
     lo="${entry%%:*}"; hi="${entry##*:}"
-    if (( 10#$lo <= 443 && 443 <= 10#$hi )); then has_443=1; fi
-    if (( 10#$lo <= 80 && 80 <= 10#$hi )); then has_80=1; fi
+    if (( lo <= 443 && 443 <= hi )); then has_443=1; fi
+    if (( lo <= 80 && 80 <= hi )); then has_80=1; fi
   done
   if [ "$has_443" -eq 0 ]; then
     echo "ERROR: $ALLOWED_PORTS_FILE には 443 を含める必要があります（api.anthropic.com・api.github.com への到達と起動時の自己検証に必要）" >&2

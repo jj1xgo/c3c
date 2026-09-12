@@ -146,6 +146,7 @@ clean_project() {
     echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
     # 一時台帳は毎回別名・生成時から所有者のみ。旧版の固定 .tmp は再利用しない。
     # trap はこのサブシェルだけに閉じ、失敗時も今回作ったファイルだけを後始末する。
+    # || の左側では errexit に頼れないため、失敗する処理は個別に確認する。
     (
       umask 077
       ledger_tmp=$(mktemp "$CC_LEDGER_FILE.tmp.XXXXXX") || {
@@ -154,11 +155,16 @@ clean_project() {
       }
       trap 'if ! rm -f -- "$ledger_tmp"; then echo "WARNING: 起動台帳の一時ファイルを削除できません: $ledger_tmp" >&2; fi' EXIT
       if ! chmod 600 "$ledger_tmp"; then
-        echo "ERROR: 起動台帳の一時ファイルの権限を600に設定できません。元の台帳は変更していません: $ledger_tmp" >&2
+        echo "ERROR: 起動台帳の一時ファイルの権限を600に設定できません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+      # 出力を開く失敗（rc1）を grep の「残す行なし」と混同しない。
+      if ! exec {ledger_fd}> "$ledger_tmp"; then
+        echo "ERROR: 起動台帳の一時ファイルを書き込み用に開けません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
         exit 1
       fi
       # grep の1は残す行なしの正常系。2以上の読み取り・書き込み失敗は区別する。
-      if grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" > "$ledger_tmp"; then
+      if grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" >&"$ledger_fd"; then
         :
       else
         grep_status=$?

@@ -559,7 +559,6 @@ run_clean_ledger_launcher_tests() {
     bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳の一時ファイル"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$bin/chmod"
-  rm -f "$ledger.tmp"
 
   # grep が一部出力した後に失敗しても、元台帳を置き換えない（#84）。
   # stdout の実ファイル属性を調べ、書き込み前から600であることも検証する（#85）。
@@ -567,7 +566,7 @@ run_clean_ledger_launcher_tests() {
   cat > "$bin/grep" <<'SHIM'
 #!/bin/bash
 if [[ "${!#}" == "$HOME/.local/state/claude-container/projects" ]]; then
-  stat -Lc %a /proc/self/fd/1 > "$HOME/ledger-write-mode"
+  stat -Lc %a "/proc/$$/fd/1" > "$HOME/ledger-write-mode"
   case "${LEDGER_TEST_FAILURE:-}" in
     empty) exit 2 ;;
     partial) printf '%s\n' partial-output; exit 2 ;;
@@ -587,7 +586,6 @@ SHIM
       bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
-  rm -f "$ledger.tmp"
   # 旧版の残置 .tmp があっても内容やモードを変更せず、別の一時ファイルを使う。
   ln -s "$(command -v mktemp)" "$bin/real-mktemp"
   cat > "$bin/mktemp" <<'SHIM'
@@ -608,20 +606,31 @@ SHIM
     bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2")" = 600 ] && [ "$(cat "$6")" = 600 ] && [ "$(stat -c %a "$3")" = 600 ] && cmp -s "$3" "$4" && cmp -s "$3.tmp" "$5" && [ "$(stat -c %a "$3.tmp")" = 666 ] && ! compgen -G "$3.tmp.*" >/dev/null' _ "$rc" "$home/ledger-write-mode" "$ledger" "$root/expected-ledger" "$root/old-temp" "$home/ledger-create-mode"
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$bin/grep" "$bin/real-grep" "$bin/mktemp" "$bin/real-mktemp" "$ledger.tmp"
-  # 一時ファイル作成・置き換えの失敗でも元台帳を保持し、残置しない。
-  local operation
-  for operation in mktemp mv; do
+  # 作成・置き換え・出力を開く処理の失敗でも元台帳を保持し、残置しない。
+  local operation shim_command
+  for operation in mktemp mv open; do
     printf '%s\n' "$proj" "$root/other project" > "$ledger"
     chmod 600 "$ledger"
     cp "$ledger" "$root/expected-ledger"
-    printf '#!/bin/bash\nexit 1\n' > "$bin/$operation"
-    chmod +x "$bin/$operation"
+    shim_command="$operation"
+    if [[ "$operation" == open ]]; then
+      # chmod の直後に出力先を開けない状態へ変え、root でも open を失敗させる。
+      shim_command='chmod'
+      cat > "$bin/$shim_command" <<'SHIM'
+#!/bin/bash
+rm -f -- "${!#}" || exit 1
+ln -s "$HOME/missing-dir/ledger" "${!#}"
+SHIM
+    else
+      printf '#!/bin/bash\nexit 1\n' > "$bin/$shim_command"
+    fi
+    chmod +x "$bin/$shim_command"
     out=$(env -i HOME="$home" PATH="$bin:$PATH" \
       "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
     check "$operation 失敗時は元台帳を保持し一時台帳を除去（rc=$rc）" \
       bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
     printf '%s\n' "$out" >> "$LOG_FILE"
-    rm -f "$bin/$operation"
+    rm -f "$bin/$shim_command"
   done
   launcher_sandbox_cleanup
 }

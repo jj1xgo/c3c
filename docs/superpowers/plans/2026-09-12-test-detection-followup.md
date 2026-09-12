@@ -95,7 +95,7 @@
 
 **Files:** なし
 
-- [ ] **Step 1: 作業ツリーがきれいで origin/main の先頭を確かめる**
+- [x] **Step 1: 作業ツリーがきれいで origin/main の先頭を確かめる**
 
 Run:
 ```bash
@@ -104,7 +104,7 @@ git fetch origin && git log --oneline -1 origin/main
 ```
 Expected: `## fix/test-detection-59-65-70-71` で未コミットの差分なし。origin/main は `abde4e8` かそれ以降。
 
-- [ ] **Step 2: 作業ブランチにいることを確かめる**
+- [x] **Step 2: 作業ブランチにいることを確かめる**
 
 ブランチ `fix/test-detection-59-65-70-71` はこの計画を commit したときに作成済み。
 ```bash
@@ -112,7 +112,7 @@ git branch --show-current
 ```
 Expected: `fix/test-detection-59-65-70-71`。違えば `git switch fix/test-detection-59-65-70-71`。
 
-- [ ] **Step 3: モデルの切替を要求して待つ**
+- [x] **Step 3: モデルの切替を要求して待つ**
 
 持ち主に「`/model` で Opus を選び `s` で切り替えてください」と伝え、切り替わるまで編集しない。
 
@@ -126,7 +126,7 @@ Expected: `fix/test-detection-59-65-70-71`。違えば `git switch fix/test-dete
 **Interfaces:**
 - Produces: check 名 `起動台帳の記録が隔離 HOME に閉じる`。Task 2 Step 6 の全体実行でこの名前を照合する。
 
-- [ ] **Step 1: 対象行が 1 か所ずつあることを確かめる**
+- [x] **Step 1: 対象行が 1 か所ずつあることを確かめる**
 
 Run:
 ```bash
@@ -135,7 +135,7 @@ grep -cxF 'rm -rf "$ENV_TESTROOT"' test-build.sh
 ```
 Expected: どちらも `1`（この host の Bash ツールでは `grep` が ugrep を包む関数なので、`$` や `{}` を含むパターンは `-F` の固定文字列で照合する）。
 
-- [ ] **Step 2: 置換する**
+- [x] **Step 2: 置換する**
 
 ```bash
 python3 - <<'EOF'
@@ -151,7 +151,7 @@ git diff --stat
 ```
 Expected: `ok`、差分は `test-build.sh` のみ（追加 6 行、削除 1 行）。
 
-- [ ] **Step 3: 構文と lint を通す**
+- [x] **Step 3: 構文と lint を通す**
 
 Run:
 ```bash
@@ -160,7 +160,7 @@ bash -n test-build.sh && echo "bash -n ok"
 ```
 Expected: `bash -n ok`、lint 成功（終了コード 0）。
 
-- [ ] **Step 4: 隔離起動を単独で実測する（全体実行を待たずに #59 の効果を見る）**
+- [x] **Step 4: 隔離起動を単独で実測する（全体実行を待たずに #59 の効果を見る）**
 
 Run（test-build.sh の該当部分と同じ手順を手で回す）:
 ```bash
@@ -178,7 +178,7 @@ for d in $(comm -13 <(echo "$ctx_before" | sort) <(echo "$ctx_after" | sort)); d
 ```
 Expected: `rc=0`、`隔離台帳に記録`、`実台帳 不変`。この間、この host で別の `claude-container` を起動しない（`.build-context/` の差分で後始末するため）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add test-build.sh
@@ -195,7 +195,7 @@ git commit -m "fix: env 非混入テストの実ランチャー起動を env -i 
 **Interfaces:**
 - Produces: 関数 `finish_by_result`（引数なし。結果 3 行を `log` し、`$FAIL` が 0 なら `exit 0`、それ以外は `exit 1`）。
 
-- [ ] **Step 1: 置換対象の個数を確かめる**
+- [x] **Step 1: 置換対象の個数を確かめる**
 
 Run:
 ```bash
@@ -216,7 +216,7 @@ EOF
 ```
 Expected: `sub-mode blocks: 3`、`layer1 marker: 1`、`tail ok: True`。
 
-- [ ] **Step 2: 置換する**
+- [x] **Step 2: 置換する**
 
 ```bash
 python3 - <<'EOF'
@@ -280,7 +280,7 @@ bash -n test-build.sh && echo "bash -n ok"
 ```
 Expected: `ok`、`5`（定義 1 + 呼び出し 4）、`bash -n ok`、lint 成功。
 
-- [ ] **Step 3: サブモードの緑を確かめる**
+- [x] **Step 3: サブモードの緑を確かめる**
 
 Run:
 ```bash
@@ -289,14 +289,14 @@ Run:
 ```
 Expected: `結果: PASS=75  FAIL=0` と `rc=0`、`結果: PASS=82  FAIL=0` と `rc=0`。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add test-build.sh
 git commit -m "fix: test-build.sh の結果表示と終了コードを finish_by_result にまとめ、全体実行も FAIL があれば 1 で終わる（#65）"
 ```
 
-- [ ] **Step 5: サブモードの赤を確かめる（期待値の改変と復元。commit の後に行うので `git checkout` で改変だけが消える）**
+- [x] **Step 5: サブモードの赤を確かめる（期待値の改変と復元。commit の後に行うので `git checkout` で改変だけが消える）**
 
 Run:
 ```bash
@@ -308,7 +308,7 @@ git status --short
 ```
 Expected: `1`、`結果: PASS=74  FAIL=1` と `rc=1`。`git status --short` は空（改変が消え、commit 済みの変更だけが残る）。
 
-- [ ] **Step 6: 全体実行を 1 回回す（#59 と #65 の実証）**
+- [x] **Step 6: 全体実行を 1 回回す（#59 と #65 の実証）**
 
 全体実行は複数の `podman build --no-cache` を含み、Bash ツールの前景上限（600 秒）を超えうる。次の 2 行を **`run_in_background: true` で起動し**、完了通知を待ってから後続の確認を行う（`sleep` での待機はしない）:
 ```bash
@@ -335,7 +335,7 @@ Expected: `tail -5` の末尾が `====`・`結果: PASS=<N>  FAIL=0`・`====`・
 **Interfaces:**
 - Produces: jq 不在時も `gh pr review <N> --approve` の形（command 値の末尾が承認フラグ）で deny の JSON（printf 版）を返す。Task 4 の C10 がこれを検査する。
 
-- [ ] **Step 1: 対象が 1 か所あることを確かめる**
+- [x] **Step 1: 対象が 1 か所あることを確かめる**
 
 Run:
 ```bash
@@ -350,7 +350,7 @@ EOF
 ```
 Expected: `1`。
 
-- [ ] **Step 2: 修正前の挙動を shim PATH で記録する（赤の確認）**
+- [x] **Step 2: 修正前の挙動を shim PATH で記録する（赤の確認）**
 
 Run:
 ```bash
@@ -361,7 +361,7 @@ out=$(printf '%s' "$input" | PATH="$SHIM" bash examples/hooks/block-pr-approve.s
 ```
 Expected: `5`（symlink 5 本）、`rc=0 out=[]`（deny を出さずに通す。これが #71）。`$SHIM` は固定パスなので Step 4 は別の Bash 呼び出しでもよい。
 
-- [ ] **Step 3: 置換する**
+- [x] **Step 3: 置換する**
 
 ```bash
 python3 - <<'EOF'
@@ -386,7 +386,7 @@ sed -n '/jq 不在は環境異常/,/^fi$/p' examples/hooks/block-pr-approve.sh
 ```
 Expected: `ok`。表示されるコードの行が `cmd=$(printf '%s' "$input" | sed -E 's/\\["ntr]/ /g; s/"/ /g')` と `stripped_hd=$cmd`（sed の式はバックスラッシュ 2 つ＋文字クラス `["ntr]`）。
 
-- [ ] **Step 4: 修正後の挙動を shim PATH で確かめる**
+- [x] **Step 4: 修正後の挙動を shim PATH で確かめる**
 
 Run:
 ```bash
@@ -406,7 +406,7 @@ rm -rf "$SHIM" /tmp/hook-shim-stdout /tmp/hook-shim-stderr
 ```
 Expected: 最初の 8 行が `decision=deny`（7・8 行目は command 値の中に改行・タブがあり、JSON では `\n`・`\t` のエスケープになる形）、最後の 2 行が `decision=none stdout_bytes=0 stderr_bytes=0`（無出力）、すべて `rc=0`。
 
-- [ ] **Step 5: 通常経路（jq あり）が変わっていないことと lint を確かめる**
+- [x] **Step 5: 通常経路（jq あり）が変わっていないことと lint を確かめる**
 
 Run:
 ```bash
@@ -415,7 +415,7 @@ bash examples/hooks/tests/test-block-pr-approve.sh | tail -2; echo "rc=${PIPESTA
 ```
 Expected: 「全ケース green」`rc=0`（この時点のテストは旧判定だが、通常経路の 14 ケースの挙動が変わっていないことは確認できる）。lint 成功。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add examples/hooks/block-pr-approve.sh
@@ -433,7 +433,7 @@ git commit -m "fix: block-pr-approve.sh の jq 不在 fail-safe 経路で、生 
 - Consumes: Task 3 の hook（jq 不在時に deny の JSON を返す）。
 - Produces: 出力形式は従来どおり（`ok   - <desc>`、`FAIL - <desc> (...)`、末尾に「全ケース green」か「<n> 件 FAIL」）。`ci.yml` の hook ステップと README はそのまま。
 
-- [ ] **Step 1: 全文を置き換える**
+- [x] **Step 1: 全文を置き換える**
 
 `examples/hooks/tests/test-block-pr-approve.sh` を次の内容にする（既存ファイルを Write ツールで上書きする。Bash のヒアドキュメントでは書かない）:
 
@@ -557,7 +557,7 @@ else
 fi
 ```
 
-- [ ] **Step 2: 15 ケース緑と lint を確かめる**
+- [x] **Step 2: 15 ケース緑と lint を確かめる**
 
 Run:
 ```bash
@@ -566,7 +566,7 @@ bash examples/hooks/tests/test-block-pr-approve.sh; echo "rc=$?"
 ```
 Expected: `ok   - ` が 15 行（C1〜C10、N1〜N5）、「全ケース green」、`rc=0`。lint 成功。
 
-- [ ] **Step 3: 新しい判定が #71 を検出することを確かめる（修正前の hook に対して C10 が赤）**
+- [x] **Step 3: 新しい判定が #71 を検出することを確かめる（修正前の hook に対して C10 が赤）**
 
 Run:
 ```bash
@@ -577,7 +577,7 @@ bash "$M/examples/hooks/tests/test-block-pr-approve.sh" | grep -E 'C10|件 FAIL|
 ```
 Expected: `FAIL - C10 ... (expected deny, got pass; rc=0 stdout= stderr=)`、`1 件 FAIL`、`rc=1`。修正前の hook は main の `abde4e8`（この計画の基準）に固定する。`$M` は固定パスなので Step 4・5 は別の Bash 呼び出しでもよい。
 
-- [ ] **Step 4: deny を allow に置換した hook で FAIL になることを確かめる**
+- [x] **Step 4: deny を allow に置換した hook で FAIL になることを確かめる**
 
 Run:
 ```bash
@@ -589,7 +589,7 @@ bash "$M/examples/hooks/tests/test-block-pr-approve.sh" | tail -1; echo "rc=${PI
 ```
 Expected: `2`、`10 件 FAIL`、`rc=1`（deny 期待の C1〜C10 がすべて FAIL）。
 
-- [ ] **Step 5: shim から bash を除くと C10 が起動失敗として FAIL になることを確かめる**
+- [x] **Step 5: shim から bash を除くと C10 が起動失敗として FAIL になることを確かめる**
 
 Run:
 ```bash
@@ -601,7 +601,7 @@ rm -rf "$M"
 ```
 Expected: `FAIL - C10 ... (expected deny, got invalid; rc=127 stdout= stderr=...bash: command not found)`、`1 件 FAIL`、`rc=1`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add examples/hooks/tests/test-block-pr-approve.sh
@@ -614,7 +614,7 @@ git commit -m "test: hook 回帰テストの判定を応答 JSON と終了コー
 
 **Files:** なし
 
-- [ ] **Step 1: push して draft PR を作る**
+- [x] **Step 1: push して draft PR を作る**
 
 ```bash
 git push -u origin fix/test-detection-59-65-70-71
@@ -656,7 +656,7 @@ Closes #71
 計画: `docs/superpowers/plans/2026-09-12-test-detection-followup.md`。マージは持ち主が行う。
 ```
 
-- [ ] **Step 2: CI の緑を確かめる**
+- [x] **Step 2: CI の緑を確かめる**
 
 「実行者への前提」の完了待ちを実行する（Bash ツールの `timeout` を 600000 にする。CI は 1〜2 分で終わる）。続けて:
 ```bash
@@ -665,7 +665,7 @@ gh run view -R jj1xgo/claude-container "$id" --json jobs --jq '.jobs[].steps[] |
 ```
 Expected: `conclusion=success`、`1`、`skipped`。
 
-- [ ] **Step 3: PR 本文を最終値に更新し、ready にする**
+- [x] **Step 3: PR 本文を最終値に更新し、ready にする**
 
 `/tmp/pr-body.md` の `<N>`・`<sha>`・`<run の URL>` を実測値に置き換えて:
 ```bash
@@ -679,11 +679,11 @@ Expected: `false OPEN <HEAD の SHA>`。
 
 ### Task 6: 完了報告
 
-- [ ] **Step 1: 計画のチェック欄を更新し、実行結果を追記して commit する**
+- [x] **Step 1: 計画のチェック欄を更新し、実行結果を追記して commit する**
 
 この計画のチェック欄を `[x]` にし、末尾に `## 実行結果（2026-09-12、Opus）` の節を足して次を書く: 本 PR の番号と URL、CI の最終状態（対象 commit の SHA と run の URL）、全体実行の PASS 件数、計画から外れた点、`not run` と理由、差分外で起票した Issue（あれば）。**Expected の文言を逐語で引用し、記録がどの合格条件を満たすかを対応づける。** commit して push し、「実行者への前提」の完了待ちでこの記録 commit の `conclusion=success` を確認する。確認できたら `gh pr edit` で PR 本文の「CI:」行を記録 commit の SHA と run に更新する。
 
-- [ ] **Step 2: handover を書く**
+- [x] **Step 2: handover を書く**
 
 `handover` skill で引き継ぎを残す。**PR はマージしていない**こと、レビューは新しい Fable セッションで Fable と Codex の二重で行うことを明記する。
 
@@ -699,3 +699,49 @@ Expected: `false OPEN <HEAD の SHA>`。
 **実装: Opus（このセッション）。** 理由: hook 本体の改修を含む（CLAUDE.md「モデルと実装者の使い分け」の 2）。持ち主が「1 つの PR で hook 修正も含め、実装は Opus」を選択（2026-09-12）。
 
 手順: この計画を commit した後、持ち主が `/model` で Opus を選び `s` で切り替える。Opus は `superpowers:executing-plans` で Task 0 Step 1 から順に進め、Task 6 Step 2 の handover まで行って止まる。
+
+---
+
+## 実行結果（2026-09-12、Opus）
+
+- 本 PR: [#73](https://github.com/jj1xgo/claude-container/pull/73)。`isDraft=false`、`state=OPEN`、HEAD `126103f5fb1946dc0428d574c1b72ee181f810c1`。マージしていない。
+- 実装 commit: `02bc547`（#59）、`c3a5194`（#65）、`994f561`（#71）、`126103f`（#70）。
+- CI: 最終 SHA `126103f5fb1946dc0428d574c1b72ee181f810c1` の [run 34673226802](https://github.com/jj1xgo/claude-container/actions/runs/34673226802) が `status=completed conclusion=success`、失敗ステップなし。ログの「全ケース green」が 1 件、`失敗時にテストログを出す` は `skipped`。この記録 commit の CI は push 後に別途確認し、PR 本文の「CI:」行へ反映する。
+
+### 合格条件と実測の対応（Expected の文言を逐語で引用）
+
+| 合格条件 | Expected（計画の逐語） | 実測 |
+|---|---|---|
+| サブモード緑 | `結果: PASS=75  FAIL=0` と `rc=0`、`結果: PASS=82  FAIL=0` と `rc=0` | Task 2 Step 3 で一致（`--launcher-only` PASS=75 / FAIL=0 rc=0、`--validator-only` PASS=82 / FAIL=0 rc=0） |
+| ランチャー変異で赤 | `1`、`結果: PASS=74  FAIL=1` と `rc=1`。`git status --short` は空 | Task 2 Step 5 で一致。復元後の `git status --short` は空 |
+| 全体実行 | `tail -5` の末尾が `====`・`結果: PASS=<N>  FAIL=0`・`====`・`rc=0`（案内より後に結果が出て、終了コードは 0） | 一致。`<N>` は **183**。`tail -12` で手動確認の案内の後に結果 3 行が出ることも確認 |
+| 台帳の隔離 | `起動台帳の記録が隔離 HOME に閉じる` の行が `[PASS]`。`実台帳 不変`。`--check` の出力に `/tmp/tmp.` を含む行が `0` | 3 点すべて一致。実台帳は前後で 4 行・sha256 同一 |
+| hook テスト 15 ケース | `ok   - ` が 15 行（C1〜C10、N1〜N5）、「全ケース green」、`rc=0` | 一致（`grep -c '^ok   - '` が 15） |
+| 修正前 hook で C10 赤 | `FAIL - C10 ... (expected deny, got pass; rc=0 stdout= stderr=)`、`1 件 FAIL`、`rc=1` | `abde4e8` の hook で一致 |
+| allow 変異で赤 | `2`、`10 件 FAIL`、`rc=1` | 一致 |
+| shim から bash を除くと赤 | `FAIL - C10 ... (expected deny, got invalid; rc=127 stdout= stderr=...bash: command not found)`、`1 件 FAIL`、`rc=1` | 一致（stderr は `... 行 39: bash: co` まで表示、80 文字で切られる仕様どおり） |
+| hook の jq 不在経路 | 最初の 8 行が `decision=deny`、最後の 2 行が `decision=none stdout_bytes=0 stderr_bytes=0`（無出力）、すべて `rc=0` | Task 3 Step 4 で一致。修正前は Task 3 Step 2 で `rc=0 out=[]`（#71 の再現） |
+| lint | lint 成功（終了コード 0） | Task 1 Step 3、Task 2 Step 2、Task 3 Step 5、Task 4 Step 2 のすべてで `lint OK` rc=0（compose 検証込み） |
+| PR の CI 緑 | `conclusion=success`、`1`、`skipped` | 一致（run 34673226802） |
+| PR 本文が最終状態で ready | `false OPEN <HEAD の SHA>` | `false OPEN 126103f5fb1946dc0428d574c1b72ee181f810c1` |
+
+### 計画から外れた点
+
+- 全体実行の PASS 件数は **183**。計画の括弧は「Issue #59 の時点は 171、今回は Task 1 の check が 1 件増える」と見込んでいたが、#59 起票後に検査が増えている（validator の許可キー検査など）。FAIL=0 と rc=0 は合格条件どおりで、件数の見込み違いだけ。
+- Task 3（hook の修正）を Task 2 Step 6 の全体実行の完了待ちと並行して実施した。`grep -c 'examples/hooks' test-build.sh` が `0`（全体実行は hook ファイルを参照しない）ことを先に確認したうえで並行させた。順序の入れ替えではなく、待ち時間の利用。
+- 全体実行は 1 回のみ。再実行はしていない。
+
+### not run
+
+- Actions 上での全体実行（実 podman が要るため CI 対象外。README の「変更後の確認」節のとおり）。
+- runner 上での C10 の shim PATH の実測（CI の緑で代替。host では実測済み）。
+- jq 不在時の Unicode エスケープ（`\u0022` など）の復号は設計上行わない。範囲外として hook のコメントに明記した。
+- #72（承認フラグ直後の区切り文字で通常経路を迂回できる）の修正は別 PR。
+
+### 差分外で起票した Issue
+
+なし（#71 と #72 は計画を書いた Fable セッションが起票済み）。
+
+### 後始末
+
+- `/tmp/test-build-full.out`、`/tmp/test-build-ledger-before`、`/tmp/pr-body.md` は handover の後に削除する。`/tmp/hook-shim`・`/tmp/hook-test-mut` は各 Step の末尾で削除済み。

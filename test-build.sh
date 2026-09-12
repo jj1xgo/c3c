@@ -489,6 +489,21 @@ run_launcher_check() {
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
 }
 
+# --check の保護対象を記録する。atime は読むだけでも変わるので比較しない。
+# NUL 区切りにより空白・改行を含む名前も扱い、収集失敗を空の一致で隠さない。
+snapshot_check_targets() (
+  set -o pipefail
+  local target
+  for target in "$home" "$proj" "${SCRIPT_DIR}/.build-context"; do
+    if [[ -e "$target" || -L "$target" ]]; then
+      find "$target" -printf '%y %m %U %G %T@ %p -> %l\0' | LC_ALL=C sort -z || return 1
+      find "$target" -type f -exec sha256sum --zero -- {} + | LC_ALL=C sort -z || return 1
+    else
+      printf 'absent %s\0' "$target"
+    fi
+  done
+)
+
 # ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）。
 launcher_sandbox_cleanup() {
   local after_ctx new_ctx
@@ -997,6 +1012,24 @@ run_base_image_launcher_tests() {
 run_config_ro_launcher_tests() {
   local root bin home proj out rc d f before_ctx
   launcher_sandbox_init
+  # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
+  mkdir -p "$root/runner"
+  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+    check "ランチャーの隔離用コピーを作成する" false
+    launcher_sandbox_cleanup
+    return
+  }
+  local SCRIPT_DIR="$root/runner"
+  before_ctx=""
+
+  # C0: 通常起動前にも台帳・承認記録などを新規作成しない。
+  local snapshot_ok=1
+  snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
+  run_launcher_check
+  snapshot_check_targets > "$root/check-after" 2>> "$LOG_FILE" || snapshot_ok=0
+  check "C0: 未起動プロジェクトの --check と保護対象の収集が成功する" [ "$snapshot_ok" -eq 1 -a "$rc" -eq 0 ]
+  check "C0: --check は未作成の台帳・承認記録などを作らない" cmp "$root/check-before" "$root/check-after"
+  printf '%s\n' "$out" >> "$LOG_FILE"
 
   # A: 空の ~/.claude → 11 項目が空で作られ、作成が 11 行ログされ、すべてユーザー所有
   run_launcher
@@ -1011,6 +1044,13 @@ run_config_ro_launcher_tests() {
   check "A: 作成物がすべて実行ユーザー所有" \
     bash -c "out=\$(find '$home/.claude' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   printf '%s\n' "$out" >> "$LOG_FILE"
+  local ctx
+  ctx=$(sed -n 's/^BUILD_CONTEXT_DIR=//p' "$root/compose-env")
+  if [[ "$ctx" != "$SCRIPT_DIR/.build-context/"* || ! -d "$ctx" ]]; then
+    check "C: 前提のステージングディレクトリが隔離領域にある" false
+    launcher_sandbox_cleanup
+    return
+  fi
 
   # A2: 2 回目は何も作らず、作成ログも出ない（冪等）
   run_launcher
@@ -1036,17 +1076,35 @@ run_config_ro_launcher_tests() {
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$home/.claude/hooks"; mkdir -p "$home/.claude/hooks"
 
-  # C: --check は何も作らず、欠けている項目を WARN で報告する
+  # C: 既存の内容・台帳・承認記録・ステージングも --check で変更しない（#55）。
+  # A の通常起動が作った台帳と .build-context に加えて、上書き検出用の内容を置く。
   rm -rf "$home/.claude/skills"
-  local tree_before tree_after
-  tree_before="$(find "$home/.claude" | sort)"
+  check "C: 前提の起動台帳がある" test -s "$home/.local/state/claude-container/projects"
+  printf 'staging sentinel\n' > "$ctx/existing file"
+  mkdir -p "$home/.local/state/claude-container/mcp-approvals"
+  printf 'approval sentinel\n' > "$home/.local/state/claude-container/mcp-approvals/${ctx##*/}"
+  printf 'project sentinel\n' > "$proj/existing file"
+  snapshot_ok=1
+  snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
   run_launcher_check
-  tree_after="$(find "$home/.claude" | sort)"
-  check "C: --check は ~/.claude に何も作らない（rc=$rc）" [ "$rc" -eq 0 -a "$tree_before" = "$tree_after" ]
+  snapshot_check_targets > "$root/check-after" 2>> "$LOG_FILE" || snapshot_ok=0
+  check "C: --check の保護対象を収集できる（rc=$rc）" [ "$snapshot_ok" -eq 1 -a "$rc" -eq 0 ]
+  check "C: --check は HOME・対象リポジトリ・build-context の内容と属性を変更しない" \
+    cmp "$root/check-before" "$root/check-after"
   check "C: --check は欠けている項目を WARN で報告する" \
     bash -c "printf '%s' \"\$0\" | grep -q 'WARN' && printf '%s' \"\$0\" | grep -q 'skills'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   mkdir -p "$home/.claude/skills"
+
+  # C2: 台帳の実体不在を報告する失敗経路でも、台帳を修復・削除しない。
+  printf '%s\n' "$root/deleted-project" >> "$home/.local/state/claude-container/projects"
+  snapshot_ok=1
+  snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check 2>&1) && rc=0 || rc=$?
+  snapshot_check_targets > "$root/check-after" 2>> "$LOG_FILE" || snapshot_ok=0
+  check "C2: 台帳の実体不在を失敗として報告する" [ "$snapshot_ok" -eq 1 -a "$rc" -eq 1 ]
+  check "C2: 失敗した --check も台帳と保護対象を変更しない" cmp "$root/check-before" "$root/check-after"
+  printf '%s\n' "$out" >> "$LOG_FILE"
 
   # D: 相対パスの CLAUDE_CONFIG_DIR は拒否（compose 側の相対解決基準と食い違うため）
   run_launcher CLAUDE_CONFIG_DIR=relative/dir

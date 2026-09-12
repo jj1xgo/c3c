@@ -73,7 +73,12 @@ resolve_allowed_ports() {
         echo "ERROR: $ALLOWED_PORTS_FILE に不正なエントリがあります: '$raw'（開始ポートは終了ポートより小さくしてください。同じ場合は単一ポートで指定。例: 443:443 ではなく 443）" >&2
         exit 1
       fi
-      ports+=("$raw")
+      # iptables は先頭0を八進数として読むため、検証した十進値を渡す。
+      if [[ "$raw" == *:* ]]; then
+        ports+=("$lo:$hi")
+      else
+        ports+=("$lo")
+      fi
     done < "$ALLOWED_PORTS_FILE"
   fi
   if [ "${#ports[@]}" -eq 0 ]; then

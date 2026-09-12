@@ -55,7 +55,7 @@ check() {
 VBI_VECTORS=(
   # packages 有効(9)
   'packages|accept|htop\n|htop\n'
-  'packages|accept|python3-pip\n|python3-pip\n'
+  'packages|accept|python3-pip\n|python3-pipX\n'
   'packages|accept|libc6\n|libc6\n'
   'packages|accept|ab\n|ab\n'
   'packages|accept|g++\n|g++\n'

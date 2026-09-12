@@ -115,8 +115,10 @@ printf '%s' "$stripped_hd" | grep -qE '(^|[^[:alnum:]])gh([[:space:]]|$)' || exi
 
 # (1) gh pr review の承認フラグ（--approve / -a を含む短オプションクラスタ）
 #     -c / -r / -b / -F 等 a を含まない短オプションは通す。
+#     空白・行末だけでなくシェルの区切り文字もフラグの終端になる（issue #72）。
+#     例: --approve; echo done、-a&&true、(gh pr review 1 --approve)。
 if printf '%s' "$stripped_hd" | grep -qE '(^|[^[:alnum:]])gh[[:space:]]+pr[[:space:]]+review([[:space:]]|$)'; then
-  if printf '%s' "$stripped_hd" | grep -qE '(^|[[:space:]])(--approve([[:space:]]|$)|-[[:alpha:]]*a[[:alpha:]]*([[:space:]]|$))'; then
+  if printf '%s' "$stripped_hd" | grep -qE '(^|[[:space:]])(--approve|-[[:alpha:]]*a[[:alpha:]]*)([[:space:];&|()<>]|$)'; then
     emit_deny "$reason"
   fi
 fi

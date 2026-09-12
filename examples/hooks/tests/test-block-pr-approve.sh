@@ -131,6 +131,22 @@ run_case "引用文の値付き承認フラグ" pass 'gh pr review 1 --comment -
 run_case "heredoc本文の値付き承認フラグ" pass \
   $'gh pr comment 1 --body-file - <<EOF\ngh pr review 1 --approve=true\nEOF'
 
+# issue #76: バッククォート終端。文字列を JSON に入れるだけで置換は実行しない。
+run_backtick_cases() {
+  local mode="$1" hook_path="${2:-}" flag
+  for flag in --approve -a -aa; do
+    run_case "$mode $flag バッククォート終端" deny 'x=`gh pr review 1 '"$flag"'`' "$hook_path"
+  done
+  run_case "$mode バッククォート内のコメント" pass 'x=`gh pr review 1 --comment`' "$hook_path"
+  run_case "$mode バッククォート内の変更要求" pass 'x=`gh pr review 1 --request-changes`' "$hook_path"
+}
+run_backtick_cases "通常"
+# 単一引用符と引用した heredoc 区切り語で、実行されない引用例を作る。
+quoted_backtick=$'gh pr comment 1 --body \'example x=`gh pr review 1 --approve`\''
+heredoc_backtick=$'gh pr comment 1 --body-file - <<\'EOF\'\nx=`gh pr review 1 --approve`\nEOF'
+run_case "単一引用文のバッククォート" pass "$quoted_backtick"
+run_case "引用 heredoc 本文のバッククォート" pass "$heredoc_backtick"
+
 # --- fail-safe（jq不在） ---
 # hook が使う外部コマンド（bash・cat・grep・sed・awk）だけを symlink した shim ディレクトリを
 # PATH にする。PATH から jq のディレクトリを丸ごと落とす方式だと、usrmerge 環境では bash 自体が
@@ -151,6 +167,10 @@ if [ "$shim_ok" -eq 1 ]; then
   run_case "C10 jq不在fail-safe: 真正承認は引き続きDENY" deny 'gh pr review 123 --approve' "$SHIM"
   run_delimiter_cases "jq不在" "$SHIM"
   run_value_cases "jq不在" "$SHIM"
+  run_backtick_cases "jq不在" "$SHIM"
+  # jq 不在経路は引用と本文を除去できず、安全側の偽陽性として拒否する。
+  run_case "jq不在: 単一引用文のバッククォートは安全側に拒否" deny "$quoted_backtick" "$SHIM"
+  run_case "jq不在: 引用 heredoc 本文のバッククォートは安全側に拒否" deny "$heredoc_backtick" "$SHIM"
 else
   echo "FAIL - C10 jq不在fail-safe: 準備に失敗したため未実行"
   fail=$((fail + 1))

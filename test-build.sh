@@ -897,7 +897,7 @@ run_config_ro_launcher_tests() {
   mkdir -p "$home/cfgx"
   run_launcher CLAUDE_CONFIG_DIR='~/cfgx'
   check "E: ~/ の CLAUDE_CONFIG_DIR を基点に作成する（rc=$rc）" \
-    [ "$rc" -eq 0 -a -d "$home/cfgx/.claude/hooks" -a -f "$home/cfgx/.claude/settings.json" ]
+    [ "$rc" -eq 0 -a -d "$home/cfgx/.claude/hooks-probe" -a -f "$home/cfgx/.claude/settings.json" ]
   check "E: compose には展開済み絶対パスの CLAUDE_CONFIG_DIR が渡る" \
     grep -qxF "CLAUDE_CONFIG_DIR=$home/cfgx" "$root/compose-env"
   printf '%s\n' "$out" >> "$LOG_FILE"

@@ -95,3 +95,5 @@ services:
       - ${MCP_APPROVAL_FILE:-/dev/null}:/etc/claude-container/mcp-approved-hash:ro
       - /etc/localtime:/etc/localtime:ro
     working_dir: /workspace
+
+invalid_top_level: true

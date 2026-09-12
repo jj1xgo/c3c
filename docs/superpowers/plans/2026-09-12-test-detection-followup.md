@@ -57,7 +57,7 @@
 
 - `./test-build.sh --launcher-only` PASS=75 / FAIL=0 rc=0、`--validator-only` PASS=82 / FAIL=0 rc=0。ランチャーの期待値を 1 件改変すると `--launcher-only` が rc=1。
 - `./test-build.sh`（全体実行、host、実 podman）が FAIL=0 で rc=0。結果 3 行がログの最後。実行前後で `~/.local/state/claude-container/projects` の sha256 が同じ。「起動台帳の記録が隔離 HOME に閉じる」が `[PASS]`。
-- `bash examples/hooks/tests/test-block-pr-approve.sh` が 15 ケース ok・「全ケース green」rc=0。修正前の hook（`git show main:examples/hooks/block-pr-approve.sh`）に対しては C10 が FAIL。deny を allow に置換した hook では FAIL が 1 件以上。shim から bash を除くと C10 が FAIL。
+- `bash examples/hooks/tests/test-block-pr-approve.sh` が 15 ケース ok・「全ケース green」rc=0。修正前の hook（`git show abde4e8:examples/hooks/block-pr-approve.sh`）に対しては C10 が FAIL。deny を allow に置換した hook では FAIL が 1 件以上。shim から bash を除くと C10 が FAIL。
 - `./lint.sh` 成功。
 - PR の CI が緑（hook ステップに「全ケース green」）。
 - PR 本文が最終状態（検証結果、not run、Closes #59 #65 #70 #71）で ready。
@@ -391,7 +391,7 @@ Expected: `ok`。表示されるコードの行が `cmd=$(printf '%s' "$input" |
 Run:
 ```bash
 SHIM=/tmp/hook-shim
-probe() { input=$(jq -n --arg c "$1" '{tool_input:{command:$c}}'); out=$(printf '%s' "$input" | PATH="$SHIM" bash examples/hooks/block-pr-approve.sh 2>/tmp/hook-shim-stderr); rc=$?; d=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "none"' 2>/dev/null); printf 'rc=%s decision=%s stdout_bytes=%s stderr_bytes=%s :: %s\n' "$rc" "${d:-none}" "${#out}" "$(wc -c < /tmp/hook-shim-stderr)" "$1"; }
+probe() { input=$(jq -n --arg c "$1" '{tool_input:{command:$c}}'); printf '%s' "$input" | PATH="$SHIM" bash examples/hooks/block-pr-approve.sh >/tmp/hook-shim-stdout 2>/tmp/hook-shim-stderr; rc=$?; d=$(jq -r '.hookSpecificOutput.permissionDecision // "none"' </tmp/hook-shim-stdout 2>/dev/null); printf 'rc=%s decision=%s stdout_bytes=%s stderr_bytes=%s :: %s\n' "$rc" "${d:-none}" "$(wc -c < /tmp/hook-shim-stdout)" "$(wc -c < /tmp/hook-shim-stderr)" "$1"; }
 probe 'gh pr review 123 --approve'
 probe 'gh pr review -a 123'
 probe 'gh pr review 123 --approve --body "lgtm"'
@@ -402,7 +402,7 @@ probe $'gh pr review 1 --approve\necho done'
 probe $'gh pr review 1 --approve\tx'
 probe 'gh pr review 123 --comment --body "note"'
 probe 'gh pr review 123 --request-changes -b "fix"'
-rm -rf "$SHIM" /tmp/hook-shim-stderr
+rm -rf "$SHIM" /tmp/hook-shim-stdout /tmp/hook-shim-stderr
 ```
 Expected: 最初の 8 行が `decision=deny`（7・8 行目は command 値の中に改行・タブがあり、JSON では `\n`・`\t` のエスケープになる形）、最後の 2 行が `decision=none stdout_bytes=0 stderr_bytes=0`（無出力）、すべて `rc=0`。
 
@@ -637,7 +637,7 @@ Closes #71
 ## 検証（host、2026-09-12）
 
 - サブモード: `--launcher-only` PASS=75 / FAIL=0 rc=0、`--validator-only` PASS=82 / FAIL=0 rc=0。ランチャー期待値の改変で `--launcher-only` rc=1。
-- 全体実行 1 回: PASS=<N> / FAIL=0 rc=0。結果 3 行がログの最後。実台帳の sha256 は前後で同じ。「起動台帳の記録が隔離 HOME に閉じる」PASS。`--check` に一時パス無し。
+- 全体実行 <回数> 回（再実行があればその理由）: 最終の実行が PASS=<N> / FAIL=0 rc=0。結果 3 行がログの最後。実台帳の sha256 は前後で同じ。「起動台帳の記録が隔離 HOME に閉じる」PASS。`--check` に一時パス無し。
 - hook テスト: 15 ケース green。修正前の hook で C10 が FAIL（#71 の検出）。deny を allow に置換した hook で 10 件 FAIL。shim から bash を除くと C10 が rc=127 で FAIL。
 - hook の jq 不在経路: shim PATH で deny 期待 6 ケースが deny、`--comment`・`--request-changes` は無出力。
 - `./lint.sh` 成功。

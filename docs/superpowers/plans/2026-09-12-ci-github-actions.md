@@ -1,6 +1,6 @@
 # GitHub Actions による CI 導入 実装計画
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task（この repo の Codex には multi_agent が無いので subagent-driven-development は使わない）. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `lint.sh` と `test-build.sh` の podman 不要な部分を GitHub Actions で PR と main への push のたびに実行し、赤・緑が出る状態にする。
 
@@ -12,7 +12,10 @@
 
 ## 実行者への前提
 
-- 実行者は Codex（host）。作業ブランチは `ci/github-actions`（既に存在し、設計文書とこの計画がコミット済み）。このブランチの上で作業する。
+- 実行者は Codex（host）。作業ブランチは `ci/github-actions`（既に存在し、設計文書とこの計画がコミット済み）。このブランチの上で作業する。skill は `superpowers:executing-plans` を使う（`subagent-driven-development` は `~/.codex/config.toml` に `[features] multi_agent = true` が無いため使えない）。
+- `gh pr checks --watch` は失敗したチェックがあると 0 以外で終了する。Task 4 の「Expected: fail」はその状態が意図どおりという意味で、コマンドの異常ではない。
+- `<本 PR の番号>`、`<使い捨て PR の番号>`、`<run の URL>`、`<ID>` は実行時に埋める値。計画の未記入ではない。
+- runner と host の差: runner のユーザーは `runner`、`env -i` 下のランチャーは C ロケールで動く。`--launcher-only` は日本語リテラルをバイト列として扱うだけなので影響しない想定だが、runner での初回実行が実検証になる（Task 2 Step 5 の「赤なら直す」で対応）。
 - **PR のマージは行わない。** PR 作成まで行い、レビューとマージは別の担当（Fable）が行う。
 - commit メッセージ、PR の題名と本文は日本語のみ（repo の表記方針。README「表記」節）。既存の commit の型は `fix: ...`、`docs: ...` のような接頭辞＋日本語の要約。
 - 外部操作は `git push` と `gh pr create`、使い捨て PR の `gh pr create --draft`・`gh pr close --delete-branch` に限る。Issue の起票は行わない（Fable がレビュー時に行う）。

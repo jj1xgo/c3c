@@ -57,7 +57,7 @@ run_case "N2 gh pr comment heredocにgh api引用" pass \
   "$(printf 'gh pr comment 1 --body-file - <<EOF\ngh api pulls/1/reviews event=APPROVE\nEOF')"
 run_case "N3 git commit -am 引用FP解消" pass 'git commit -am "docs: explain gh pr review --approve flow"'
 run_case "N4 --comment" pass 'gh pr review 123 --comment --body "note"'
-run_case "N5 --request-changes" pass 'gh pr review 123 --request-changes -b "fix"'
+run_case "N5 --request-changes" deny 'gh pr review 123 --request-changes -b "fix"'
 
 # --- fail-safe（jq不在） ---
 NOJQ_PATH=""

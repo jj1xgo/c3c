@@ -58,7 +58,8 @@
 - **PR のマージは行わない。** PR 作成まで行い、レビューは Fable のセッションが行い、マージは持ち主が手で行う。
 - 必要な権限: リポジトリの作業ツリーと `.git` への書き込み、`git push`、`gh`（PR の作成・コメント・使い捨て PR の close）、`claude -p` のためのネットワーク。sandbox は workspace-write でネットワーク許可（`-c sandbox_workspace_write.network_access=true`）か、持ち主が承認する運用のどちらか。読み取り専用 sandbox では Task 2 以降が進まない。
 - commit メッセージ、PR の題名と本文、PR コメント、workflow の表示名とコメントは日本語のみ（README「表記」節）。commit の型は `fix:`、`feat:`、`docs:` の接頭辞＋日本語の要約。
-- 外部操作は次に限る: `git push`、本 PR の `gh pr create`、本 PR への `gh pr comment`、使い捨て PR の `gh pr create --draft` と `gh pr close --delete-branch`。Issue の起票はしない。
+- 外部操作は次に限る: `git push`、本 PR の `gh pr create --draft`・`gh pr comment`・`gh pr edit`・`gh pr ready`、使い捨て PR の `gh pr create --draft` と `gh pr close --delete-branch`。Issue の起票はしない。
+- **CI は `pull_request` と main への push でしか走らない。** 作業ブランチへ push しただけでは run が登録されないので、Task 1 の最初の push の直後に本 PR を draft で作り、以降の CI 待ちはその PR の run を見る。draft は Task 4 の最後に ready にする。
 - **この checkout の `gh` の既定 repo は upstream の `sethjensen1/claude-container` を指す。** すべての `gh` コマンドに `-R jj1xgo/claude-container` を付ける。`-R` 付きの `gh pr checks` / `gh pr comment` / `gh pr close` は PR 番号の引数が必須。既定 repo は変更しない。
 - `./test-build.sh` を引数なしで実行しない（実 podman build が走り、#59 により実台帳に 1 行残る）。使うのは `--validator-only` と `--launcher-only` だけ。
 - hook 回帰テストは `bash examples/hooks/tests/test-block-pr-approve.sh` の 1 コマンドで実行し、トリガー文字列（承認系のサブコマンド）をシェルのコマンド行や commit メッセージに書かない（テスト冒頭の注意）。
@@ -88,7 +89,7 @@
 - Modify: `.github/workflows/ci.yml`（全文を下の内容に置き換える）
 
 **Interfaces:**
-- Produces: ステップ名 `block-pr-approve.sh の回帰テストを実行する` と `失敗時にテストログを出す`。Task 3 の README と Task 4 の赤の確認がこの名前を参照する。
+- Produces: ステップ名 `block-pr-approve.sh の回帰テストを実行する` と `失敗時にテストログを出す`。Task 2 の README と Task 4 の赤の確認がこの名前を参照する。
 
 - [ ] **Step 1: 版確認の `case` 式を host で確かめる**
 
@@ -196,15 +197,48 @@ Expected: ステップ名 8 個のリスト（取得、shellcheck 取得、版�
 Run: `bash examples/hooks/tests/test-block-pr-approve.sh; echo "rc=$?"`
 Expected: 末尾に `全ケース green`、`rc=0`。
 
-- [ ] **Step 5: Commit と push、CI の緑を確認する**
+- [ ] **Step 5: Commit と push、本 PR を draft で作る**
 
 ```bash
 git add .github/workflows/ci.yml
 git commit -m "feat: CI に hook 回帰テストと失敗時のテストログ表示を足し、shellcheck の取得と版確認を堅牢にする"
 git push -u origin ci/review-followup
+gh pr create -R jj1xgo/claude-container --draft --base main --head ci/review-followup \
+  --title "feat: CI に hook 回帰テストと失敗時のテストログ表示を足し、取得と版確認を堅牢にする（PR #63 のレビュー追随）" \
+  --body-file - <<'BODY'
+## 概要
+
+PR #63 の Claude レビュー（https://github.com/jj1xgo/claude-container/pull/63#issuecomment-5642772510）の追随。
+
+- `test-build.sh` の検査詳細は `.claude/test-results/` にしか残らず、赤の原因が Actions で読めなかった。失敗時だけログを出すステップを足した。
+- `examples/hooks/tests/test-block-pr-approve.sh`（podman 不要、FAIL で exit 1）が CI に無かった。ステップを足した。
+- shellcheck の取得に `curl --retry 3 --retry-all-errors --max-time 120`。版確認をパイプラインなしの `case` 式にした（`shell: bash` を後から足しても pipefail の影響を受けない）。
+- README「変更後の確認」節を合わせる（後続の commit）。
+
+## 範囲外
+
+- `cancel-in-progress` を PR だけにする案は前回の設計で既決（main にも適用）。
+- Dependabot の `github-actions` は #67。
+
+## 検証
+
+draft の間は作業中。ready にする時点で、host の検証、CI、Claude レビュー、赤の確認を本文に書く。
+
+計画: `docs/superpowers/plans/2026-09-12-ci-review-followup.md`
+BODY
+gh pr list -R jj1xgo/claude-container --head ci/review-followup --json number,url -q '.[0]'
 ```
-続けて「実行者への前提」の完了待ちの手順を実行する。
-Expected: `conclusion=success`。ログに `全ケース green` があり、`失敗時にテストログを出す` はスキップされている（`gh api .../jobs` の該当ステップの `conclusion` が `skipped`）。赤なら失敗ステップとログを読んで直す。runner 側の差（jq、curl のオプション）で赤になった場合は、その事実を PR 本文に書いて直す。
+Expected: PR の番号と URL（以後 `<本 PR の番号>`）。
+
+- [ ] **Step 6: CI の緑と、失敗時ログのステップがスキップされたことを確認する**
+
+「実行者への前提」の完了待ちの手順を実行する。
+Expected: `conclusion=success`。続けて:
+```bash
+gh api "repos/jj1xgo/claude-container/actions/runs/$id/jobs" --jq '.jobs[].steps[] | select(.name=="失敗時にテストログを出す" or .name=="block-pr-approve.sh の回帰テストを実行する") | .name + ": " + .conclusion'
+gh run view -R jj1xgo/claude-container "$id" --log | grep -c '全ケース green'
+```
+Expected: `block-pr-approve.sh の回帰テストを実行する: success`、`失敗時にテストログを出す: skipped`、`全ケース green` が 1 以上。赤なら失敗ステップとログを読んで直す。runner 側の差（jq、curl のオプション）で赤になった場合は、その事実を PR 本文に書いて直す。
 
 ---
 
@@ -254,7 +288,8 @@ git add README.md
 git commit -m "docs: 変更後の確認節に hook 回帰テストと CI の失敗時ログ表示を書く"
 git push
 ```
-CI の完了待ちは Task 3 の前にまとめて行う（docs だけの commit でも CI は走る。`conclusion=success` を確認する）。
+続けて「実行者への前提」の完了待ちの手順を実行する。
+Expected: `conclusion=success`（docs だけの commit でも PR があるので CI は走る）。
 
 ---
 
@@ -268,7 +303,14 @@ CI の完了待ちは Task 3 の前にまとめて行う（docs だけの commit
 
 - [ ] **Step 2: 指摘に対応する**
 
-Expected: Critical と Important が 0 件ならそのまま Task 4 へ。あれば直して commit し、直した差分だけを「確認限定」で再レビューする（skill の手順 4）。Minor は直すか、直さない理由を PR 本文に書く。レビューが `rc` 0 以外か空なら `not run` と報告して止まり、PR を作らない。
+Expected: Critical と Important が 0 件ならそのまま Task 4 へ。あれば直して commit し、直した差分だけを「確認限定」で再レビューする（skill の手順 4）。直した commit は push し、「実行者への前提」の完了待ちで `conclusion=success` を確認する。Minor は直すか、直さない理由を Task 4 Step 5 の PR 本文に書く。レビューが `rc` 0 以外か空なら `not run` と報告して止まり、PR を ready にしない。
+
+- [ ] **Step 3: レビュー全文を本 PR に投稿する**
+
+```bash
+gh pr comment -R jj1xgo/claude-container <本 PR の番号> --body-file /tmp/claude-review-<sha>.md
+```
+`<sha>` は skill が出力したファイル名のもの。再レビューがあればその全文も同様に投稿する。
 
 ---
 
@@ -276,38 +318,13 @@ Expected: Critical と Important が 0 件ならそのまま Task 4 へ。あれ
 
 **Files:** なし（GitHub 上の操作と、使い捨てブランチ上の改変のみ。本ブランチには改変を含めない）
 
-- [ ] **Step 1: 本 PR を作る**
+- [ ] **Step 1: 本 PR の状態を確かめる**
 
 ```bash
-gh pr create -R jj1xgo/claude-container --base main --head ci/review-followup \
-  --title "feat: CI に hook 回帰テストと失敗時のテストログ表示を足し、取得と版確認を堅牢にする（PR #63 のレビュー追随）" \
-  --body-file - <<'BODY'
-## 概要
-
-PR #63 の Claude レビュー（https://github.com/jj1xgo/claude-container/pull/63#issuecomment-5642772510）の追随。
-
-- `test-build.sh` の検査詳細は `.claude/test-results/` にしか残らず、赤の原因が Actions で読めなかった。失敗時だけログを出すステップを足した。
-- `examples/hooks/tests/test-block-pr-approve.sh`（podman 不要、FAIL で exit 1）が CI に無かった。ステップを足した。
-- shellcheck の取得に `curl --retry 3 --retry-all-errors --max-time 120`。版確認をパイプラインなしの `case` 式にした（`shell: bash` を後から足しても pipefail の影響を受けない）。
-- README「変更後の確認」節を合わせた。
-
-## 範囲外
-
-- `cancel-in-progress` を PR だけにする案は前回の設計で既決（main にも適用）。
-- Dependabot の `github-actions` は #67。
-
-## 検証
-
-- host: hook 回帰テスト「全ケース green」。`case` 式の版確認が 0.11.0 に一致し偽の版に一致しない。
-- CI: この PR のチェック結果。
-- Claude レビュー: （Task 3 の結果を書く。モデル、範囲、判定、未対応の Minor）
-- 赤の確認: 使い捨て PR で 2 通り（実施後にコメントで記録）。
-
-計画: `docs/superpowers/plans/2026-09-12-ci-review-followup.md`
-BODY
-gh pr list -R jj1xgo/claude-container --head ci/review-followup --json number,url -q '.[0]'
+gh pr view -R jj1xgo/claude-container <本 PR の番号> --json isDraft,headRefOid,state --jq '"draft=" + (.isDraft|tostring) + " head=" + .headRefOid[:7] + " state=" + .state'
+git rev-parse --short HEAD
 ```
-Expected: PR の番号と URL（以後 `<本 PR の番号>`）。PR 本文の「Claude レビュー」行は Task 3 の実際の結果で埋めてから作る（プレースホルダのまま作らない）。Task 3 で得た `/tmp/claude-review-<sha>.md` の全文を `gh pr comment -R jj1xgo/claude-container <本 PR の番号> --body-file /tmp/claude-review-<sha>.md` で投稿する。
+Expected: `draft=true`、`state=OPEN`、`head` がローカルの HEAD と同じ（未 push の commit が無い）。違えば push して完了待ちを行ってから進む。
 
 - [ ] **Step 2: 使い捨てブランチと draft PR を作り、ランチャーテストの期待値改変で「赤＋失敗時ログ」を確かめる**
 
@@ -329,11 +346,13 @@ gh pr create -R jj1xgo/claude-container --draft --base ci/review-followup --head
 gh pr list -R jj1xgo/claude-container --head ci-red-probe-2 --json number -q '.[0].number'
 ```
 続けて「実行者への前提」の完了待ちの手順を実行する。
-Expected: `conclusion=failure`、失敗したステップが `test-build.sh --launcher-only を実行する`。さらに:
+Expected: `conclusion=failure`、失敗したステップが `test-build.sh --launcher-only を実行する`。さらに次の 3 つを別々に確かめる:
 ```bash
-gh run view -R jj1xgo/claude-container "$id" --log | grep '失敗時にテストログを出す' | grep -c -E '\[FAIL\]|hooks-probe|::group::'
+gh api "repos/jj1xgo/claude-container/actions/runs/$id/jobs" --jq '.jobs[].steps[] | select(.name=="失敗時にテストログを出す") | .conclusion'
+gh run view -R jj1xgo/claude-container "$id" --log | grep '失敗時にテストログを出す' | grep -c '\[FAIL\]'
+gh run view -R jj1xgo/claude-container "$id" --log | grep '失敗時にテストログを出す' | grep -c 'CLAUDE_CONFIG_DIR を基点に作成する'
 ```
-Expected: 1 以上（失敗時ログのステップが実行され、ログ本文に `[FAIL]` の行が含まれる）。run の URL を控える。
+Expected: 1 行目 `success`（失敗時ログのステップが実行され成功した）。2 行目 1 以上（ログ本文に `[FAIL]` の行がある）。3 行目 1 以上（失敗した E の検査の行がログ本文に含まれる。`::group::` の行はログ本文の代わりにならない）。3 つとも満たしたときだけ「失敗時ログが表示された」と書く。run の URL を控える。
 
 - [ ] **Step 3: 改変を戻し、hook 回帰テストの期待値改変で赤を確かめる**
 
@@ -352,7 +371,12 @@ git commit -am "probe: hook 回帰テストの期待値を改変して赤を確�
 git push
 ```
 続けて完了待ちの手順を実行する。
-Expected: `conclusion=failure`、失敗したステップが `block-pr-approve.sh の回帰テストを実行する`。run の URL を控える。
+Expected: `conclusion=failure`、失敗したステップが `block-pr-approve.sh の回帰テストを実行する`。さらに:
+```bash
+gh api "repos/jj1xgo/claude-container/actions/runs/$id/jobs" --jq '.jobs[].steps[] | select(.name=="失敗時にテストログを出す") | .conclusion'
+gh run view -R jj1xgo/claude-container "$id" --log | grep '失敗時にテストログを出す' | grep -c '結果: PASS='
+```
+Expected: `success` と 1 以上（hook の失敗でも失敗時ログのステップが走り、`test-build.sh` の結果行を含むログ本文を出した）。run の URL を控える。
 
 - [ ] **Step 4: 結果を本 PR にコメントし、使い捨て PR を閉じる**
 
@@ -362,8 +386,8 @@ gh pr comment -R jj1xgo/claude-container <本 PR の番号> --body-file - <<'CMT
 
 | 壊し方 | 失敗したステップ | 失敗時ログ | run |
 |---|---|---|---|
-| ランチャーテストの期待値改変（PASS=74 / FAIL=1） | test-build.sh --launcher-only を実行する | 実行され、`[FAIL]` の行を表示 | <run の URL> |
-| hook 回帰テストの期待値改変（1 件 FAIL） | block-pr-approve.sh の回帰テストを実行する | 実行された（test-results のログを表示） | <run の URL> |
+| ランチャーテストの期待値改変（PASS=74 / FAIL=1） | test-build.sh --launcher-only を実行する | ステップ success、`[FAIL]` の行と E の検査行を表示 | <run の URL> |
+| hook 回帰テストの期待値改変（1 件 FAIL） | block-pr-approve.sh の回帰テストを実行する | ステップ success、`test-build.sh` の結果行を表示 | <run の URL> |
 CMT
 gh pr close -R jj1xgo/claude-container <使い捨て PR の番号> --delete-branch
 git switch ci/review-followup
@@ -372,9 +396,15 @@ git status --short --branch
 ```
 Expected: 使い捨て PR が closed、ブランチが remote と local から消えている。`ci/review-followup` は clean。
 
-- [ ] **Step 5: PR 本文を最終状態にする**
+- [ ] **Step 5: PR 本文を最終状態にして ready にする**
 
-`gh pr edit -R jj1xgo/claude-container <本 PR の番号> --body-file -` で、「赤の確認」行を「使い捨て PR #<番号> で 2 通り確認、結果はコメント参照」に書き換える。「（実施後に…）」の文言を残さない。
+`gh pr edit -R jj1xgo/claude-container <本 PR の番号> --body-file -` で本文を書き換える。「概要」は Task 1 のものを維持し、README の行を「README「変更後の確認」節を合わせた（<Task 2 の commit>）」に直す。「検証」節を次の実測値で埋める（文言をそのまま残さない）:
+- host: hook 回帰テスト「全ケース green」。`case` 式の版確認が 0.11.0 に一致し、偽の版に一致しない。
+- CI: 最終 commit <sha> の run <URL> が成功。
+- Claude レビュー: モデル、範囲、判定、対応した指摘、未対応の Minor と理由（コメント参照）。
+- 赤の確認: 使い捨て PR #<番号> で 2 通り、結果は Step 4 のコメント参照。
+書き換えたら `gh pr ready -R jj1xgo/claude-container <本 PR の番号>` で draft を解除する。
+Expected: `gh pr view -R jj1xgo/claude-container <本 PR の番号> --json isDraft --jq .isDraft` が `false`。本文に「後続の commit」「実施後」「作業中」の文言が残っていない。
 
 ---
 
@@ -382,7 +412,7 @@ Expected: 使い捨て PR が closed、ブランチが remote と local から�
 
 - [ ] **Step 1: 計画のチェック欄を更新し、実行結果を追記して commit する**
 
-この計画のチェック欄を `[x]` にし、末尾に `## 実行結果（2026-09-12、Codex）` の節を足して次を書く: 本 PR の番号と URL、CI の最終状態、Claude レビューの判定と対応、赤 2 通りの run、計画から外れた点、`not run` と理由。commit して push する。
+この計画のチェック欄を `[x]` にし、末尾に `## 実行結果（2026-09-12、Codex）` の節を足して次を書く: 本 PR の番号と URL、CI の最終状態（対象 commit の SHA と run の URL）、Claude レビューの判定と対応、赤 2 通りの run、計画から外れた点、`not run` と理由。commit して push し、「実行者への前提」の完了待ちでこの記録 commit の `conclusion=success` を確認する。handover には、この最後の SHA と run を CI の最終状態として書く。
 
 - [ ] **Step 2: handover を書く**
 

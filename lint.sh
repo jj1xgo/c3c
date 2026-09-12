@@ -4,7 +4,7 @@
 # shebang 判定で動的に決定する
 # （ハードコードのファイルリストを持たない — 追加/削除時のリスト同期漏れを構造的に防ぐ）。
 # LINT_SKIP_COMPOSE=1 を与えると podman compose config の検証だけを WARNING 付きで
-# スキップする（CI 用。.github/workflows/ci.yml が使う）。
+# スキップする（Compose を実行できない環境での明示的な省略用）。
 set -uo pipefail
 
 cd "$(dirname "$0")" || exit 1
@@ -62,7 +62,7 @@ done
 shellcheck "${scripts[@]}" || status=1
 
 if [ "${LINT_SKIP_COMPOSE:-}" = "1" ]; then
-  echo "WARNING: LINT_SKIP_COMPOSE=1 のため compose config 検証をスキップしました（GitHub Actions の runner には compose provider が無いため、CI では意図的に外している）。" >&2
+  echo "WARNING: LINT_SKIP_COMPOSE=1 のため compose config 検証をスキップしました。" >&2
 elif command -v podman >/dev/null 2>&1; then
   podman compose -f compose.yml config >/dev/null || status=1
 else

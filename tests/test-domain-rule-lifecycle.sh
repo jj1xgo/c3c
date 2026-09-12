@@ -100,31 +100,35 @@ RULES
 run_case '非期限切れとタグなしのみなら削除なし' prune 820 ''
 
 # 通常 IP では実 refresh_domains → add_or_touch_domain_ip を通す。
+# renew は prune しないため、run_case の cutoff 引数 0 は未使用。
 # 期待値は追加引数と手で数えた旧ルール番号。-S は追加を反映しないので、
 # 許可の連続性そのものではなく、追加要求が旧ルール削除より先に出ることを確認する。
 added=$'-A\nCLAUDE_EGRESS\n-d\n192.0.2.10\n-p\ntcp\n-m\nmultiport\n--dports\n443,22\n-m\ncomment\n--comment\ndomain=normal.invalid;gen=1000\n-j\nACCEPT'
 cat > "$tmp/rules" <<'RULES'
 -N CLAUDE_EGRESS
 -A CLAUDE_EGRESS -d 192.0.2.0/24 -j ACCEPT
--A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid.extra;gen=900" -j ACCEPT
--A CLAUDE_EGRESS -d 192.0.2.11/32 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
--A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=normal.invalid.extra;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=sub.normal.invalid;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.11/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
 RULES
-run_case '通常 IP は新世代を追加してから一致する旧ルールだけを削除' renew 0 "$added"$'\n-D\nCLAUDE_EGRESS\n4'
+run_case '通常 IP は新世代を追加してから一致する旧ルールだけを削除' renew 0 "$added"$'\n-D\nCLAUDE_EGRESS\n5'
 cat >> "$tmp/rules" <<'RULES'
--A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid;gen=901" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=normal.invalid;gen=899" -j ACCEPT
 RULES
-run_case '一致する旧ルールが複数あれば先頭の一件を削除' renew 0 "$added"$'\n-D\nCLAUDE_EGRESS\n4'
+# 後ろの行の世代を古くし、最古世代ではなく先頭位置を選ぶことを確認する。
+run_case '一致する旧ルールが複数あれば先頭の一件を削除' renew 0 "$added"$'\n-D\nCLAUDE_EGRESS\n5'
 
 # 同じ IP の別ドメインと同じドメインの別 IP は、削除対象にしない。
 cat > "$tmp/rules" <<'RULES'
 -N CLAUDE_EGRESS
--A CLAUDE_EGRESS -d 192.0.2.10/32 -m comment --comment "domain=normal.invalid.extra;gen=900" -j ACCEPT
--A CLAUDE_EGRESS -d 192.0.2.11/32 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=normal.invalid.extra;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.10/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=sub.normal.invalid;gen=900" -j ACCEPT
+-A CLAUDE_EGRESS -d 192.0.2.11/32 -p tcp -m multiport --dports 443,22 -m comment --comment "domain=normal.invalid;gen=900" -j ACCEPT
 RULES
 run_case 'IP とドメインの組が一致しなければ追加のみ' renew 0 "$added"
 printf '%s\n' '-N CLAUDE_EGRESS' > "$tmp/rules"
 run_case '空チェーンの通常 IP は追加のみ' renew 0 "$added"
 
-echo "DNS ルールの世代テスト: $count 件、失敗 $fail 件"
+echo "DNS ルールの更新順序・世代テスト: $count 件、失敗 $fail 件"
 [ "$fail" -eq 0 ]

@@ -50,8 +50,19 @@ jobs:
             *) echo "ERROR: 期待した版 ${SHELLCHECK_VERSION} と一致しない:"; printf '%s\n' "$v"; exit 1 ;;
           esac
 
-      - name: lint.sh を実行する（compose 検証はスキップ）
-        run: LINT_SKIP_COMPOSE=1 ./lint.sh
+      - name: lint.sh を実行する（compose 検証を含む）
+        env:
+          # runner 同梱の Docker Compose を Podman の provider として使う。
+          PODMAN_COMPOSE_PROVIDER: /usr/libexec/docker/cli-plugins/docker-compose
+          CONTEXT: ${{ github.workspace }}
+          CLAUDE_CONTAINER_DIR: ${{ github.workspace }}
+          BUILD_CONTEXT_DIR: ${{ github.workspace }}
+        run: |
+          command -v podman
+          test -x "$PODMAN_COMPOSE_PROVIDER"
+          podman --version
+          podman compose version
+          ./lint.sh
 
       - name: test-build.sh --validator-only を実行する
         run: ./test-build.sh --validator-only

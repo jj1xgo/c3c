@@ -167,7 +167,7 @@ jobs:
 
       - name: shellcheck の版を確かめる
         run: |
-          shellcheck --version | grep -qx "version: ${SHELLCHECK_VERSION}"
+          shellcheck --version | grep -Fqx "version: ${SHELLCHECK_VERSION}"
 
       - name: lint.sh を実行する（compose 検証はスキップ）
         run: LINT_SKIP_COMPOSE=1 ./lint.sh

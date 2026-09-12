@@ -21,10 +21,11 @@
 
   ```bash
   sha=$(git rev-parse HEAD)
-  until id=$(gh run list -R jj1xgo/claude-container --workflow CI --commit "$sha" --json databaseId -q '.[0].databaseId') && [ -n "$id" ]; do sleep 15; done
+  until id=$(gh run list -R jj1xgo/claude-container --commit "$sha" --json databaseId,workflowName -q '[.[] | select(.workflowName == "CI")][0].databaseId') && [ -n "$id" ]; do sleep 15; done
   echo "run=$id"
   gh run watch -R jj1xgo/claude-container "$id" --exit-status; echo "rc=$?"
   ```
+  `--workflow CI` で絞らないのは、workflow が一度も走っていない時点では `could not find any workflows named CI` で失敗するため（実測）。repo には Dependabot の workflow の run もあるので、jq 側で workflow 名を選ぶ。
   `rc=0` なら緑。`rc` が 0 以外なら赤で、`gh run view -R jj1xgo/claude-container "$id" --log-failed | head -60` で失敗ステップとログを読む。Task 4 の「Expected: 赤」は `rc` が 0 以外になることが意図どおりという意味で、コマンドの異常ではない。run の URL は `https://github.com/jj1xgo/claude-container/actions/runs/$id`。
 - `./test-build.sh` を引数なしで実行しない（実 podman build が走り、#59 により実台帳に 1 行残る）。使うのは `--validator-only` と `--launcher-only` だけ。
 - runner と host の差: runner のユーザーは `runner`、`env -i` 下のランチャーは C ロケールで動く。`--launcher-only` は日本語リテラルをバイト列として扱うだけなので影響しない想定だが、runner での初回実行が実検証になる（Task 2 Step 5 の「赤なら直す」で対応）。

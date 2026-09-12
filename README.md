@@ -397,13 +397,15 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 ## 変更後の確認
 
-テストスイートはない。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
+テストは `lint.sh` と `test-build.sh`（ベクタ表・契約テスト・ランチャーテスト・実イメージのビルドと起動確認）で行う。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
+
+GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push のたびに `lint.sh`（Compose 検証は `LINT_SKIP_COMPOSE=1` でスキップ）、`./test-build.sh --validator-only`、`./test-build.sh --launcher-only` を `ubuntu-24.04` の runner で実行する。shellcheck はホストの開発環境と同じ版を SHA256 固定で取得する。実 podman が必要な `./test-build.sh` の全体実行は CI の対象外で、ホストで手動実行する。fork からの PR は GitHub の設定により初回の実行が承認待ちになることがあり、その間は赤でも緑でもない。
 
 ```bash
 ./lint.sh
 ```
 
-`lint.sh` は、リポジトリ内の bash スクリプト（gitignore 対象を除く追跡済み・未追跡ファイルから shebang で自動判定するため、スクリプトを追加・削除しても対象リストの更新は不要）への `bash -n` と `shellcheck`、および `podman compose -f compose.yml config` をまとめて実行する。shellcheck 未インストール時はエラーで失敗する（`sudo apt-get install shellcheck` で導入）。podman が無い環境（コンテナ内での開発時）では Compose 検証のみ警告付きでスキップされる。
+`lint.sh` は、リポジトリ内の bash スクリプト（gitignore 対象を除く追跡済み・未追跡ファイルから shebang で自動判定するため、スクリプトを追加・削除しても対象リストの更新は不要）への `bash -n` と `shellcheck`、および `podman compose -f compose.yml config` をまとめて実行する。shellcheck 未インストール時はエラーで失敗する（`sudo apt-get install shellcheck` で導入）。podman が無い環境（コンテナ内での開発時）では Compose 検証のみ警告付きでスキップされる。`LINT_SKIP_COMPOSE=1` を与えると、podman の有無に関わらず Compose 検証だけを警告付きでスキップする（CI 用）。
 
 `compose.yml` の `:ro` 重ねマウント、または `claude-container` の `prepare_claude_config_ro()` を編集した場合は、ビルド済みのテストイメージ `localhost/claude-test`（`./test-build.sh` の全実行で作られる）がある状態で `./test-build.sh --config-ro-only` を実行する。実物の `compose.yml` とイメージで 11 項目への書き込みが拒否されること、実物のランチャーが placeholder 作成・型検査・`--check` の無書き込み・compose への `CLAUDE_CONFIG_DIR` 受け渡しを正しく行うことを、それぞれ別のテストで確認する（両者を通した対話起動は手動で行う）。
 

@@ -172,6 +172,8 @@ add_or_touch_domain_ip() {
 
 # Claude Code のエンドポイントとプロジェクト固有のドメイン、1 行に 1 つ。
 build_domain_list() {
+  local LC_ALL=C raw domain label line=0
+  local -a labels domains=()
   local -a base_domains=(
     api.anthropic.com
     claude.ai
@@ -180,10 +182,40 @@ build_domain_list() {
     statsig.com
     sentry.io
   )
-  printf '%s\n' "${base_domains[@]}"
-  if [ -f "$ALLOWED_DOMAINS_FILE" ]; then
-    grep -Ev '^\s*(#|$)' "$ALLOWED_DOMAINS_FILE" | tr -d ' \t'
+  if [[ -e "$ALLOWED_DOMAINS_FILE" || -L "$ALLOWED_DOMAINS_FILE" ]]; then
+    if [[ ! -f "$ALLOWED_DOMAINS_FILE" || ! -r "$ALLOWED_DOMAINS_FILE" ]]; then
+      printf 'ERROR: 許可ドメインファイルを読めません: %s\n' "$ALLOWED_DOMAINS_FILE" >&2
+      return 1
+    fi
+    # 通常の read は NUL を捨てるため、NUL 区切りの read で先に検出する。
+    if IFS= read -r -d '' raw < "$ALLOWED_DOMAINS_FILE"; then
+      printf 'ERROR: %s に NUL バイトが含まれています\n' "$ALLOWED_DOMAINS_FILE" >&2
+      return 1
+    fi
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+      line=$((line + 1))
+      raw="${raw%$'\r'}"
+      raw="${raw#"${raw%%[![:blank:]]*}"}"
+      raw="${raw%"${raw##*[![:blank:]]}"}"
+      [[ -n "$raw" && "$raw" != \#* ]] || continue
+      domain="${raw%.}"
+      if [[ ${#domain} -gt 253 || "$domain" == *..* ||
+            ! "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+        printf 'ERROR: %s:%d: 不正なホスト名です: %q（1行1ホスト名、ASCII英数字・ハイフン・ドット、末尾ドットを除き最大253文字）\n' "$ALLOWED_DOMAINS_FILE" "$line" "$raw" >&2
+        return 1
+      fi
+      IFS=. read -r -a labels <<< "$domain"
+      for label in "${labels[@]}"; do
+        if [[ ! "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+          printf 'ERROR: %s:%d: 不正なラベルです: %q（各ラベルは1〜63文字、先頭・末尾は英数字）\n' "$ALLOWED_DOMAINS_FILE" "$line" "$raw" >&2
+          return 1
+        fi
+      done
+      domains+=("$raw")
+    done < "$ALLOWED_DOMAINS_FILE"
   fi
+  # 全行の検証後にだけ出力し、不正行より前のリストを部分適用させない。
+  printf '%s\n' "${base_domains[@]}" "${domains[@]}"
 }
 
 # 許可された全ドメインを解決し、返ってきた IP それぞれに add_or_touch_domain_ip を
@@ -198,9 +230,11 @@ build_domain_list() {
 # セキュリティ境界は変わらないが、ここで致命的として扱うと、このスクリプトを
 # 編集する以外に回復手段のないまま fail-closed の起動ゲートが永久に詰まってしまう。
 refresh_domains() {
-  local generation="$1" had_errors=0 domain ips ip dig_output
+  local generation="$1" had_errors=0 domain ips ip dig_output domain_list
   local -a domains
-  mapfile -t domains < <(build_domain_list)
+  # process substitution では生成側の終了コードが mapfile に伝わらない。
+  domain_list=$(build_domain_list) || return 1
+  mapfile -t domains <<< "$domain_list"
   for domain in "${domains[@]}"; do
     echo "$domain を解決しています..."
     # +comments（+answer に加えて）によりヘッダの "status:" 行

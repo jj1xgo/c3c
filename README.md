@@ -101,7 +101,7 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 .claude-container.d/env                  # ランタイム設定（KEY=VALUE、上記「環境変数」参照）。-b 不要、gitignore 対象
 .claude-container.d/packages.txt         # apt パッケージ（1行1パッケージ、素のパッケージ名のみの allowlist 検証あり。行頭 # はコメント）。-b 必須、コミット対象
 .claude-container.d/requirements.txt     # pip パッケージ（名前＋extras＋バージョン指定子のみの allowlist 検証あり。URL・パス・オプション行・環境マーカー・行内空白は拒否しビルド停止。行内 # 以降はコメントとして剥がされる）。-b 必須、コミット対象
-.claude-container.d/allowed-domains.txt  # エグレス制限に追加する許可ドメイン（1行1ドメイン、# はコメント）。-b 必須、コミット対象
+.claude-container.d/allowed-domains.txt  # エグレス制限に追加する許可ドメイン（1行1ホスト名、行頭 # はコメント。起動・更新時の入力検証あり）。-b 必須、コミット対象
 .claude-container.d/node-version.txt     # 導入する Node.js のバージョン（例: 22.14.0、1行のみ）。-b 必須、コミット対象
 .claude-container.d/codex-version.txt    # 導入する Codex CLI のバージョン（例: 0.46.0 または latest、1行のみ）。-b 必須、コミット対象
 .claude-container.d/allowed-ports.txt    # エグレス許可を限定するTCPポート（1行1ポートまたはport:port、# はコメント）。-b 必須、コミット対象
@@ -109,6 +109,8 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 ```
 
 `env` 以外は任意。`packages.txt`/`requirements.txt`/`allowed-domains.txt` を置かなければ claude-container 同梱のデフォルト（空のフォールバック）が使われる。`allowed-domains.txt` にはプロジェクトの作業に必要な追加ドメイン（例: pip なら `pypi.org` と、パッケージ本体の実ダウンロード先である `files.pythonhosted.org` の両方— index への到達だけでは `pip install` は完走しない）を書く。ビルド時にイメージへ焼き込まれるため、変更を反映するには `-b` での再ビルドが必要（`env` はこのビルド時焼き込みの対象外 — ホスト固有パスをイメージに含めないため）。
+
+`allowed-domains.txt` は前後のスペース・タブと行末 CR を除き、空行と行頭 `#` のコメント行を無視する。各行は ASCII 英数字・ハイフン・ドットで表すホスト名（各ラベル1〜63文字、ラベルの先頭と末尾は英数字、末尾ドットを除き全長253文字以下）とする。大文字、数字で始まる名前、単一ラベル、末尾ドット、punycode 表記は使える。行内空白・行内コメント・URL・ワイルドカード・アンダースコア・制御文字・NUL は拒否し、複数の名前を空白削除で結合しない。全行を検証してから DNS 解決へ渡すため、不正行があると部分的なリストを使わず ERROR になる。起動時は起動を中止し、更新時は警告して次のサイクルへ進む。ホストの `--check` はこの内容検証を行わないため、変更後は `-b` で再ビルドして起動時の検査結果を確認する。
 
 `allowed-ports.txt` は許可ドメイン（GitHub CIDR・`allowed-domains.txt` 指定分）への到達を許すTCPポートを既定の `443,22` から変更したい場合に使う（`jj1xgo/claude-container#31`）。置かなければ `443,22` が使われる（他の3ファイルと異なり WARNING は出ない — `node-version.txt`/`codex-version.txt` と同じ任意機能の流儀）。この制限は許可ドメイン宛のルールにのみ適用され、DNS（53番）とホストネットワーク宛のルールには適用されない（後述「アーキテクチャ」節参照）。`iptables` の `multiport` マッチは最大15枠で、単一ポートは1枠、範囲指定は両端で2枠として数える（範囲内のポート数にはよらない）。例えば単一1件＋範囲7件は15枠で受理し、範囲8件は16枠のため理由付きの ERROR で拒否する。`443` は必ず含めること（api.anthropic.com・api.github.com への到達と起動時の自己検証に必要）、`80` は許可できない（起動時の自己検証が「api.github.com:80 へ到達できない」ことを遮断のプローブに使う）。どちらも範囲指定（`79:81` 等）で含む場合も同様で、違反するとコンテナ起動時に理由付きの ERROR で停止する（`jj1xgo/claude-container#49`）。
 

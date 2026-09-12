@@ -508,10 +508,58 @@ run_launcher_tests() {
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
+  run_clean_ledger_launcher_tests
   run_allowed_ports_tests
   check "DNS 応答の除外・継続・エラー処理" bash "${SCRIPT_DIR}/tests/test-refresh-domains.sh"
   check "DNS ルールの更新順序・世代非更新・期限切れ削除" bash "${SCRIPT_DIR}/tests/test-domain-rule-lifecycle.sh"
   log ""
+}
+
+# --clean 後も台帳を 600 に保ち、対象以外の行を失わない（#52）。
+# 実ランチャーを使い、HOME と podman は既存のテスト用隔離環境に閉じる。
+# bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する。
+# shellcheck disable=SC2016
+run_clean_ledger_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local ledger="$home/.local/state/claude-container/projects" mask
+  run_launcher
+  check "起動時に対象を台帳へ記録する（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && grep -qxF -- "$2" "$3" && [ "$(stat -c %a "$3")" = 600 ]' _ "$rc" "$proj" "$ledger"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  mkdir -p "$(dirname "$ledger")"
+  for mask in 000 002 022; do
+    printf '%s\n' "$root/other project" "$proj" "$root/last-project" > "$ledger"
+    chmod 600 "$ledger"
+    out=$(umask "$mask"; env -i HOME="$home" PATH="$bin:$PATH" \
+      "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+    printf '%s\n' "$root/other project" "$root/last-project" > "$root/expected-ledger"
+    check "umask $mask: clean 後の台帳は600、対象行だけ除去（rc=$rc）" \
+      bash -c '[ "$1" -eq 0 ] && [ "$(stat -c %a "$2")" = 600 ] && cmp -s "$2" "$3" && [ ! -e "$2.tmp" ]' _ "$rc" "$ledger" "$root/expected-ledger"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+
+  printf '%s\n' "$proj" > "$ledger"
+  out=$(umask 002; env -i HOME="$home" PATH="$bin:$PATH" \
+    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+  check "最後の対象を clean すると空の600台帳を残す（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ -f "$2" ] && [ ! -s "$2" ] && [ "$(stat -c %a "$2")" = 600 ]' _ "$rc" "$ledger"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # root でも確実に失敗するよう、権限設定だけを失敗させる。
+  # --clean の chmod は台帳の一時ファイルだけ。ダミーはこのケース後に除去する。
+  printf '%s\n' "$proj" "$root/other project" > "$ledger"
+  cp "$ledger" "$root/expected-ledger"
+  chmod 600 "$ledger"
+  printf '#!/bin/bash\nexit 1\n' > "$bin/chmod"
+  chmod +x "$bin/chmod"
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" \
+    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+  check "権限設定失敗時は ERROR で停止し元の600台帳を保持（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && [[ "$4" == *"ERROR: 起動台帳の一時ファイル"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$bin/chmod"
+  launcher_sandbox_cleanup
 }
 
 # init-firewall.sh の resolve_allowed_ports() の検証（claude-container#31、#49）。

@@ -17,7 +17,7 @@ concurrency:
 env:
   # host の開発環境と同じ版に固定する。SHA256 は公式 Releases の tarball のもの。
   SHELLCHECK_VERSION: "0.11.0"
-  SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+  SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227190"
 
 jobs:
   lint-and-test:

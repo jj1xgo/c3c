@@ -38,6 +38,18 @@ check() {
   printf "%s\n" "$output" >> "$LOG_FILE"
 }
 
+# 結果の 3 行を出して FAIL 件数で終了コードを決める。サブモードと全体実行の両方から呼ぶ
+# （claude-container#65: 全体実行だけ FAIL があっても 0 で終わっていた）。
+finish_by_result() {
+  log "========================================"
+  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
+  log "========================================"
+  if [ "$FAIL" -eq 0 ]; then
+    exit 0
+  fi
+  exit 1
+}
+
 # --- 層1: validate-build-input.sh のベクタ表・契約異常系テスト（claude-container#34） ---
 # ハーネス本体は1箇所にだけ書き、--validator-only と通常実行の両方から呼ぶ
 # （複製すると中核設計2で排除したドリフトを検査側に再導入する）。
@@ -913,13 +925,7 @@ run_config_ro_launcher_tests() {
 
 if [[ "${1:-}" == "--validator-only" ]]; then
   run_validator_layer1_and_contract
-  log "========================================"
-  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
-  log "========================================"
-  if [ "$FAIL" -eq 0 ]; then
-    exit 0
-  fi
-  exit 1
+  finish_by_result
 fi
 
 # 保護テストだけを回す入口（イメージはビルド済みの $IMAGE を使う。無ければ FAIL）。
@@ -927,25 +933,13 @@ fi
 if [[ "${1:-}" == "--config-ro-only" ]]; then
   run_config_ro_tests
   run_config_ro_launcher_tests
-  log "========================================"
-  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
-  log "========================================"
-  if [ "$FAIL" -eq 0 ]; then
-    exit 0
-  fi
-  exit 1
+  finish_by_result
 fi
 
 # ランチャーテストだけを回す入口（実 podman 不要。コンテナ内開発や CI 向け）。
 if [[ "${1:-}" == "--launcher-only" ]]; then
   run_launcher_tests
-  log "========================================"
-  log "  結果: PASS=${PASS}  FAIL=${FAIL}"
-  log "========================================"
-  if [ "$FAIL" -eq 0 ]; then
-    exit 0
-  fi
-  exit 1
+  finish_by_result
 fi
 
 log "========================================"
@@ -1155,7 +1149,9 @@ echo "[user]
 echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.claude-container.d/env"
 
 BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
-PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1
+# 他のランチャーテストと同じく env -i で隔離する。隔離しないと record_project_in_ledger() が
+# 実ユーザーの $HOME の起動台帳に一時パスを 1 行残す（claude-container#59）。
+env -i HOME="$ENV_TESTROOT" PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1
 AFTER_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 NEW_BUILD_CONTEXT="$(comm -13 <(echo "$BEFORE_BUILD_CONTEXTS" | sort) <(echo "$AFTER_BUILD_CONTEXTS" | sort) | head -1)"
 
@@ -1167,6 +1163,9 @@ else
   check ".claude-container.d/env がビルドコンテキストに含まれない" false
 fi
 
+# 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（claude-container#59）
+check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/claude-container/projects"
+
 rm -rf "$ENV_TESTROOT"
 log ""
 
@@ -1177,10 +1176,6 @@ log "## TZ"
 check "date (UTC確認)"   podman run --rm "$IMAGE" date
 log ""
 
-log "========================================"
-log "  結果: PASS=${PASS}  FAIL=${FAIL}"
-log "========================================"
-log ""
 log "## bash history 永続化確認（手動）"
 log "  以下を順番に実行してください："
 log "  1. mkdir -p /tmp/test-claude-history"
@@ -1188,3 +1183,6 @@ log "  2. podman run --rm -it --userns=keep-id -v /tmp/test-claude-history:/work
 log "  3. コンテナ内で任意のコマンドを実行（例: ls, echo hello）"
 log "  4. exit でコンテナを終了"
 log "  5. cat /tmp/test-claude-history/bash_history で履歴を確認"
+log ""
+
+finish_by_result

@@ -100,9 +100,14 @@ if command -v jq >/dev/null 2>&1; then
   # "-a" 等による誤検知を減らす。
   stripped_hd=$(printf '%s' "$cmd_hd" | sed -E 's/"[^"]*"//g; s/'"'"'[^'"'"']*'"'"'//g')
 else
-  # jq 不在は環境異常。承認判定は生 JSON 文字列に対して継続する（fail-safe）。
-  cmd=$input
-  stripped_hd=$input
+  # jq 不在は環境異常。承認判定は生 JSON 文字列に対して継続する（fail-safe）。JSON の
+  # 引用符（\"、"）と改行・タブ・復帰のエスケープ（\n、\t、\r）を空白に置き換えてから
+  # 判定する。置き換えないと command 値の末尾が `--approve"` のように引用符で閉じられ、
+  # または `--approve\necho` のようにエスケープが続き、末尾を空白か行末に限定した判定に
+  # 当たらない（claude-container#71）。引用文字列の除去はできないので、引用内の承認語は偽陽性側に
+  # 倒れる。JSON の Unicode エスケープ（\u0022 など）は復号しないので、その形の入力は検出しない。
+  cmd=$(printf '%s' "$input" | sed -E 's/\\["ntr]/ /g; s/"/ /g')
+  stripped_hd=$cmd
 fi
 
 # gh コマンドでなければ即通過（高速パス）

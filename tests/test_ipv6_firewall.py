@@ -38,6 +38,11 @@ class IPv6Tests(unittest.TestCase):
     def mutations(self):
         return [c for c in self.calls if c[0] == 'ip6tables' and c[1] in ('-A', '-D')]
 
+    def test_verify_fails_when_allowed_endpoint_is_unreachable(self):
+        with patch.object(fw, 'command', side_effect=fw.FirewallError('IPv6 許可先に到達できません')):
+            with self.assertRaisesRegex(fw.FirewallError, '許可先'):
+                self.firewall.verify()
+
     def test_address_representation(self):
         self.assertEqual(fw.normalize_target('2001:0DB8:0000:0000:0000:0000:0000:0001'), '2001:db8::1')
         self.assertEqual(fw.normalize_target('fd00::1'), 'fd00::1')

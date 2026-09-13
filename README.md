@@ -96,11 +96,11 @@ claude-container 自身を対象プロジェクトとして自己ホスト起動
 CLAUDE_CONTAINER_IPV6=1
 ```
 
-初回は `./claude-container -b /path/to/project` で新しい境界アセットを含むイメージを作る。その後の0/1の切り替えはランタイム設定なので、コンテナを終了して起動し直せば反映される。IPv4/IPv6 で `allowed-domains.txt` と `allowed-ports.txt` を共用し、IPv6 でも未許可の宛先・ポートを遮断する。IPv6-only ホストは初期対応の対象外で、IPv4 も使用できることが前提。
+初回は `./claude-container -b /path/to/project` で新しい境界アセットを含むイメージを作る。対応ラベルのない旧イメージでの有効化は、起動と `--check` で再ビルドを案内して停止する。その後の0/1の切り替えはランタイム設定なので、コンテナを終了して起動し直せば反映される。IPv4/IPv6 で `allowed-domains.txt` と `allowed-ports.txt` を共用し、IPv6 でも未許可の宛先・ポートを遮断する。IPv6-only ホストは初期対応の対象外で、IPv4 も使用できることが前提。
 
-有効時は launcher が固定の `compose.ipv6.yml` を追加し、単独 pasta と仮想 IPv6 ゲートウェイ `fe80::1` を使う。Podman/pasta、ホストの IPv6 外向き通信が必要。今回確認した環境は rootless Podman 5.8.6 / podman-compose 1.6.0。ホストに IPv6 があっても rootless bridge の外側へ経路が渡らない場合があるため、コンテナ単位に閉じた pasta を使う。ホスト・ルーター・WARP の設定は自動変更しない。起動時には経路、IPv6 有効状態、ip6tables、`api.anthropic.com` の IPv6 HTTPS 接続と禁止先の遮断を検査し、失敗したら起動を止める。`--check` は設定値だけを検査し、ネットワーク作成や実疎通は行わない。
+有効時は launcher が固定の `compose.ipv6.yml` を追加し、単独 pasta と仮想 IPv6 ゲートウェイ `fe80::1` を使う。Podman/pasta、ホストの IPv6 外向き通信と、ip6tables の hop-limit / REJECT 機能を使えるカーネルが必要。これらが使えない場合は初期化を失敗として停止する。今回確認した環境は rootless Podman 5.8.6 / podman-compose 1.6.0。ホストに IPv6 があっても rootless bridge の外側へ経路が渡らない場合があるため、コンテナ単位に閉じた pasta を使う。ホスト・ルーター・WARP の設定は自動変更しない。起動時には経路、IPv6 有効状態、ip6tables、`api.anthropic.com` の IPv6 HTTPS 接続と禁止先の遮断を検査し、失敗したら起動を止める。`--check` は設定値だけを検査し、ネットワーク作成や実疎通は行わない。
 
-既定の IPv4 モードは既存 bridge のまま。有効時は共有 bridge を再利用せず、pasta はコンテナ終了時に片付く。過去の bridge は必要なら既存の `--clean <project>` で整理する。pasta で検出する IPv4 ゲートウェイは物理側ルーターの場合があり、bridge のゲートウェイと同じホストサービスの別名ではない。IPv6 ゲートウェイへの TCP/UDP 全許可は追加しない。ホスト側サービスへの接続があるプロジェクトは切り替え時に確認する。
+既定の IPv4 モードは既存 bridge のまま。有効時は共有 bridge を再利用せず、pasta はコンテナ終了時に片付く。過去の bridge は必要なら既存の `--clean <project>` で整理する。pasta で検出する IPv4 ゲートウェイは物理側ルーターの場合があり、bridge のゲートウェイと同じホストサービスの別名ではない。Podman は既定で `--no-map-gw` を指定し、ゲートウェイからホスト loopback への写像を無効にする（[Podman のネットワーク仕様](https://docs.podman.io/en/v5.8.0/markdown/podman-run.1.html#network-mode-net)）。IPv6 ゲートウェイへの TCP/UDP 全許可は追加しない。ホスト側サービスへの接続があるプロジェクトは切り替え時に確認する。
 
 IPv6 の許可対象は `2000::/3` の global unicast と `fc00::/7` の ULA。未指定・loopback・IPv4-mapped・multicast・link-local などの AAAA 応答は警告して除外する。link-local 宛てサービスや変換用プレフィックスの明示許可は初期対応外。DNS リゾルバへの53番と、近隣探索・Path MTU Discovery 等に必要な ICMPv6 は別ルールで許可する。AAAA がない正常応答と NXDOMAIN はスキップし、一時的な解決失敗は起動時にエラー、定期更新時に警告とする。IPv6 のルールも約15秒ごとに更新し、約3分観測されないものを削除する。
 

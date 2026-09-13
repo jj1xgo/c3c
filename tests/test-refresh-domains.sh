@@ -10,7 +10,7 @@ cat > "$tmp/harness" <<'HEAD'
 #!/bin/bash
 set -euo pipefail
 IFS=$'\n\t'
-build_domain_list() { printf '%s\n' fixture.invalid next.invalid; }
+build_domain_list() { [ "${DOMAIN_LIST_FAIL:-0}" = 0 ] || return 1; printf '%s\n' fixture.invalid next.invalid; }
 dig() {
   if [ "${!#}" = next.invalid ]; then
     printf '%s\n' 'next.invalid. 60 IN A 192.0.2.10'
@@ -65,6 +65,49 @@ run_case 'SERVFAIL は次ドメインへ進むが全体は失敗' ';; status: SE
 run_case 'dig の非ゼロ終了も全体は失敗' '' 1 '192.0.2.10' fixture.invalid 9
 run_case '適用失敗を握り潰さない' 'fixture.invalid. 60 IN A 192.0.2.1\n' \
   1 '192.0.2.10' 'ルール適用に失敗' 0 '192.0.2.1'
+
+# IPv6 接続部も実 refresh_domains を使う。helper だけをシェル関数に置換する。
+cat > "$tmp/ipv6-harness" <<'HEAD'
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+IPV6_ENABLED=1
+IPV6_HELPER=ipv6_fixture
+ALLOWED_PORTS=443,22
+build_domain_list() { [ "${DOMAIN_LIST_FAIL:-0}" = 0 ] || return 1; printf '%s\n' fixture.invalid next.invalid; }
+dig() { printf '%s\n' ';; status: NOERROR'; }
+add_or_touch_domain_ip() { echo '予期しない IPv4 追加' >&2; return 1; }
+ipv6_fixture() {
+  printf '%s\n' "$@" > "$RECORD.args"
+  cat > "$RECORD.domains"
+  return "${HELPER_RC:-0}"
+}
+HEAD
+sed -n '/^refresh_domains()/,/^}/p' "$ROOT/init-firewall.sh" >> "$tmp/ipv6-harness"
+printf '%s\n' 'refresh_domains 1000' >> "$tmp/ipv6-harness"
+for helper_rc in 0 1; do
+  actual_rc=0
+  RECORD="$tmp/ipv6-$helper_rc" HELPER_RC="$helper_rc" bash "$tmp/ipv6-harness" > "$tmp/out" 2> "$tmp/err" || actual_rc=$?
+  count=$((count + 1))
+  if [ "$actual_rc" = "$helper_rc" ] && [ ! -s "$tmp/err" ] &&
+     [ "$(cat "$tmp/ipv6-$helper_rc.args" 2>/dev/null)" = $'refresh\n--ports\n443,22\n--generation\n1000' ] &&
+     [ "$(cat "$tmp/ipv6-$helper_rc.domains" 2>/dev/null)" = $'fixture.invalid\nnext.invalid' ]; then
+    echo "ok - IPv6 全ドメイン・世代の伝達、空Aとhelper終了コード $helper_rc"
+  else
+    echo "FAIL - IPv6 接続部 (rc=$actual_rc、期待=$helper_rc)"
+    cat "$tmp/out" "$tmp/err"
+    fail=$((fail + 1))
+  fi
+done
+actual_rc=0
+RECORD="$tmp/invalid" DOMAIN_LIST_FAIL=1 bash "$tmp/ipv6-harness" > "$tmp/out" 2> "$tmp/err" || actual_rc=$?
+count=$((count + 1))
+if [ "$actual_rc" = 1 ] && [ ! -e "$tmp/invalid.args" ]; then
+  echo 'ok - ドメイン検証失敗ではIPv6 helperを呼ばない'
+else
+  echo 'FAIL - ドメイン検証失敗がIPv6に伝播していない'
+  fail=$((fail + 1))
+fi
 
 echo "DNS 応答テスト: $count 件、失敗 $fail 件"
 [ "$fail" -eq 0 ]

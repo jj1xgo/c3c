@@ -304,6 +304,21 @@ guard_ipv6() {
     1) COMPOSE_IPV6_ARGS=(-f "$RUN_DIR/compose.ipv6.yml") ;;
     *) guard_fail "ERROR: CLAUDE_CONTAINER_IPV6 は0または1で指定してください。"; return 1 ;;
   esac
+  if [[ "${CHECK_MODE:-0}" == 1 ]]; then
+    echo "[OK]   IPv6 設定: ${CLAUDE_CONTAINER_IPV6:-0}"
+  fi
+  [[ "${CLAUDE_CONTAINER_IPV6:-0}" == 1 ]] || return 0
+  # 対応前の entrypoint はモードを無視する。既存イメージを使う場合だけ拒否する。
+  [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]] && return 0
+  command -v podman >/dev/null 2>&1 || return 0
+  podman image exists "$IMAGE_NAME" 2>/dev/null || return 0
+  local support
+  support=$(podman image inspect --format '{{index .Labels "claude-container.ipv6-support"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  if [[ "$support" != 1 ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は IPv6 対応を確認できません。-b でリビルドしてください。"
+    return 1
+  fi
+  return 0
 }
 
 # ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では

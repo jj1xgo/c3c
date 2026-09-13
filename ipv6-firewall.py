@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 CHAIN = 'CLAUDE_EGRESS6'
+# init-firewall.sh の GRACE_WINDOW_SECONDS（15秒×12回）と同期させる。
 GRACE_SECONDS = 180
 TARGET_RANGES = (ipaddress.IPv6Network('2000::/3'), ipaddress.IPv6Network('fc00::/7'))
 DOMAIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?')

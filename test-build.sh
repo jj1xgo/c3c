@@ -465,7 +465,9 @@ launcher_sandbox_init() {
 #!/bin/bash
 case "\$1 \$2" in
   "image exists") exit 0 ;;
-  "image inspect") exit 0 ;;
+  "image inspect")
+    if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
+    exit 0 ;;
 esac
 [[ "\$1" == "compose" ]] && { env > "$root/compose-env"; printf '%s\n' "\$@" >> "$root/compose-args"; }
 exit 0
@@ -1042,13 +1044,18 @@ run_ipv6_launcher_tests() {
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
   printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  run_launcher TEST_IPV6_SUPPORT=
+  check "IPv6 未対応の旧イメージでは起動前に -b を案内して拒否" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
+  run_launcher_check TEST_IPV6_SUPPORT=
+  check "IPv6 未対応の旧イメージを --check も拒否" [ "$rc" -ne 0 ]
   cat > "$bin/curl" <<'CURL'
 #!/bin/sh
 printf '%s\n' '{"web":[],"api":[],"git":[]}'
 CURL
   chmod +x "$bin/curl"
   rm -f "$root/compose-args"
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"

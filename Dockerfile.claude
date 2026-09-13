@@ -247,6 +247,8 @@ ENV PATH=/home/node/.local/bin:$PATH
 # （CACHEBUST 以降は `-b` 実行のたびに既に破棄されている）。
 ARG ASSET_HASH=unknown
 LABEL claude-container.asset-hash="${ASSET_HASH}"
+# 旧 entrypoint が IPv6 モードを無視して起動するのを launcher で防ぐ。
+LABEL claude-container.ipv6-support="1"
 
 # base-image.txt の現在の内容とは独立に、このビルドに実際に焼き込まれたベース
 # イメージの値を記録する。compute_asset_hash() はファイル内容しかハッシュしない

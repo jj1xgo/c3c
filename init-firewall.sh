@@ -23,6 +23,7 @@ IFS=$'\n\t'
 ALLOWED_DOMAINS_FILE=/etc/claude-container/allowed-domains.txt
 ALLOWED_PORTS_FILE=/etc/claude-container/allowed-ports.txt
 CHAIN=CLAUDE_EGRESS
+readonly IPV6_HELPER=/usr/local/bin/ipv6-firewall.py
 # 観測された最短の CDN TTL は 13 秒。それよりやや遅く更新することで、1 回の取りこぼしを
 # 毎回の揺らぎを追いかけるのではなく次のサイクルで拾えるようにする。
 # sleep 自体は entrypoint.sh の更新ループ側にある — 両者を同期させておくこと。
@@ -32,6 +33,7 @@ REFRESH_INTERVAL_SECONDS=15
 # 返さなかった場合や、一時的なリゾルバの不調を吸収してから、
 # 使われなくなったドメインの IP をようやく削除する。
 GRACE_WINDOW_SECONDS=$((REFRESH_INTERVAL_SECONDS * 12))
+# IPv6 helper の GRACE_SECONDS=180 と同期させる。
 
 MODE=init
 IPV6_ENABLED=0
@@ -282,7 +284,7 @@ refresh_domains() {
     done <<<"$ips"
   done
   if [[ "${IPV6_ENABLED:-0}" == 1 ]]; then
-    if ! printf '%s\n' "${domains[@]}" | /usr/local/bin/ipv6-firewall.py refresh --ports "$ALLOWED_PORTS" --generation "$generation"; then
+    if ! printf '%s\n' "${domains[@]}" | "$IPV6_HELPER" refresh --ports "$ALLOWED_PORTS" --generation "$generation"; then
       had_errors=1
     fi
   fi
@@ -311,6 +313,43 @@ prune_stale_domain_rules() {
     iptables -D "$CHAIN" "${stale_line_numbers[n]}" 2>/dev/null || \
       echo "WARNING: $CHAIN の ${stale_line_numbers[n]} 行目の古いルールを削除できませんでした" >&2
   done
+}
+
+# dual-stack でも IPv6 の成功が IPv4 の故障を隠さないよう、アドレス族を固定する。
+# shellcheck disable=SC2016 # bash -c 内の位置引数は接続確認の子シェルで展開する。
+verify_ipv4() {
+  echo "ファイアウォールのルールを検証しています..."
+  if curl -4 --connect-timeout 5 -s https://example.com >/dev/null 2>&1; then
+    echo "ERROR: ファイアウォール検証に失敗しました。https://example.com へ到達できてしまいました" >&2
+    exit 1
+  fi
+  echo "検証 OK: 想定どおり https://example.com へ到達できません"
+  # TCP の接続確認のみ（HTTP リクエストはしない）。これにより、コンテナ起動の
+  # たびに未認証の GitHub API のレート制限を消費しない。
+  local github_ipv4
+  github_ipv4=$(dig +short +time=2 +tries=2 A api.github.com | awk '/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/ { print; exit }')
+  if [ -z "$github_ipv4" ] || ! timeout 10 bash -c 'exec 3<>/dev/tcp/$1/$2' probe "$github_ipv4" 443 2>/dev/null; then
+    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:443 へ到達できません" >&2
+    exit 1
+  fi
+  echo "検証 OK: 想定どおり api.github.com:443 へ到達できます"
+  if ! curl -4 --connect-timeout 10 -s -o /dev/null https://api.anthropic.com; then
+    echo "ERROR: ファイアウォール検証に失敗しました。https://api.anthropic.com へ到達できません" >&2
+    exit 1
+  fi
+  echo "検証 OK: 想定どおり https://api.anthropic.com へ到達できます"
+  # ポート制限（claude-container#31）が、それ以外は許可された IP の非許可
+  # ポートを実際に遮断していることを確認する。github.com は実際に 80 番でも
+  # 待ち受けている（HTTP → HTTPS リダイレクト）ので、ここでの失敗は「相手が
+  # 待ち受けていなかった」とは混同しようがなく、必ず自分のルールが拒否している
+  # ことになる。これは CHAIN で制限される範囲（GitHub の CIDR／タグ付き
+  # ドメインルール）のみを検証する。DNS（53番）とホストネットワークのルールは
+  # CHAIN をバイパスするため、この検査の対象外。
+  if timeout 5 bash -c 'exec 3<>/dev/tcp/$1/$2' probe "$github_ipv4" 80 2>/dev/null; then
+    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:80 へ到達できてしまいました（ポート制限が効いていません）" >&2
+    exit 1
+  fi
+  echo "検証 OK: 想定どおり api.github.com:80 へ到達できません（ポート制限が有効）"
 }
 
 # 起動時の完全な初期化: フラッシュし、全ルールをゼロから再構築し、自己検証する。
@@ -365,7 +404,7 @@ full_init() {
   fi
 
   if [[ "$IPV6_ENABLED" == 1 ]]; then
-    /usr/local/bin/ipv6-firewall.py prepare --ports "$ALLOWED_PORTS"
+    "$IPV6_HELPER" prepare --ports "$ALLOWED_PORTS"
   fi
 
   # GitHub の IP 範囲（HTTPS・SSH 経由の git/gh 用）。ここでは動的な取得をしない
@@ -467,38 +506,9 @@ full_init() {
   fi
 
   echo "ファイアウォールの設定が完了しました"
-  echo "ファイアウォールのルールを検証しています..."
-  if curl --connect-timeout 5 -s https://example.com >/dev/null 2>&1; then
-    echo "ERROR: ファイアウォール検証に失敗しました。https://example.com へ到達できてしまいました" >&2
-    exit 1
-  fi
-  echo "検証 OK: 想定どおり https://example.com へ到達できません"
-  # TCP の接続確認のみ（HTTP リクエストはしない）。これにより、コンテナ起動の
-  # たびに未認証の GitHub API のレート制限を消費しない。
-  if ! timeout 10 bash -c 'exec 3<>/dev/tcp/api.github.com/443' 2>/dev/null; then
-    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:443 へ到達できません" >&2
-    exit 1
-  fi
-  echo "検証 OK: 想定どおり api.github.com:443 へ到達できます"
-  if ! curl --connect-timeout 10 -s -o /dev/null https://api.anthropic.com; then
-    echo "ERROR: ファイアウォール検証に失敗しました。https://api.anthropic.com へ到達できません" >&2
-    exit 1
-  fi
-  echo "検証 OK: 想定どおり https://api.anthropic.com へ到達できます"
-  # ポート制限（claude-container#31）が、それ以外は許可された IP の非許可
-  # ポートを実際に遮断していることを確認する。github.com は実際に 80 番でも
-  # 待ち受けている（HTTP → HTTPS リダイレクト）ので、ここでの失敗は「相手が
-  # 待ち受けていなかった」とは混同しようがなく、必ず自分のルールが拒否している
-  # ことになる。これは CHAIN で制限される範囲（GitHub の CIDR／タグ付き
-  # ドメインルール）のみを検証する。DNS（53番）とホストネットワークのルールは
-  # CHAIN をバイパスするため、この検査の対象外。
-  if timeout 5 bash -c 'exec 3<>/dev/tcp/api.github.com/80' 2>/dev/null; then
-    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:80 へ到達できてしまいました（ポート制限が効いていません）" >&2
-    exit 1
-  fi
-  echo "検証 OK: 想定どおり api.github.com:80 へ到達できません（ポート制限が有効）"
+  verify_ipv4
   if [[ "$IPV6_ENABLED" == 1 ]]; then
-    /usr/local/bin/ipv6-firewall.py verify --ports "$ALLOWED_PORTS"
+    "$IPV6_HELPER" verify --ports "$ALLOWED_PORTS"
   fi
 }
 

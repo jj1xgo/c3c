@@ -34,11 +34,13 @@ else
   ) >>/tmp/claude-firewall-refresh.log 2>&1 &
 fi
 
-for f in \
-  /home/node/.claude/plugins/installed_plugins.json \
-  /home/node/.claude/plugins/known_marketplaces.json; do
-  [ -f "$f" ] && sed -i "s|/home/[^/]*/\.claude|/home/node/.claude|g" "$f"
-done
+# --- 起動前半ここまで（tests/test_ipv6_entrypoint.py の抽出境界） ---
+# 上の行は tests/test_ipv6_entrypoint.py がファイアウォール適用と更新ループだけを
+# 抽出して実行するための境界。文言を変えたらテスト側の BOUNDARY も同時に変える。
+# かつてここに plugin メタデータ（~/.claude/plugins/*.json）のホストパスを sed で
+# コンテナ内パスへ書き換える処理があったが、plugins/ を :ro で保護した時点で書けなく
+# なった（書けてはいけない）。plugin の解決は launcher 側の別名マウント
+# （compose.plugins-alias.yml、claude-container#98）が担う。
 
 # MCP監査ゲート（stdio型サーバーの検知＋TTY確認、内部運用issue参照）。
 # .mcp.json（project-scoped、Claude Code標準機能により自動ロードされる）のうち

@@ -414,6 +414,36 @@ if echo x > projects/probe-rw; then echo "RW-OK projects"; else echo "RW-BROKEN 
 exit $fail
 '
 
+# plugin 別名マウント（compose.plugins-alias.yml、#98）込みの実構成で、別名パス経由でも
+# 書けない（EROFS/EBUSY）こと、別名経由で内容が読めること、destination の親（podman が
+# コンテナ作成時に作る root 所有ディレクトリ）にも書けないことを確認する。
+CONFIG_RO_ALIAS_DEST="/home/hostuser-probe/.claude/plugins"
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+CONFIG_RO_ALIAS_PROBE='
+set -u
+fail=0
+expect_ro() {
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+cd "'"$CONFIG_RO_ALIAS_DEST"'" || { echo "PROBE-ERROR: alias not mounted"; exit 2; }
+if [ "$(cat seed 2>/dev/null)" = seed ]; then echo "READ-OK alias/seed"; else echo "READ-BROKEN alias/seed"; fail=1; fi
+expect_ro "alias/create"  sh -c "echo x > probe-new"
+expect_ro "alias/append"  sh -c "echo x >> seed"
+expect_ro "alias/delete"  rm -f seed
+expect_ro "alias/replace" sh -c "echo x > seed.tmp && mv -f seed.tmp seed"
+# 親ディレクトリは podman が root 所有で作る（理由は EACCES）。書けなければ十分。
+if touch /home/hostuser-probe/probe 2>/dev/null; then echo "RW-LEAK alias-parent"; fail=1; else echo "RO-OK alias-parent"; fi
+exit $fail
+'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="claude-test-config-ro"
@@ -436,6 +466,21 @@ run_config_ro_tests() {
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
+  # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
+  # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
+  check "別名 override 込みでも 11項目へ書けず projects/ へは書ける" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
+  check "別名パスから読めて書けず、親ディレクトリにも書けない" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_ALIAS_PROBE"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "別名経由の書き込み試行後もホスト側 plugins/seed が不変" \
+    bash -c '[ "$(cat "$1/plugins/seed")" = seed ] && [ ! -e "$1/plugins/probe-new" ] && [ ! -e "$1/plugins/seed.tmp" ]' _ "$cfg"
   # ホスト側に別 uid（サブ uid の root 等）所有の残骸が生えていないこと。
   # 「特定 uid が無い」ではなく全エントリが実行ユーザー所有であることを見る。
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
@@ -459,8 +504,11 @@ run_config_ro_tests() {
 launcher_sandbox_init() {
   root="$(mktemp -d)"; bin="$root/bin"; home="$root/home"; proj="$root/proj"
   mkdir -p "$bin" "$home/.claude" "$proj"
-  # ダミー podman: compose 呼び出し時の環境を記録する（ランチャー → compose の接続部
-  # — CLAUDE_CONFIG_DIR の export 等 — を検証するため）。
+  # ダミー podman: compose 呼び出し時の環境と引数を記録する（ランチャー → compose の
+  # 接続部 — CLAUDE_CONFIG_DIR の export 等 — を検証するため）。compose-env は最後の
+  # 呼び出しの環境（従来互換）、compose-args は全呼び出しの引数の連結。加えて
+  # compose-env.<n>・compose-args.<n> に n 回目の呼び出しを個別に残す（-b の build と
+  # run で export や override が片方だけ漏れていないかを見分けるため。#98）。
   cat > "$bin/podman" <<DUMMY
 #!/bin/bash
 case "\$1 \$2" in
@@ -469,7 +517,12 @@ case "\$1 \$2" in
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
     exit 0 ;;
 esac
-[[ "\$1" == "compose" ]] && { env > "$root/compose-env"; printf '%s\n' "\$@" >> "$root/compose-args"; }
+if [[ "\$1" == "compose" ]]; then
+  n=\$(( \$(cat "$root/compose-calls" 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "\$n" > "$root/compose-calls"
+  env > "$root/compose-env"; env > "$root/compose-env.\$n"
+  printf '%s\n' "\$@" >> "$root/compose-args"; printf '%s\n' "\$@" > "$root/compose-args.\$n"
+fi
 exit 0
 DUMMY
   chmod +x "$bin/podman"
@@ -480,8 +533,12 @@ DUMMY
 # 環境を env -i で空にしてから HOME・PATH だけを与える（実行者のシェルに
 # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
 # 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
+launcher_sandbox_reset_records() {
+  rm -f "$root/compose-env" "$root/compose-args" "$root/compose-calls" "$root"/compose-env.* "$root"/compose-args.*
+}
+
 run_launcher() {
-  rm -f "$root/compose-env" "$root/compose-args"
+  launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
 }
 
@@ -522,6 +579,7 @@ launcher_sandbox_cleanup() {
 run_launcher_tests() {
   log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
+  run_plugins_alias_launcher_tests
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   run_base_image_launcher_tests
@@ -1054,7 +1112,7 @@ run_ipv6_launcher_tests() {
 printf '%s\n' '{"web":[],"api":[],"git":[]}'
 CURL
   chmod +x "$bin/curl"
-  rm -f "$root/compose-args"
+  launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
@@ -1068,7 +1126,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1181,6 +1239,145 @@ run_config_ro_launcher_tests() {
   check "F: 作業ディレクトリが ~/.claude を含むと WARNING（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING' && printf '%s' \"\$0\" | grep -q '別の rw'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
+
+  launcher_sandbox_cleanup
+}
+
+# plugin 別名マウント（claude-container#98）の検証。launcher がホスト側 plugins/ の綴りを
+# コンテナ内の同じ絶対パスにも :ro で重ねる override（compose.plugins-alias.yml）を選び、
+# build・run の各呼び出しへ export と override を渡すこと。判定関数 plugins_alias_target()
+# は副作用が無いので、関数定義だけを抽出して /home/node を作らずに一致分岐まで検証する。
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
+run_plugins_alias_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  log "## plugin 別名マウント（compose.plugins-alias.yml、#98）"
+
+  # T: 判定関数の単体検査（関数抽出。ファイルシステムに触れない）。
+  # 各行は <ケース名>|<base の綴り>|<HOME>|<期待 rc>|<期待 stdout>。
+  local fn t_case t_base t_home t_rc t_out got_rc got_out
+  fn=$(sed -n '/^plugins_alias_target()/,/^}/p' "${SCRIPT_DIR}/claude-container")
+  check "T: plugins_alias_target() を抽出できる" [ -n "$fn" ]
+  while IFS='|' read -r t_case t_base t_home t_rc t_out; do
+    got_out=$(bash -euo pipefail -c "$fn"$'\n''plugins_alias_target "$1" "$2"' _ "$t_base" "$t_home" 2>/dev/null) && got_rc=0 || got_rc=$?
+    check "T: $t_case → rc=$t_rc" [ "$got_rc" = "$t_rc" -a "$got_out" = "$t_out" ]
+  done <<'CASES'
+通常の HOME 配下|/home/u|/home/u|0|/home/u/.claude/plugins
+末尾スラッシュ|/home/u/|/home/u|0|/home/u/.claude/plugins
+末尾の /.|/home/u/.|/home/u|0|/home/u/.claude/plugins
+二重スラッシュ|/home//u|/home/u|0|/home/u/.claude/plugins
+HOME 側の末尾スラッシュ|/home/u|/home/u/|0|/home/u/.claude/plugins
+HOME 配下のサブディレクトリ|/home/u/cfg|/home/u|0|/home/u/cfg/.claude/plugins
+コンテナ内パスと一致|/home/node|/home/node|1|
+コンテナ内パスと一致（末尾スラッシュ）|/home/node/|/home/node|1|
+コンテナ内パスと一致（HOME が /）|/home/node|/|1|
+コンテナ内パスと一致（HOME が不正）|/home/node|/home/./u|1|
+コンテナ内パスと一致（HOME が別）|/home/node|/home/u|1|
+HOME 配下でない|/opt/cfg|/home/u|2|
+HOME の実体パス綴り違い|/mnt/real/u|/home/u|2|
+HOME と前方一致するだけの別ディレクトリ|/home/user2|/home/u|2|
+親ディレクトリ参照|/home/u/../x|/home/u|2|
+内部の /./|/home/./u|/home/u|2|
+ルート|/|/|2|
+/workspace 配下|/workspace/cfg|/workspace|2|
+/data と一致|/data|/data|2|
+/shared 配下|/shared/u|/shared|2|
+/home/node 配下|/home/node/cfg|/home/node|2|
+CASES
+
+  # P1: 既定（CLAUDE_CONFIG_DIR 未設定）→ run 呼び出しに export と override が渡る
+  run_launcher
+  check "P1: 既定で別名を export し override を run に渡す（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ "$(cat "$3/compose-calls")" -eq 1 ] \
+      && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/.claude/plugins" "$3/compose-env.1" \
+      && grep -qxF "$4/compose.plugins-alias.yml" "$3/compose-args.1"' _ "$rc" "$home" "$root" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # P2: -b では build・run の各呼び出しに export と override が 1 回ずつ渡る
+  cat > "$bin/curl" <<'CURL'
+#!/bin/sh
+printf '%s\n' '{"web":[],"api":[],"git":[]}'
+CURL
+  chmod +x "$bin/curl"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "P2: -b の build と run の各呼び出しに別名が渡る（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ "$(cat "$3/compose-calls")" -eq 2 ] \
+      && grep -qx build "$3/compose-args.1" && grep -qx run "$3/compose-args.2" \
+      && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/.claude/plugins" "$3/compose-env.1" \
+      && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/.claude/plugins" "$3/compose-env.2" \
+      && [ "$(grep -cxF "$4/compose.plugins-alias.yml" "$3/compose-args.1")" -eq 1 ] \
+      && [ "$(grep -cxF "$4/compose.plugins-alias.yml" "$3/compose-args.2")" -eq 1 ]' _ "$rc" "$home" "$root" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # P3: IPv6=1 併用の -b では両 override が build・run の各呼び出しに 1 回ずつ共存する
+  mkdir -p "$proj/.claude-container.d"
+  printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "P3: IPv6 override と別名 override が build・run に共存する（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2/compose-calls")" -eq 2 ] && for n in 1 2; do
+      [ "$(grep -cxF "$3/compose.ipv6.yml" "$2/compose-args.$n")" -eq 1 ] || exit 1
+      [ "$(grep -cxF "$3/compose.plugins-alias.yml" "$2/compose-args.$n")" -eq 1 ] || exit 1
+    done' _ "$rc" "$root" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$proj/.claude-container.d/env"
+
+  # P4: CLAUDE_CONFIG_DIR=~/cfg/（末尾スラッシュ）→ 正規化した綴りで別名を付ける
+  mkdir -p "$home/cfg"
+  run_launcher CLAUDE_CONFIG_DIR='~/cfg/'
+  check "P4: ~/cfg/ の別名は正規化した綴り（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/cfg/.claude/plugins" "$3/compose-env"' _ "$rc" "$home" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # P5: HOME がシンボリックリンク → launcher は綴り（リンク）を保つ（実体パスに解決しない）
+  ln -s "$home" "$root/home-link"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$root/home-link" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
+  check "P5: symlink の HOME でも別名はリンクの綴り（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/home-link/.claude/plugins" "$2/compose-env"' _ "$rc" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # P6: 範囲外（基点が $HOME 配下でない）→ WARNING を出し、override も export も無い。
+  # 起動は止めない（plugin が読めないだけで境界には影響しない）。--check も同じ WARNING。
+  mkdir -p "$root/outside"
+  run_launcher CLAUDE_CONFIG_DIR="$root/outside" CLAUDE_PLUGINS_HOST_PATH=/workspace
+  check "P6: HOME 配下でない基点は WARNING で別名を付けない（注入値も残さない、rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] \
+      && grep -q . "$3/compose-env" && grep -qx run "$3/compose-args" \
+      && ! grep -q "^CLAUDE_PLUGINS_HOST_PATH=" "$3/compose-env" \
+      && ! grep -qF compose.plugins-alias.yml "$3/compose-args"' _ "$rc" "$out" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  run_launcher_check CLAUDE_CONFIG_DIR="$root/outside"
+  check "P6: --check も同じ WARNING を出す（rc=$rc）" bash -c '[[ "$1" == *WARNING*plugins/* ]]' _ "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # P7: --check は保護対象（HOME・対象リポジトリ・build-context）を変更しない。
+  # 基点不正では成功風の [OK] を出さず、.claude 不在（早期 return 経路）でも別名は判定する。
+  local snapshot_ok label expect
+  local -a cargs
+  mkdir -p "$home/bare"
+  for label in 既定 範囲外 基点不正 .claude不在; do
+    case "$label" in
+      既定) cargs=(); expect="[OK]   plugin 別名: $home/.claude/plugins" ;;
+      範囲外) cargs=(CLAUDE_CONFIG_DIR="$root/outside"); expect="WARNING" ;;
+      基点不正) cargs=(CLAUDE_CONFIG_DIR=/nonexistent-plugins-alias); expect="" ;;
+      .claude不在) cargs=(CLAUDE_CONFIG_DIR="$home/bare"); expect="[OK]   plugin 別名: $home/bare/.claude/plugins" ;;
+    esac
+    snapshot_ok=1
+    snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
+    run_launcher_check "${cargs[@]}"
+    snapshot_check_targets > "$root/check-after" 2>> "$LOG_FILE" || snapshot_ok=0
+    check "P7: --check（$label）は保護対象を変更しない" \
+      bash -c '[ "$1" -eq 1 ] && cmp -s "$2/check-before" "$2/check-after"' _ "$snapshot_ok" "$root"
+    if [[ -n "$expect" ]]; then
+      check "P7: --check（$label）の判定表示" bash -c '[[ "$1" == *"$2"* ]]' _ "$out" "$expect"
+    else
+      check "P7: --check（$label）は成功風の別名表示を出さない（rc=$rc）" \
+        bash -c '[ "$1" -ne 0 ] && [[ "$2" != *"plugin 別名"* ]]' _ "$rc" "$out"
+    fi
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
 
   launcher_sandbox_cleanup
 }

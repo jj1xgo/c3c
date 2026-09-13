@@ -66,6 +66,43 @@ if [ "${LINT_SKIP_COMPOSE:-}" = "1" ]; then
 elif command -v podman >/dev/null 2>&1; then
   podman compose -f compose.yml config >/dev/null || status=1
   podman compose -f compose.yml -f compose.ipv6.yml config >/dev/null || status=1
+  # plugin 別名 override（claude-container#98）。destination は launcher が export するので
+  # lint ではダミー値を与える。3 ファイル同時のマージで別名 volume と IPv6 の network・
+  # sysctls・environment が消えないことも見る（override 同士の上書きの検出）。
+  CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias \
+    podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null || status=1
+  if merged=$(CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias \
+      podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml config); then
+    # 値の引用符は provider 依存（podman-compose は '1'、docker compose は "1"）なので両方を許す。
+    q="['\"]?"
+    for needle in '/tmp/lint-plugins-alias' 'fe80::1' \
+        "net\.ipv6\.conf\.all\.disable_ipv6: ${q}0${q}" "CLAUDE_CONTAINER_IPV6: ${q}1${q}"; do
+      grep -qE -- "$needle" <<<"$merged" \
+        || { echo "ERROR: compose の 3 ファイル同時 config に '$needle' がありません（override のマージで消えています）" >&2; status=1; }
+    done
+  else
+    status=1
+  fi
+  # ${CLAUDE_PLUGINS_HOST_PATH:?} の fail-closed 検査（claude-container#98）。launcher は
+  # 別名 override を選ぶとき必ず export するが、compose provider によっては :? が空文字を
+  # 通す可能性があるため、未設定・空文字の両方で config が失敗することを直接確認する。
+  # ホスト実測（podman-compose 1.6.0）ではどちらも rc=1。provider が通してしまう場合は
+  # override のコメントどおり launcher の無条件 export が唯一のガードになるため、この
+  # 検査は WARNING へ格下げすべき変更点として扱う（現時点では ERROR のまま fail-closed）。
+  # shellcheck disable=SC2016 # 意図的にリテラル表示（変数展開ではなく compose 変数名の文字列）
+  compose_var_literal='${CLAUDE_PLUGINS_HOST_PATH:?}'
+  if env -u CLAUDE_PLUGINS_HOST_PATH \
+      podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1; then
+    printf 'ERROR: compose.plugins-alias.yml の %s が未設定を通しています（provider が :? を強制していません）\n' \
+      "$compose_var_literal" >&2
+    status=1
+  fi
+  if CLAUDE_PLUGINS_HOST_PATH="" \
+      podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1; then
+    printf 'ERROR: compose.plugins-alias.yml の %s が空文字を通しています（provider が :? を強制していません）\n' \
+      "$compose_var_literal" >&2
+    status=1
+  fi
 else
   echo "WARNING: podman が見つからないため compose config 検証をスキップしました（コンテナ内開発時は想定内）。" >&2
 fi

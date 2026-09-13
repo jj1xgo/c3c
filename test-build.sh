@@ -414,6 +414,36 @@ if echo x > projects/probe-rw; then echo "RW-OK projects"; else echo "RW-BROKEN 
 exit $fail
 '
 
+# plugin 別名マウント（compose.plugins-alias.yml、#98）込みの実構成で、別名パス経由でも
+# 書けない（EROFS/EBUSY）こと、別名経由で内容が読めること、destination の親（podman が
+# コンテナ作成時に作る root 所有ディレクトリ）にも書けないことを確認する。
+CONFIG_RO_ALIAS_DEST="/home/hostuser-probe/.claude/plugins"
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+CONFIG_RO_ALIAS_PROBE='
+set -u
+fail=0
+expect_ro() {
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+cd "'"$CONFIG_RO_ALIAS_DEST"'" || { echo "PROBE-ERROR: alias not mounted"; exit 2; }
+if [ "$(cat seed 2>/dev/null)" = seed ]; then echo "READ-OK alias/seed"; else echo "READ-BROKEN alias/seed"; fail=1; fi
+expect_ro "alias/create"  sh -c "echo x > probe-new"
+expect_ro "alias/append"  sh -c "echo x >> seed"
+expect_ro "alias/delete"  rm -f seed
+expect_ro "alias/replace" sh -c "echo x > seed.tmp && mv -f seed.tmp seed"
+# 親ディレクトリは podman が root 所有で作る（理由は EACCES）。書けなければ十分。
+if touch /home/hostuser-probe/probe 2>/dev/null; then echo "RW-LEAK alias-parent"; fail=1; else echo "RO-OK alias-parent"; fi
+exit $fail
+'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="claude-test-config-ro"
@@ -436,6 +466,21 @@ run_config_ro_tests() {
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
+  # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
+  # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
+  check "別名 override 込みでも 11項目へ書けず projects/ へは書ける" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
+  check "別名パスから読めて書けず、親ディレクトリにも書けない" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_ALIAS_PROBE"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "別名経由の書き込み試行後もホスト側 plugins/seed が不変" \
+    bash -c '[ "$(cat "$1/plugins/seed")" = seed ] && [ ! -e "$1/plugins/probe-new" ] && [ ! -e "$1/plugins/seed.tmp" ]' _ "$cfg"
   # ホスト側に別 uid（サブ uid の root 等）所有の残骸が生えていないこと。
   # 「特定 uid が無い」ではなく全エントリが実行ユーザー所有であることを見る。
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \

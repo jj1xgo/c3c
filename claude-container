@@ -651,18 +651,25 @@ prepare_claude_config_ro() {
 plugins_alias_target() {
   local base="$1" home="$2" candidate p v fixed
   # 正規化: // を / に圧縮し、末尾の / と /. の連なりを除去する。正規化後も /./ や /..
-  # を含む、または絶対パスでなくなる（/ 単体・空）ものは範囲外。
+  # を含む、または絶対パスでなくなる（/ 単体・空）ものは不正（空文字にする）。
   for p in base home; do
     v="${!p}"
     while [[ "$v" == *//* ]]; do v="${v//\/\//\/}"; done
     while [[ "$v" == */. || "$v" == */ ]]; do v="${v%/.}"; v="${v%/}"; done
-    [[ "$v" == /* ]] || return 2
-    [[ "$v" == */./* || "$v" == */../* || "$v" == */.. ]] && return 2
+    [[ "$v" == /* ]] || v=""
+    [[ "$v" == */./* || "$v" == */../* || "$v" == */.. ]] && v=""
     printf -v "$p" '%s' "$v"
   done
+  # 規則 1: base が正規化できなければ範囲外。
+  [[ -n "$base" ]] || return 2
   candidate="$base/.claude/plugins"
+  # 規則 2: コンテナ内パスと一致なら別名不要。$HOME の検証（規則 3）より先に判定する
+  # （$HOME が不正でも、既存の :ro マウントで足りる状況に誤警告を出さない）。
   [[ "$candidate" == /home/node/.claude/plugins ]] && return 1
+  # 規則 3: base が $HOME と一致するかその配下でなければ範囲外。
+  [[ -n "$home" ]] || return 2
   [[ "$base" == "$home" || "$base" == "$home"/* ]] || return 2
+  # 規則 4: コンテナ内の固定マウント先と一致または配下なら範囲外。
   for fixed in /workspace /data /shared /home/node; do
     [[ "$candidate" == "$fixed" || "$candidate" == "$fixed"/* ]] && return 2
   done
@@ -681,6 +688,10 @@ plugins_alias_target() {
 # 変数操作だけで何も作らない）。
 guard_plugins_alias() {
   local target rc=0
+  # 「別名を付けないなら未 export」を保つ。シェル環境から注入された値は override が選ばれない
+  # 限り不活性だが、compose の環境に残さない（.claude-container.d/env は許可リスト外なので
+  # 元々通らない）。適用分岐では算出値で上書きする。
+  unset CLAUDE_PLUGINS_HOST_PATH
   # 基点の検証に失敗した経路（CLAUDE_CONFIG_HOST_BASE が空）では判定しない。
   [[ -n "${CLAUDE_CONFIG_HOST_BASE:-}" ]] || return 0
   target=$(plugins_alias_target "$CLAUDE_CONFIG_HOST_BASE" "$HOME") || rc=$?

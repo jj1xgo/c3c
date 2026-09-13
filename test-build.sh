@@ -1259,7 +1259,7 @@ run_plugins_alias_launcher_tests() {
   fn=$(sed -n '/^plugins_alias_target()/,/^}/p' "${SCRIPT_DIR}/claude-container")
   check "T: plugins_alias_target() を抽出できる" [ -n "$fn" ]
   while IFS='|' read -r t_case t_base t_home t_rc t_out; do
-    got_out=$(bash -c "$fn"$'\n''plugins_alias_target "$1" "$2"' _ "$t_base" "$t_home" 2>/dev/null) && got_rc=0 || got_rc=$?
+    got_out=$(bash -euo pipefail -c "$fn"$'\n''plugins_alias_target "$1" "$2"' _ "$t_base" "$t_home" 2>/dev/null) && got_rc=0 || got_rc=$?
     check "T: $t_case → rc=$t_rc" [ "$got_rc" = "$t_rc" -a "$got_out" = "$t_out" ]
   done <<'CASES'
 通常の HOME 配下|/home/u|/home/u|0|/home/u/.claude/plugins
@@ -1270,6 +1270,9 @@ HOME 側の末尾スラッシュ|/home/u|/home/u/|0|/home/u/.claude/plugins
 HOME 配下のサブディレクトリ|/home/u/cfg|/home/u|0|/home/u/cfg/.claude/plugins
 コンテナ内パスと一致|/home/node|/home/node|1|
 コンテナ内パスと一致（末尾スラッシュ）|/home/node/|/home/node|1|
+コンテナ内パスと一致（HOME が /）|/home/node|/|1|
+コンテナ内パスと一致（HOME が不正）|/home/node|/home/./u|1|
+コンテナ内パスと一致（HOME が別）|/home/node|/home/u|1|
 HOME 配下でない|/opt/cfg|/home/u|2|
 HOME の実体パス綴り違い|/mnt/real/u|/home/u|2|
 HOME と前方一致するだけの別ディレクトリ|/home/user2|/home/u|2|
@@ -1338,8 +1341,8 @@ CURL
   # P6: 範囲外（基点が $HOME 配下でない）→ WARNING を出し、override も export も無い。
   # 起動は止めない（plugin が読めないだけで境界には影響しない）。--check も同じ WARNING。
   mkdir -p "$root/outside"
-  run_launcher CLAUDE_CONFIG_DIR="$root/outside"
-  check "P6: HOME 配下でない基点は WARNING で別名を付けない（rc=$rc）" \
+  run_launcher CLAUDE_CONFIG_DIR="$root/outside" CLAUDE_PLUGINS_HOST_PATH=/workspace
+  check "P6: HOME 配下でない基点は WARNING で別名を付けない（注入値も残さない、rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] \
       && ! grep -q "^CLAUDE_PLUGINS_HOST_PATH=" "$3/compose-env" \
       && ! grep -qF compose.plugins-alias.yml "$3/compose-args"' _ "$rc" "$out" "$root"

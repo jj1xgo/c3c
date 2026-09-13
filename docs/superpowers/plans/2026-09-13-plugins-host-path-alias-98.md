@@ -64,49 +64,49 @@
 
 対象: `test-build.sh`（新関数 `run_plugins_alias_launcher_tests` を `run_launcher_tests` に追加。入口は既存の一本化に従う）、`tests/test_ipv6_entrypoint.py`。
 
-- [ ] ダミー podman（`launcher_sandbox_init`）を呼び出しごとの記録に拡張する: 従来の `compose-env`（最後の呼び出し、既存テストの互換維持）に加え、`compose-env.<n>` と `compose-args.<n>` を呼び出し順に残す。
-- [ ] `plugins_alias_target()` の単体テスト（関数抽出、`/home/node` 不要）: `/home/u` → 0 と `/home/u/.claude/plugins`、`/home/u/` と `/home/u/.` → 同じ正規化値、`/home/node` と `/home/node/` → 1、base が `$HOME` 配下でない（`/opt/cfg`、`$HOME` の実体パス綴り違い）→ 2、候補が `/workspace`・`/data`・`/shared` 配下 → 2、`/home/u/../x` → 2。
-- [ ] 既定（`CLAUDE_CONFIG_DIR` 未設定、HOME は sandbox の一時ディレクトリ）: run 呼び出しの env に `CLAUDE_PLUGINS_HOST_PATH=$home/.claude/plugins`、args に `compose.plugins-alias.yml`。`-b` では build・run の**各**呼び出しにそれぞれ env と override が 1 回ずつ。
-- [ ] `CLAUDE_CONTAINER_IPV6=1` 併用の `-b`: build・run の各呼び出しに `compose.ipv6.yml` と `compose.plugins-alias.yml` が 1 回ずつ。
-- [ ] `CLAUDE_CONFIG_DIR=~/cfg/`（末尾スラッシュ）: 値が `$home/cfg/.claude/plugins`。
-- [ ] HOME がシンボリックリンク（`$root/home-link -> $root/home`、`HOME=$root/home-link`）: 値がリンクの綴り `$root/home-link/.claude/plugins`（launcher が綴りを保つことの検証。メタデータ側の綴りは Task 5 で実データと照合する）。
-- [ ] 範囲外: `CLAUDE_CONFIG_DIR=$proj`（`$HOME` 配下でない）→ rc=0、`WARNING` を含む、override 無し、`CLAUDE_PLUGINS_HOST_PATH` 未 export。`--check` でも同じ `WARNING` が出る。
-- [ ] `--check`: 既定・範囲外・基点不正（`CLAUDE_CONFIG_DIR=/nonexistent`）・`.claude` 不在の 4 ケースで `snapshot_check_targets` の前後が一致し、基点不正では plugin 別名の `[OK]` が出ない。
-- [ ] 隔離コピー一覧（1071）に `compose.plugins-alias.yml` を足す。
-- [ ] `tests/test_ipv6_entrypoint.py`: 抽出境界をマーカーコメントに変え、抽出結果に `exec claude` と `secrets` の文字列が含まれないことをアサートする（境界が壊れたら検出する）。
-- [ ] `bash test-build.sh --launcher-only` で新テストだけが失敗することを確認する。
+- [x] ダミー podman（`launcher_sandbox_init`）を呼び出しごとの記録に拡張する: 従来の `compose-env`（最後の呼び出し、既存テストの互換維持）に加え、`compose-env.<n>` と `compose-args.<n>` を呼び出し順に残す。
+- [x] `plugins_alias_target()` の単体テスト（関数抽出、`/home/node` 不要）: `/home/u` → 0 と `/home/u/.claude/plugins`、`/home/u/` と `/home/u/.` → 同じ正規化値、`/home/node` と `/home/node/` → 1、base が `$HOME` 配下でない（`/opt/cfg`、`$HOME` の実体パス綴り違い）→ 2、候補が `/workspace`・`/data`・`/shared` 配下 → 2、`/home/u/../x` → 2。
+- [x] 既定（`CLAUDE_CONFIG_DIR` 未設定、HOME は sandbox の一時ディレクトリ）: run 呼び出しの env に `CLAUDE_PLUGINS_HOST_PATH=$home/.claude/plugins`、args に `compose.plugins-alias.yml`。`-b` では build・run の**各**呼び出しにそれぞれ env と override が 1 回ずつ。
+- [x] `CLAUDE_CONTAINER_IPV6=1` 併用の `-b`: build・run の各呼び出しに `compose.ipv6.yml` と `compose.plugins-alias.yml` が 1 回ずつ。
+- [x] `CLAUDE_CONFIG_DIR=~/cfg/`（末尾スラッシュ）: 値が `$home/cfg/.claude/plugins`。
+- [x] HOME がシンボリックリンク（`$root/home-link -> $root/home`、`HOME=$root/home-link`）: 値がリンクの綴り `$root/home-link/.claude/plugins`（launcher が綴りを保つことの検証。メタデータ側の綴りは Task 5 で実データと照合する）。
+- [x] 範囲外: `CLAUDE_CONFIG_DIR=$proj`（`$HOME` 配下でない）→ rc=0、`WARNING` を含む、override 無し、`CLAUDE_PLUGINS_HOST_PATH` 未 export。`--check` でも同じ `WARNING` が出る。
+- [x] `--check`: 既定・範囲外・基点不正（`CLAUDE_CONFIG_DIR=/nonexistent`）・`.claude` 不在の 4 ケースで `snapshot_check_targets` の前後が一致し、基点不正では plugin 別名の `[OK]` が出ない。
+- [x] 隔離コピー一覧（1071）に `compose.plugins-alias.yml` を足す。
+- [x] `tests/test_ipv6_entrypoint.py`: 抽出境界をマーカーコメントに変え、抽出結果に `exec claude` と `secrets` の文字列が含まれないことをアサートする（境界が壊れたら検出する）。
+- [x] `bash test-build.sh --launcher-only` で新テストだけが失敗することを確認する。
 
 ## Task 2: override・launcher・lint
 
 対象: 新規 `compose.plugins-alias.yml`、`claude-container`、`lint.sh`。
 
-- [ ] override を上記のとおり作る。
-- [ ] `prepare_claude_config_ro()` に `CLAUDE_CONFIG_HOST_BASE` の初期化と設定を入れ、`plugins_alias_target()` と `guard_plugins_alias()` を実装し、通常起動 dispatch と `check_one_project()` の両方で `prepare_claude_config_ro` の直後に呼ぶ。
-- [ ] `COMPOSE_IPV6_ARGS` → `COMPOSE_OVERRIDE_ARGS` の統合（初期化 2 箇所、`guard_ipv6()` は `+=`）。
-- [ ] `resolve_asset_source()` fixed 群と `ASSET_HASH_TARGETS` に登録する。
-- [ ] `lint.sh`: `CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias` を与えて `-f compose.yml -f compose.plugins-alias.yml` と、3 ファイル同時（`compose.ipv6.yml` も）の 2 通りを追加する。3 ファイル同時では `config` の出力に別名 volume と IPv6 の `network_mode`・sysctls・environment が残ることを `grep` で確認する（マージで消えないこと）。
-- [ ] `./lint.sh`、`bash test-build.sh --launcher-only` が通る（コンテナ内では compose config は graceful skip になるので、config はホスト側で確認する — Task 5）。
+- [x] override を上記のとおり作る。
+- [x] `prepare_claude_config_ro()` に `CLAUDE_CONFIG_HOST_BASE` の初期化と設定を入れ、`plugins_alias_target()` と `guard_plugins_alias()` を実装し、通常起動 dispatch と `check_one_project()` の両方で `prepare_claude_config_ro` の直後に呼ぶ。
+- [x] `COMPOSE_IPV6_ARGS` → `COMPOSE_OVERRIDE_ARGS` の統合（初期化 2 箇所、`guard_ipv6()` は `+=`）。
+- [x] `resolve_asset_source()` fixed 群と `ASSET_HASH_TARGETS` に登録する。
+- [x] `lint.sh`: `CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias` を与えて `-f compose.yml -f compose.plugins-alias.yml` と、3 ファイル同時（`compose.ipv6.yml` も）の 2 通りを追加する。3 ファイル同時では `config` の出力に別名 volume と IPv6 の `network_mode`・sysctls・environment が残ることを `grep` で確認する（マージで消えないこと）。
+- [x] `./lint.sh`、`bash test-build.sh --launcher-only` が通る（コンテナ内では compose config は graceful skip になるので、config はホスト側で確認する — Task 5）。
 - [ ] `${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed は compose provider 依存。ホストの `podman compose` バックエンドと CI の Docker Compose provider の両方で、変数未設定のまま 2 ファイル `config` を実行して非 0 で終わることを確認する。どちらかが空文字として通す場合は launcher の無条件 export が唯一のガードになるので、override のコメントにその旨を書く。
 
 ## Task 3: entrypoint.sh の死んだ sed を削除する
 
 対象: `entrypoint.sh`。
 
-- [ ] 37〜41 行を削除し、同じ位置にマーカーコメントを置く。`bash -n`・shellcheck（PostToolUse hook）を通す。
-- [ ] `python3 -m unittest discover -s tests -p 'test_ipv6_*.py'` が通る。
-- [ ] `ASSET_HASH` が変わるので、利用側で `-b` が必要になる旨を PR 本文とリリースノート案に書く。
+- [x] 37〜41 行を削除し、同じ位置にマーカーコメントを置く。`bash -n`・shellcheck（PostToolUse hook）を通す。
+- [x] `python3 -m unittest discover -s tests -p 'test_ipv6_*.py'` が通る。
+- [x] `ASSET_HASH` が変わるので、利用側で `-b` が必要になる旨を PR 本文とリリースノート案に書く。
 
 ## Task 4: 文書
 
 対象: `README.md`（公開）、`.claude/CLAUDE.md`（ops リポジトリへ別コミット）。
 
-- [ ] README「アーキテクチャ」`entrypoint.sh` 項（301 行）: 「`~/.claude/plugins/` 内に残るホスト側のパスをコンテナ内パスへ自動修正し」を削除する。
-- [ ] README「アーキテクチャ」`compose.yml` 項（299 行）: `compose.plugins-alias.yml` の役割を 1 文で足す（IPv6 の記述と同じ位置）。
-- [ ] README「何ができて何ができないか」の 11 項目の行（359 行）: plugin は launcher がホストと同じ絶対パスにも `:ro` で重ねることで読み込まれる旨、対応範囲（`$HOME` 配下の綴り）と範囲外時の `WARNING`、旧版（`0a064c9` 〜本修正）では `cache-miss` になっていた旨を補う。
-- [ ] README「セキュリティモデル」の読み取り専用保護の段落（398 行）: 限界 (1)〜(6) の後に (7) として別名マウントの位置づけ（同じ source・`:ro`、適用条件、除外条件）を足す。
-- [ ] README「変更後の確認」: `-b` が要る変更の例に本件を加える必要があるか確認し、不要なら触らない。
-- [ ] `.claude/CLAUDE.md` の `compose.yml` 不変条件に 1 項目: 「plugin 別名は launcher が選ぶ override（`compose.plugins-alias.yml`）でのみ付け、source は保護マウントと同一、`:ro` を外さない、`compose.yml` 本体に固定 destination で書かない（重複 destination と幽霊マウントを避けるため）。適用条件の正本は `plugins_alias_target()`」。`COMPOSE_OVERRIDE_ARGS` は build・run 両方へ渡す旨を `ASSET_HASH` の項に並べる。`entrypoint.sh` の項に「抽出境界マーカーを `tests/test_ipv6_entrypoint.py` が使う」を足す。
-- [ ] #102 の「目次に新節が無い」は本 PR の README 改訂で触る範囲に限り相乗りさせる（残りは #102 のまま）。
+- [x] README「アーキテクチャ」`entrypoint.sh` 項（301 行）: 「`~/.claude/plugins/` 内に残るホスト側のパスをコンテナ内パスへ自動修正し」を削除する。
+- [x] README「アーキテクチャ」`compose.yml` 項（299 行）: `compose.plugins-alias.yml` の役割を 1 文で足す（IPv6 の記述と同じ位置）。
+- [x] README「何ができて何ができないか」の 11 項目の行（359 行）: plugin は launcher がホストと同じ絶対パスにも `:ro` で重ねることで読み込まれる旨、対応範囲（`$HOME` 配下の綴り）と範囲外時の `WARNING`、旧版（`0a064c9` 〜本修正）では `cache-miss` になっていた旨を補う。
+- [x] README「セキュリティモデル」の読み取り専用保護の段落（398 行）: 限界 (1)〜(6) の後に (7) として別名マウントの位置づけ（同じ source・`:ro`、適用条件、除外条件）を足す。
+- [x] README「変更後の確認」: `-b` が要る変更の例に本件を加える必要があるか確認し、不要なら触らない。
+- [x] `.claude/CLAUDE.md` の `compose.yml` 不変条件に 1 項目: 「plugin 別名は launcher が選ぶ override（`compose.plugins-alias.yml`）でのみ付け、source は保護マウントと同一、`:ro` を外さない、`compose.yml` 本体に固定 destination で書かない（重複 destination と幽霊マウントを避けるため）。適用条件の正本は `plugins_alias_target()`」。`COMPOSE_OVERRIDE_ARGS` は build・run 両方へ渡す旨を `ASSET_HASH` の項に並べる。`entrypoint.sh` の項に「抽出境界マーカーを `tests/test_ipv6_entrypoint.py` が使う」を足す。
+- [x] #102 の「目次に新節が無い」は本 PR の README 改訂で触る範囲に限り相乗りさせる（残りは #102 のまま）。
 
 ## Task 5: ホスト側検証・レビュー・PR
 
@@ -121,11 +121,19 @@
 
 ## 検証記録
 
-（実装時に記入）
+コンテナ内（worktree `fix/plugins-host-path-alias-98`、2026-09-13、実装は Opus）:
+
+- `./lint.sh`: OK（`bash -n`・shellcheck・Python 構文。compose config は podman 不在で graceful skip）。
+- `bash test-build.sh --launcher-only`: PASS=171 FAIL=0（新規: 判定関数の単体 21 件、P1〜P7 の配線・`--check` 不変 14 件。IPv6 の Python テスト 27 件を含む）。実装前は新テスト 30 件と IPv6 entrypoint テストが失敗することを確認済み。
+- `./test-build.sh --validator-only`: PASS=82 FAIL=0。
+- `python3 -m unittest discover -s tests -p 'test_ipv6_*.py'`: 27 件 OK（抽出境界をマーカーへ変更後）。
+- not run（ホスト側、Task 5）: `podman compose config`（override 単独・3 ファイル同時・`:?` の provider 依存）、`-b` 実起動での `claude plugin list`・別名マウントの `ro`・親ディレクトリの所有、`run_config_ro_tests()` の override 込みプローブ（実 podman）、メタデータ綴りの受け入れ条件、旧イメージでの drift 警告。
+- not run: `.claude/hooks/lint-posttool.sh` の実発火。編集をすべて Bash 経由で行ったため PostToolUse hook は発火していない。加えて worktree には product 側で gitignore された `.claude/` が無く、`$CLAUDE_PROJECT_DIR/.claude/hooks/lint-posttool.sh` は worktree 内で解決しない（worktree 運用の既知の制約として別途記録）。shellcheck は lint.sh で手動実行した。
 
 ## レビュー記録
 
 - Codex 監査 1 巡目（2026-09-13、コンテナ内 `codex exec --sandbox read-only < /dev/null`、初実走で正常終了）: blocker 2・should-fix 5・nit 2。全件反映（IPv6 テストの抽出境界、destination の適用範囲と `guard_*` 化、override 込みの `:ro` プローブ、呼び出しごとの env 記録、`CLAUDE_CONFIG_HOST_BASE` の初期化分岐、衝突判定の正規化と関数抽出テスト、メタデータ綴りの受け入れ条件、文言 2 件）。
+- Codex 実装レビュー（同日、コンテナ内 `codex exec --sandbox read-only` で `git diff main...HEAD` を照合）: blocker 0・should-fix 1・nit 2。should-fix（規則 2 の一致判定が `$HOME` の検証より後に来ており、`$HOME` が不正または別値のとき計画と異なり範囲外になる）→ 規則 2 を `$HOME` 検証より先に移し、一致ケースを 3 件追加。nit 2 件も反映（単体検査を `bash -euo pipefail` で実行、`guard_plugins_alias()` 冒頭で `CLAUDE_PLUGINS_HOST_PATH` を unset し注入ケースを P6 に追加）。
 - Codex 確認限定巡（同日）: 反映済み 8、矛盾 1（base の正規化順序。`/home/u/.` を正常系とするテストと「`/./` を範囲外」が衝突）→ base を先に正規化してから候補を組み立てる順序に修正。
 
 ---

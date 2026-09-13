@@ -124,9 +124,9 @@
 
 Codex の実装レビュー（2026-09-13、host、`codex exec --sandbox read-only`、blocker 0・should-fix 2・nit 4）のうち、レビュアー（Fable）が直接直したのは nit 4 件（README の `/home/node` 例外、Skill 一覧の項目分離、件数、初期化位置の記述）。残り 2 件は実装者が次を逐語で当てる。
 
-- [ ] `lint.sh`（should-fix 2）: 3 ファイル同時 config の検査の直後に、`${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed を否定形で検査する。未設定（`env -u CLAUDE_PLUGINS_HOST_PATH`）と空文字（`CLAUDE_PLUGINS_HOST_PATH=`）の 2 通りで `podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1` を実行し、**成功したら** `ERROR: compose.plugins-alias.yml の \${CLAUDE_PLUGINS_HOST_PATH:?} が未設定（または空）を通しています（provider が :? を強制していません）` を出して `status=1`。ホスト（podman-compose 1.6.0）では両方 rc=1 なので lint OK のまま。CI の Docker Compose provider が通してしまう場合は CI が赤になり、そのときは override のコメントどおり launcher の無条件 export を唯一のガードとして扱い、この検査を `WARNING` へ格下げする。
-- [ ] `test-build.sh` P6（should-fix 1、レビュアー判定では nit 相当）: 否定 grep の前に記録ファイルの存在と `run` 到達を肯定確認する。判定式を `[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] && grep -q . "$3/compose-env" && grep -qx run "$3/compose-args" && ! grep -q "^CLAUDE_PLUGINS_HOST_PATH=" "$3/compose-env" && ! grep -qF compose.plugins-alias.yml "$3/compose-args"` にする（`compose-args` は 1 行 1 引数の記録なので `grep -qx run` で `run` 到達を確認できる。P2 の `compose-args.2` の照合と同じ形）。
-- [ ] `./lint.sh` と `bash test-build.sh --launcher-only` を通し、push して CI（docker-compose provider）の結果で Task 2 の `:?` 項目を閉じる。
+- [x] `lint.sh`（should-fix 2）: 3 ファイル同時 config の検査の直後に、`${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed を否定形で検査する。未設定（`env -u CLAUDE_PLUGINS_HOST_PATH`）と空文字（`CLAUDE_PLUGINS_HOST_PATH=`）の 2 通りで `podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1` を実行し、**成功したら** `ERROR: compose.plugins-alias.yml の \${CLAUDE_PLUGINS_HOST_PATH:?} が未設定（または空）を通しています（provider が :? を強制していません）` を出して `status=1`。ホスト（podman-compose 1.6.0）では両方 rc=1 なので lint OK のまま。CI の Docker Compose provider が通してしまう場合は CI が赤になり、そのときは override のコメントどおり launcher の無条件 export を唯一のガードとして扱い、この検査を `WARNING` へ格下げする。
+- [x] `test-build.sh` P6（should-fix 1、レビュアー判定では nit 相当）: 否定 grep の前に記録ファイルの存在と `run` 到達を肯定確認する。判定式を `[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] && grep -q . "$3/compose-env" && grep -qx run "$3/compose-args" && ! grep -q "^CLAUDE_PLUGINS_HOST_PATH=" "$3/compose-env" && ! grep -qF compose.plugins-alias.yml "$3/compose-args"` にする（`compose-args` は 1 行 1 引数の記録なので `grep -qx run` で `run` 到達を確認できる。P2 の `compose-args.2` の照合と同じ形）。
+- [x] `./lint.sh` と `bash test-build.sh --launcher-only` を通す（ホストでは両方 PASS。P6 は 2 件とも PASS）。push して CI（docker-compose provider）の結果で Task 2 の `:?` 項目を閉じる（未実施、下記次項）。
 
 ## 検証記録
 

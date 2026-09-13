@@ -1344,6 +1344,7 @@ CURL
   run_launcher CLAUDE_CONFIG_DIR="$root/outside" CLAUDE_PLUGINS_HOST_PATH=/workspace
   check "P6: HOME 配下でない基点は WARNING で別名を付けない（注入値も残さない、rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] \
+      && grep -q . "$3/compose-env" && grep -qx run "$3/compose-args" \
       && ! grep -q "^CLAUDE_PLUGINS_HOST_PATH=" "$3/compose-env" \
       && ! grep -qF compose.plugins-alias.yml "$3/compose-args"' _ "$rc" "$out" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"

@@ -83,6 +83,26 @@ elif command -v podman >/dev/null 2>&1; then
   else
     status=1
   fi
+  # ${CLAUDE_PLUGINS_HOST_PATH:?} の fail-closed 検査（claude-container#98）。launcher は
+  # 別名 override を選ぶとき必ず export するが、compose provider によっては :? が空文字を
+  # 通す可能性があるため、未設定・空文字の両方で config が失敗することを直接確認する。
+  # ホスト実測（podman-compose 1.6.0）ではどちらも rc=1。provider が通してしまう場合は
+  # override のコメントどおり launcher の無条件 export が唯一のガードになるため、この
+  # 検査は WARNING へ格下げすべき変更点として扱う（現時点では ERROR のまま fail-closed）。
+  # shellcheck disable=SC2016 # 意図的にリテラル表示（変数展開ではなく compose 変数名の文字列）
+  compose_var_literal='${CLAUDE_PLUGINS_HOST_PATH:?}'
+  if env -u CLAUDE_PLUGINS_HOST_PATH \
+      podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1; then
+    printf 'ERROR: compose.plugins-alias.yml の %s が未設定を通しています（provider が :? を強制していません）\n' \
+      "$compose_var_literal" >&2
+    status=1
+  fi
+  if CLAUDE_PLUGINS_HOST_PATH="" \
+      podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1; then
+    printf 'ERROR: compose.plugins-alias.yml の %s が空文字を通しています（provider が :? を強制していません）\n' \
+      "$compose_var_literal" >&2
+    status=1
+  fi
 else
   echo "WARNING: podman が見つからないため compose config 検証をスキップしました（コンテナ内開発時は想定内）。" >&2
 fi

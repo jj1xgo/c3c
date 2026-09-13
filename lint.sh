@@ -66,6 +66,21 @@ if [ "${LINT_SKIP_COMPOSE:-}" = "1" ]; then
 elif command -v podman >/dev/null 2>&1; then
   podman compose -f compose.yml config >/dev/null || status=1
   podman compose -f compose.yml -f compose.ipv6.yml config >/dev/null || status=1
+  # plugin 別名 override（claude-container#98）。destination は launcher が export するので
+  # lint ではダミー値を与える。3 ファイル同時のマージで別名 volume と IPv6 の network・
+  # sysctls・environment が消えないことも見る（override 同士の上書きの検出）。
+  CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias \
+    podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null || status=1
+  if merged=$(CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias \
+      podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml config); then
+    for needle in '/tmp/lint-plugins-alias' 'fe80::1' \
+        'net\.ipv6\.conf\.all\.disable_ipv6: "?0"?' 'CLAUDE_CONTAINER_IPV6: "?1"?'; do
+      grep -qE -- "$needle" <<<"$merged" \
+        || { echo "ERROR: compose の 3 ファイル同時 config に '$needle' がありません（override のマージで消えています）" >&2; status=1; }
+    done
+  else
+    status=1
+  fi
 else
   echo "WARNING: podman が見つからないため compose config 検証をスキップしました（コンテナ内開発時は想定内）。" >&2
 fi

@@ -9,6 +9,9 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# entrypoint.sh の起動前半（ファイアウォール適用と更新ループ）と後半（シークレット・
+# MCP ゲート・exec claude）を分ける抽出境界。entrypoint.sh 側に同じ文字列のコメント行がある。
+BOUNDARY = '# --- 起動前半ここまで（tests/test_ipv6_entrypoint.py の抽出境界） ---'
 
 
 class EntrypointTests(unittest.TestCase):
@@ -27,8 +30,14 @@ class EntrypointTests(unittest.TestCase):
 
     def test_refresh_loop_preserves_mode(self):
         # 起動前半をそのまま実行し、後半の認証ファイル処理は実行しない。
-        # sudo/sleep とログ出力先だけを fixture にする。
-        source = (ROOT / 'entrypoint.sh').read_text().split('\nfor f in ')[0]
+        # sudo/sleep とログ出力先だけを fixture にする。境界が消えたり後半が混入したら
+        # ここで検出する（黙って exec claude まで実行対象にしない）。
+        full = (ROOT / 'entrypoint.sh').read_text()
+        self.assertIn(BOUNDARY, full)
+        source = full.split(BOUNDARY)[0]
+        self.assertNotIn('\nexec claude', source)
+        self.assertNotIn('SECRETS_MOUNT=', source)
+        self.assertNotIn('MCP_CONFIG=', source)
         source = source.replace('/tmp/claude-firewall-refresh.log', '"$REFRESH_LOG"')
         for value, expected in [('0', []), ('1', ['--ipv6'])]:
             with self.subTest(value=value), tempfile.TemporaryDirectory() as td:

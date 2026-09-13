@@ -13,6 +13,13 @@ CHECK_MODE=0
 CHECK_HAS_ERROR=0
 CHECK_HAS_WARN=0
 
+# launcher が設定から選ぶ固定 Compose override の -f 引数列（compose.ipv6.yml・
+# compose.plugins-alias.yml）。guard_ipv6()・guard_plugins_alias() が += で積み、
+# dispatch の build と run の両方へ同じ配列を渡す（片方だけだと -b の build と直後の
+# run で構成が食い違う）。--check は check_one_project() の冒頭でプロジェクトごとに
+# リセットする。任意の podman 引数は受け付けない。
+COMPOSE_OVERRIDE_ARGS=()
+
 # fail-closed 終端の共通化。通常起動: 従来と同一（stderr へ全行出力し exit 1）。
 # --check: 出力して記録し return 1（呼び出し元はそこで打ち切り、ドライバは次のガードへ進む）。
 guard_fail() {
@@ -298,10 +305,9 @@ load_env_file() {
 
 # 設定から固定の Compose override を選ぶ。任意の podman 引数は受け付けない。
 guard_ipv6() {
-  COMPOSE_IPV6_ARGS=()
   case "${CLAUDE_CONTAINER_IPV6:-0}" in
     ''|0) ;;
-    1) COMPOSE_IPV6_ARGS=(-f "$RUN_DIR/compose.ipv6.yml") ;;
+    1) COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.ipv6.yml") ;;
     *) guard_fail "ERROR: CLAUDE_CONTAINER_IPV6 は0または1で指定してください。"; return 1 ;;
   esac
   if [[ "${CHECK_MODE:-0}" == 1 ]]; then
@@ -515,11 +521,17 @@ CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 # 呼び出し位置は全 guard と MCP 承認の後（起動を拒否する経路ではホストに何も書かない）。
 # --check（CHECK_MODE=1）では何も作らず報告だけ行う（--check は書き込みをしない契約）。
 prepare_claude_config_ro() {
-  local base cfg name path created=0
+  local base cfg name path created=0 host_base
+  # plugin 別名（guard_plugins_alias()、claude-container#98）用に、基点の「~ 展開済み・
+  # 実体未解決」の綴りを残す。plugin のメタデータはホストの Claude Code が見た綴りを
+  # 記録するため、下の pwd -P で実体解決した値では symlink 経由の HOME と食い違う。
+  # 基点の検証に失敗した経路では空のまま（別名の判定を行わない）。
+  CLAUDE_CONFIG_HOST_BASE=""
   if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
     base="${CLAUDE_CONFIG_DIR}"
     [[ "$base" == "~" ]] && base="$HOME"
     base="${base/#\~\//$HOME/}"
+    host_base="$base"
     # 相対パスは拒否する。compose は相対 bind source を compose.yml のディレクトリ基準で
     # 解決し、ランチャーの解釈と食い違って親マウントと 11 項目が別実体を指しうるため。
     if [[ "$base" != /* ]]; then
@@ -535,8 +547,10 @@ prepare_claude_config_ro() {
     # 展開・正規化済みの絶対パスを渡す。
     CLAUDE_CONFIG_DIR="$base"
     export CLAUDE_CONFIG_DIR
+    CLAUDE_CONFIG_HOST_BASE="$host_base"
   else
     base="$HOME"
+    CLAUDE_CONFIG_HOST_BASE="$HOME"
   fi
   cfg="$base/.claude"
 
@@ -617,6 +631,72 @@ prepare_claude_config_ro() {
       guard_warn "WARNING: $other が $cfg_real を含む（または含まれる）ため、別の rw マウント経由で書けます。~/.claude 設定の読み取り専用保護はこの経路には効きません。"
     fi
   done
+  return 0
+}
+
+# plugin 別名マウント（claude-container#98）の destination を判定する。副作用なし（ファイル
+# システムにも触れない。存在確認は prepare_claude_config_ro() が済ませている）。
+# 引数: $1=基点の綴り（~ 展開済み・実体未解決）、$2=$HOME の綴り。stdout に destination を
+# 出力し、終了コードで結果を返す:
+#   0 = 別名を付ける（stdout が destination）
+#   1 = 別名不要（コンテナ内の /home/node/.claude/plugins と一致し、既存の :ro マウントで足りる）
+#   2 = 対応範囲外（stdout は空。メッセージ化は呼び出し元）
+# 対応範囲は「基点がホストの $HOME と一致するかその配下」に限る。plugin のメタデータは
+# ホストの Claude Code が見た綴りを記録するので、実体パスや別基点の綴りで指定された
+# CLAUDE_CONFIG_DIR はメタデータと一致する保証が無い。またコンテナ内の固定マウント先
+# （/workspace・/data・/shared・/home/node）と一致または配下の destination は、対象
+# プロジェクトや他マウントの内容を隠すため付けない。
+# 関数定義は test-build.sh が `sed -n '/^plugins_alias_target()/,/^}/p'` で抽出して単独実行
+# する（開始行と終了行の形を変えない。他の関数を呼ばない）。
+plugins_alias_target() {
+  local base="$1" home="$2" candidate p v fixed
+  # 正規化: // を / に圧縮し、末尾の / と /. の連なりを除去する。正規化後も /./ や /..
+  # を含む、または絶対パスでなくなる（/ 単体・空）ものは範囲外。
+  for p in base home; do
+    v="${!p}"
+    while [[ "$v" == *//* ]]; do v="${v//\/\//\/}"; done
+    while [[ "$v" == */. || "$v" == */ ]]; do v="${v%/.}"; v="${v%/}"; done
+    [[ "$v" == /* ]] || return 2
+    [[ "$v" == */./* || "$v" == */../* || "$v" == */.. ]] && return 2
+    printf -v "$p" '%s' "$v"
+  done
+  candidate="$base/.claude/plugins"
+  [[ "$candidate" == /home/node/.claude/plugins ]] && return 1
+  [[ "$base" == "$home" || "$base" == "$home"/* ]] || return 2
+  for fixed in /workspace /data /shared /home/node; do
+    [[ "$candidate" == "$fixed" || "$candidate" == "$fixed"/* ]] && return 2
+  done
+  printf '%s\n' "$candidate"
+  return 0
+}
+
+# plugin 別名マウント（claude-container#98）。ホストで install した plugin のメタデータ
+# （~/.claude/plugins/known_marketplaces.json・installed_plugins.json）はホストの絶対パスを
+# 記録しており、コンテナ内（HOME=/home/node）では解決できない。かつて entrypoint.sh が
+# JSON をコンテナ内パスへ sed で書き換えていたが、plugins/ を :ro で保護した時点で書けなく
+# なった（書けてはいけない）。代わりに、同じ実体をホストと同じ絶対パスにも :ro で重ねる
+# 固定 override（compose.plugins-alias.yml）を選ぶ。起動可否には影響しない（範囲外なら
+# WARNING を出して plugin が読めないだけ）ため guard_fail は使わない。通常起動と --check の
+# 両方で prepare_claude_config_ro() の直後に呼ぶ（plugins/ が存在する前提。--check は
+# 変数操作だけで何も作らない）。
+guard_plugins_alias() {
+  local target rc=0
+  # 基点の検証に失敗した経路（CLAUDE_CONFIG_HOST_BASE が空）では判定しない。
+  [[ -n "${CLAUDE_CONFIG_HOST_BASE:-}" ]] || return 0
+  target=$(plugins_alias_target "$CLAUDE_CONFIG_HOST_BASE" "$HOME") || rc=$?
+  case "$rc" in
+    0)
+      export CLAUDE_PLUGINS_HOST_PATH="$target"
+      COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.plugins-alias.yml")
+      [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[OK]   plugin 別名: $target"
+      ;;
+    1)
+      [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[INFO] plugin 別名: 不要（コンテナ内パスと一致）"
+      ;;
+    *)
+      guard_warn "WARNING: ホストの plugins/ の綴り ${CLAUDE_CONFIG_HOST_BASE}/.claude/plugins はコンテナ内で別名にできません（基点が \$HOME の配下でないか、コンテナ内の固定マウント先 /workspace・/data・/shared・/home/node と重なります）。ホストで install した plugin はコンテナ内で読み込めません。"
+      ;;
+  esac
   return 0
 }
 
@@ -852,7 +932,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | compose.ipv6.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | compose.ipv6.yml | compose.plugins-alias.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -888,6 +968,7 @@ ASSET_HASH_TARGETS=(
   init-firewall.sh
   ipv6-firewall.py
   compose.ipv6.yml
+  compose.plugins-alias.yml
   git-askpass.sh
   Dockerfile.claude
   validate-build-input.sh
@@ -1052,6 +1133,7 @@ check_one_project() {
   CHECK_MODE=1
   CHECK_HAS_ERROR=0
   CHECK_HAS_WARN=0
+  COMPOSE_OVERRIDE_ARGS=()
   # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（claude-container#39）
   readonly CHECK_MODE
   local dir="$1" from_ledger="$2"
@@ -1094,6 +1176,7 @@ check_one_project() {
   guard_base_image || true
   guard_ipv6 || true
   prepare_claude_config_ro || true
+  guard_plugins_alias || true
 
   local file
   local vbi_path vbi_target vbi_kind vbi_rc
@@ -1305,6 +1388,7 @@ check_mcp_approval
 # 全 guard と MCP 承認を通った後にだけホスト ~/.claude へ placeholder を作る
 # （起動を拒否する経路ではホストに何も書かない）。
 prepare_claude_config_ro
+guard_plugins_alias
 
 # compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
 mkdir -p "$BUILD_CONTEXT_DIR"
@@ -1350,7 +1434,7 @@ if [[ $BUILD -eq 1 ]]; then
     CODEX_CACHEBUST="$(date +%s)"
   fi
   CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_IPV6_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
 fi
 
 # BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は
@@ -1365,4 +1449,4 @@ fi
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
-  podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_IPV6_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace
+  podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace

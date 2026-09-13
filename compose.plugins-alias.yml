@@ -1,0 +1,15 @@
+# launcher が guard_plugins_alias() の条件を満たすときだけ追加する固定設定（claude-container#98）。
+# plugin のメタデータ（~/.claude/plugins/known_marketplaces.json・installed_plugins.json）は
+# ホストの Claude Code が見た絶対パス（例 /home/<host user>/.claude/plugins/...）を記録して
+# いるため、同じ実体をその絶対パスにも :ro で見せる。JSON は書き換えない（plugins/ は
+# compose.yml の :ro 保護対象で、コンテナ内から書けない）。
+# source と :ro は compose.yml の保護マウント（plugins/ の行）と同一。destination は launcher の
+# plugins_alias_target() が算出して export する（ホストの $HOME 配下の綴りに限り、コンテナ内の
+# 固定マウント先 /workspace・/data・/shared・/home/node の配下は除外）。
+# ${VAR:?} は export 漏れを config 段階で失敗させるための保険で、compose provider によっては
+# 空文字として通す可能性がある。launcher はこの override を選ぶときに必ず export するので、
+# 保護の本体は launcher 側にある。
+services:
+  claude-auth-workspace:
+    volumes:
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/plugins:${CLAUDE_PLUGINS_HOST_PATH:?launcher が export する}:ro

@@ -49,6 +49,7 @@ usage() {
   --clean <ディレクトリ>
                         そのプロジェクト分のイメージ・ネットワーク・
                         ステージング済みビルドコンテキストを削除して終了する
+                        削除済みのディレクトリも、起動台帳に同じ絶対パスがあれば対象にできる
   --clean              （ディレクトリなし）全プロジェクト分のイメージ・
                         ネットワーク・ビルドコンテキストを削除して終了する
   --check [<ディレクトリ>...]
@@ -188,6 +189,35 @@ clean_project() {
   fi
   echo "dangling イメージを整理しています..."
   podman image prune -f
+}
+
+# 通常は cd + pwd の論理パスで識別する（symlink の綴りを保持する）。削除済みの
+# --clean だけは台帳の完全一致を条件に同じ識別を復元する。実体パスへ変換すると
+# symlink 経由で起動したプロジェクトとは別のハッシュになるため、realpath -ms を使う。
+# 相対引数は論理 cwd に連結してから正規化する（realpath に直接渡すと物理 cwd になる）。
+resolve_project_directory() {
+  local input="$1" candidate
+  if [[ -z "$input" ]]; then
+    guard_fail "ERROR: ディレクトリに空文字は指定できません。対象のパスを指定してください。"
+  fi
+  if WORKING_DIR=$(cd -- "$input" >/dev/null 2>&1 && pwd -L); then
+    return 0
+  fi
+  if [[ $CLEAN -eq 1 && ! -e "$input" ]]; then
+    candidate="$input"
+    [[ "$candidate" == /* ]] || candidate="$(pwd -L)/$candidate"
+    # 台帳は1行1パス。改行を grep の複数パターンとして解釈させない。
+    if [[ "$candidate" != *$'\n'* ]] && candidate=$(realpath -ms -- "$candidate" 2>/dev/null) \
+        && [[ -f "$CC_LEDGER_FILE" ]] && grep -xF -- "$candidate" "$CC_LEDGER_FILE" >/dev/null; then
+      WORKING_DIR="$candidate"
+      echo "INFO: 削除済みディレクトリを起動台帳のパスで清掃します: $WORKING_DIR"
+      return 0
+    fi
+    guard_fail "ERROR: ディレクトリが存在せず、起動台帳で対象を確認できません: $input" \
+      "起動時と同じパスを指定してください（台帳: $CC_LEDGER_FILE）。"
+  fi
+  guard_fail "ERROR: ディレクトリを開けません: $input" \
+    "パスが存在するディレクトリか、アクセス権があるかを確認してください。"
 }
 
 # ターゲットプロジェクトごとにイメージ名・ビルドコンテキストを分離するためのキー。
@@ -1356,9 +1386,8 @@ fi
 
 echo "RUN DIR: $RUN_DIR"
 
-WORKING_DIR=$( cd "$1" > /dev/null && pwd )
+resolve_project_directory "$1"
 readonly WORKING_DIR
-cd "$WORKING_DIR" || exit 1
 
 compute_project_name
 echo "PROJECT: $PROJECT_NAME"
@@ -1370,6 +1399,9 @@ if [[ $CLEAN -eq 1 ]]; then
   clean_project
   exit 0
 fi
+
+cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開けません: $WORKING_DIR" \
+  "パスが存在するディレクトリか、アクセス権があるかを確認してください。"
 
 record_project_in_ledger
 

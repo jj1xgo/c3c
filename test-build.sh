@@ -586,6 +586,7 @@ run_launcher_tests() {
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
   run_clean_ledger_launcher_tests
+  run_missing_directory_launcher_tests
   run_allowed_ports_tests
   check "許可ドメインの入力検証とDNS解決前の拒否" bash "${SCRIPT_DIR}/tests/test-allowed-domains.sh"
   check "DNS 応答の除外・継続・エラー処理" bash "${SCRIPT_DIR}/tests/test-refresh-domains.sh"
@@ -712,6 +713,93 @@ SHIM
     printf '%s\n' "$out" >> "$LOG_FILE"
     rm -f "$bin/$shim_command"
   done
+  launcher_sandbox_cleanup
+}
+
+# 存在しない引数で素の cd エラーを出さず、削除済みプロジェクトは台帳の同じ識別で清掃する（#54）。
+# shellcheck disable=SC2016
+run_missing_directory_launcher_tests() {
+  local root bin home proj out rc before_ctx missing input kind launched_name ledger original_proj
+  launcher_sandbox_init
+  original_proj="$proj"
+  ledger="$home/.local/state/claude-container/projects"
+  log "## 存在しない作業ディレクトリと削除後の清掃（#54）"
+  # 削除コマンドの対象を記録する。既存のダミーは compose 側の配線を引き続き検査する。
+  mv "$bin/podman" "$bin/base-podman"
+  cat > "$bin/podman" <<'SHIM'
+#!/bin/bash
+printf '%s\n' "$@" >> "$HOME/podman-args"
+exec "$(dirname "$0")/base-podman" "$@"
+SHIM
+  chmod +x "$bin/podman"
+  missing="$root/missing project"
+  printf '通常ファイル\n' > "$root/file"
+  for input in "$missing" "$root/file" ''; do
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" "$input" 2>&1) && rc=0 || rc=$?
+    check "通常起動は不正なディレクトリを ERROR で案内する: '$input'" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ] && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?
+    check "台帳にない不正なパスの clean は削除を始めない: '$input'" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ]' _ "$rc" "$out" "$home"
+  done
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check "$missing" 2>&1) && rc=0 || rc=$?
+  check "単一引数の check は既存の FAIL 表示を維持して書き込まない" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"[FAIL]"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ] && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
+
+  for kind in absolute relative symlink logical_cwd logical_parent; do
+    mkdir -p "$root/parent/$kind project"
+    proj="$root/parent/$kind project"
+    if [[ "$kind" == symlink || "$kind" == logical_cwd ]]; then
+      ln -s "$root/parent" "$root/$kind-link"
+      proj="$root/$kind-link/$kind project"
+    fi
+    if [[ "$kind" == logical_parent ]]; then
+      # link の実体を別階層に置き、.. の論理解決と物理解決の結果を意図的に分ける。
+      mkdir -p "$root/nested/deep"
+      ln -s "$root/nested/deep" "$root/parent-link"
+      launcher_sandbox_reset_records
+      out=$(cd "$root/parent-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
+        "${SCRIPT_DIR}/claude-container" "../parent/$kind project" 2>&1) && rc=0 || rc=$?
+    else
+      run_launcher
+    fi
+    launched_name=$(sed -n 's/^PROJECT: //p' <<<"$out")
+    check "$kind: 起動時の識別と台帳を記録する" \
+      bash -c '[ "$1" = 0 ] && [ -n "$2" ] && grep -qxF -- "$3" "$4"' _ "$rc" "$launched_name" "$proj" "$ledger"
+    printf '%s\n' "$root/other-project" >> "$ledger"
+    mkdir -p "$home/.local/state/claude-container/mcp-approvals"
+    printf '承認記録\n' > "$home/.local/state/claude-container/mcp-approvals/$launched_name"
+    printf '保護する別プロジェクト\n' > "$home/.local/state/claude-container/mcp-approvals/other"
+    printf 'ビルドの残骸\n' > "${SCRIPT_DIR}/.build-context/$launched_name/seed"
+    rmdir "$root/parent/$kind project"
+    [[ "$kind" != absolute && "$kind" != symlink ]] || rmdir "$root/parent"
+    rm -f "$home/podman-args"
+    # 別の綴りや改行による複数パターン一致から、記録済みの対象を誤って清掃しない。
+    input="$root/unrecorded"$'\n'"$root/other-project"
+    [[ "$kind" != symlink ]] || input="$root/parent/$kind project"
+    cp "$ledger" "$root/ledger-before-reject"
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?
+    check "$kind: 台帳と異なる綴りや改行入り引数は削除前に拒否する" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-reject"
+    input="$proj"
+    [[ "$kind" == relative ]] && input="./parent/../parent/$kind project/"
+    if [[ "$kind" == logical_cwd ]]; then
+      out=$(cd "$root/logical_cwd-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
+        "${SCRIPT_DIR}/claude-container" --clean "./$kind project/" 2>&1) && rc=0 || rc=$?
+    elif [[ "$kind" == logical_parent ]]; then
+      out=$(cd "$root/parent-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
+        "${SCRIPT_DIR}/claude-container" --clean "../parent/$kind project" 2>&1) && rc=0 || rc=$?
+    else
+      out=$(cd "$root" && env -i HOME="$home" PATH="$bin:$PATH" \
+        "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?
+    fi
+    check "$kind: 削除後も起動時と同じイメージ・ネットワークを清掃する" \
+      bash -c '[ "$1" = 0 ] && grep -qxF "localhost/${2}_claude-auth-workspace" "$3/podman-args" && grep -qxF "${2}_default" "$3/podman-args"' _ "$rc" "$launched_name" "$home"
+    check "$kind: 対象の台帳・ビルド・承認だけを除去する" \
+      bash -c '! grep -qxF -- "$1" "$2" && grep -qxF -- "$3/other-project" "$2" && [ "$(stat -c %a "$2")" = 600 ] && [ ! -e "$4/.build-context/$5" ] && [ ! -e "$6/.local/state/claude-container/mcp-approvals/$5" ] && [ -f "$6/.local/state/claude-container/mcp-approvals/other" ]' _ "$proj" "$ledger" "$root" "$SCRIPT_DIR" "$launched_name" "$home"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+  proj="$original_proj"
   launcher_sandbox_cleanup
 }
 

@@ -799,6 +799,16 @@ SHIM
       bash -c '! grep -qxF -- "$1" "$2" && grep -qxF -- "$3/other-project" "$2" && [ "$(stat -c %a "$2")" = 600 ] && [ ! -e "$4/.build-context/$5" ] && [ ! -e "$6/.local/state/claude-container/mcp-approvals/$5" ] && [ -f "$6/.local/state/claude-container/mcp-approvals/other" ]' _ "$proj" "$ledger" "$root" "$SCRIPT_DIR" "$launched_name" "$home"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
+  # cwd の末尾改行をコマンド置換が落とすと、台帳の改行なしの別エントリに一致して誤対象を清掃する（#108）。
+  mkdir -p "$root/nl"$'\n'
+  printf '%s\n' "$root/nl/victim" >> "$ledger"
+  cp "$ledger" "$root/ledger-before-nl"
+  rm -f "$home/podman-args"
+  out=$(cd "$root/nl"$'\n' && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
+    "${SCRIPT_DIR}/claude-container" --clean victim 2>&1) && rc=0 || rc=$?
+  check "cwd 末尾の改行を落として台帳の別エントリを清掃しない" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nl"
+  printf '%s\n' "$out" >> "$LOG_FILE"
   proj="$original_proj"
   launcher_sandbox_cleanup
 }

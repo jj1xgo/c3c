@@ -195,6 +195,7 @@ clean_project() {
 # --clean だけは台帳の完全一致を条件に同じ識別を復元する。実体パスへ変換すると
 # symlink 経由で起動したプロジェクトとは別のハッシュになるため、realpath -ms を使う。
 # 相対引数は論理 cwd に連結してから正規化する（realpath に直接渡すと物理 cwd になる）。
+# 連結には $(pwd -L) でなく $PWD を使う — コマンド置換は末尾の改行を落とし、改行拒否をすり抜ける（#108）。
 resolve_project_directory() {
   local input="$1" candidate
   if [[ -z "$input" ]]; then
@@ -205,7 +206,7 @@ resolve_project_directory() {
   fi
   if [[ $CLEAN -eq 1 && ! -e "$input" ]]; then
     candidate="$input"
-    [[ "$candidate" == /* ]] || candidate="$(pwd -L)/$candidate"
+    [[ "$candidate" == /* ]] || candidate="$PWD/$candidate"
     # 台帳は1行1パス。改行を grep の複数パターンとして解釈させない。
     if [[ "$candidate" != *$'\n'* ]] && candidate=$(realpath -ms -- "$candidate" 2>/dev/null) \
         && [[ -f "$CC_LEDGER_FILE" ]] && grep -xF -- "$candidate" "$CC_LEDGER_FILE" >/dev/null; then
@@ -1182,7 +1183,7 @@ check_one_project() {
   if ! WORKING_DIR=$(cd "$dir" 2>/dev/null && pwd); then
     echo "[FAIL] ディレクトリが存在しません: $dir"
     if [[ "$from_ledger" -eq 1 ]]; then
-      echo "  (起動台帳に記録がありますが実体が見つかりません。不要なら $CC_LEDGER_FILE を手動編集してください)"
+      echo "  (起動台帳に記録がありますが実体が見つかりません。不要なら --clean にこの絶対パスを指定すると台帳ごと清掃できます: $dir)"
     fi
     return 20
   fi

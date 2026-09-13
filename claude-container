@@ -1400,7 +1400,8 @@ if [[ $CLEAN -eq 1 ]]; then
   exit 0
 fi
 
-cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開けません: $WORKING_DIR"
+cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開けません: $WORKING_DIR" \
+  "パスが存在するディレクトリか、アクセス権があるかを確認してください。"
 
 record_project_in_ledger
 

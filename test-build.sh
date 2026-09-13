@@ -746,14 +746,23 @@ SHIM
   check "単一引数の check は既存の FAIL 表示を維持して書き込まない" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"[FAIL]"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ] && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
 
-  for kind in absolute relative symlink logical_cwd; do
+  for kind in absolute relative symlink logical_cwd logical_parent; do
     mkdir -p "$root/parent/$kind project"
     proj="$root/parent/$kind project"
     if [[ "$kind" == symlink || "$kind" == logical_cwd ]]; then
       ln -s "$root/parent" "$root/$kind-link"
       proj="$root/$kind-link/$kind project"
     fi
-    run_launcher
+    if [[ "$kind" == logical_parent ]]; then
+      # link の実体を別階層に置き、.. の論理解決と物理解決の結果を意図的に分ける。
+      mkdir -p "$root/nested/deep"
+      ln -s "$root/nested/deep" "$root/parent-link"
+      launcher_sandbox_reset_records
+      out=$(cd "$root/parent-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
+        "${SCRIPT_DIR}/claude-container" "../parent/$kind project" 2>&1) && rc=0 || rc=$?
+    else
+      run_launcher
+    fi
     launched_name=$(sed -n 's/^PROJECT: //p' <<<"$out")
     check "$kind: 起動時の識別と台帳を記録する" \
       bash -c '[ "$1" = 0 ] && [ -n "$2" ] && grep -qxF -- "$3" "$4"' _ "$rc" "$launched_name" "$proj" "$ledger"
@@ -777,6 +786,9 @@ SHIM
     if [[ "$kind" == logical_cwd ]]; then
       out=$(cd "$root/logical_cwd-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
         "${SCRIPT_DIR}/claude-container" --clean "./$kind project/" 2>&1) && rc=0 || rc=$?
+    elif [[ "$kind" == logical_parent ]]; then
+      out=$(cd "$root/parent-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
+        "${SCRIPT_DIR}/claude-container" --clean "../parent/$kind project" 2>&1) && rc=0 || rc=$?
     else
       out=$(cd "$root" && env -i HOME="$home" PATH="$bin:$PATH" \
         "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?

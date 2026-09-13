@@ -55,7 +55,7 @@ RUN set -e; \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       curl git jq fzf unzip procps tzdata \
-      iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils && \
+      iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
@@ -214,6 +214,10 @@ RUN chmod 644 /etc/claude-container/github-meta.json && \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 
+# IPv6 の正規化とルール管理。プロジェクトのパッケージ指定とは独立した境界アセット。
+COPY ipv6-firewall.py /usr/local/bin/ipv6-firewall.py
+RUN chmod 755 /usr/local/bin/ipv6-firewall.py
+
 WORKDIR /workspace
 USER node
 
@@ -243,6 +247,8 @@ ENV PATH=/home/node/.local/bin:$PATH
 # （CACHEBUST 以降は `-b` 実行のたびに既に破棄されている）。
 ARG ASSET_HASH=unknown
 LABEL claude-container.asset-hash="${ASSET_HASH}"
+# 旧 entrypoint が IPv6 モードを無視して起動するのを launcher で防ぐ。
+LABEL claude-container.ipv6-support="1"
 
 # base-image.txt の現在の内容とは独立に、このビルドに実際に焼き込まれたベース
 # イメージの値を記録する。compute_asset_hash() はファイル内容しかハッシュしない

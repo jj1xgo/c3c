@@ -1,10 +1,16 @@
 #!/bin/bash
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
 # 無効化する場合は利用側プロジェクトの .claude-container.d/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
+firewall_args=()
+case "${CLAUDE_CONTAINER_IPV6:-0}" in
+  ''|0) ;;
+  1) firewall_args+=(--ipv6) ;;
+  *) echo "ERROR: CLAUDE_CONTAINER_IPV6 は0または1で指定してください。起動を中止します" >&2; exit 1 ;;
+esac
 if [ "${CLAUDE_CONTAINER_NO_FIREWALL:-}" = "1" ]; then
   echo "WARNING: エグレスファイアウォールは無効です（CLAUDE_CONTAINER_NO_FIREWALL=1）。コンテナのネットワークは無制限です" >&2
 else
-  if ! sudo /usr/local/bin/init-firewall.sh; then
+  if ! sudo /usr/local/bin/init-firewall.sh "${firewall_args[@]}"; then
     echo "ERROR: ファイアウォールの設定に失敗しました。起動を中止します（無効化するには CLAUDE_CONTAINER_NO_FIREWALL=1）" >&2
     exit 1
   fi
@@ -23,7 +29,7 @@ else
   (
     while true; do
       sleep 15
-      sudo /usr/local/bin/init-firewall.sh --refresh-domains
+      sudo /usr/local/bin/init-firewall.sh --refresh-domains "${firewall_args[@]}"
     done
   ) >>/tmp/claude-firewall-refresh.log 2>&1 &
 fi

@@ -465,7 +465,9 @@ launcher_sandbox_init() {
 #!/bin/bash
 case "\$1 \$2" in
   "image exists") exit 0 ;;
-  "image inspect") exit 0 ;;
+  "image inspect")
+    if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
+    exit 0 ;;
 esac
 [[ "\$1" == "compose" ]] && { env > "$root/compose-env"; printf '%s\n' "\$@" >> "$root/compose-args"; }
 exit 0
@@ -520,6 +522,8 @@ launcher_sandbox_cleanup() {
 run_launcher_tests() {
   log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
+  run_ipv6_launcher_tests
+  check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
@@ -870,7 +874,7 @@ DUMMY
     bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'CODEX_DIR' && [ ! -e '$root/compose-env' ]" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # E3: 許可キー 8 件が全て compose へ届く（許可リストからどれか 1 つ落ちたら赤になる対照）。
+  # E3: 許可キー 9 件が全て compose へ届く（許可リストからどれか 1 つ落ちたら赤になる対照）。
   # 3 件だけを見ていると、マウント境界を決める CLAUDE_CONFIG_DIR・EXTRA_MOUNT・SHARED_MOUNT・
   # SECRETS_DIR が配列から消えても緑のままになる（レビュー指摘に基づく拡張）。
   : > "$root/gitconfig"
@@ -885,6 +889,7 @@ DUMMY
   {
     printf 'TZ=Asia/Tokyo\n'
     printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n'
+    printf 'CLAUDE_CONTAINER_IPV6=1\n'
     printf 'CLAUDE_CONFIG_DIR=%s\n' "$e_cfg"
     printf 'EXTRA_MOUNT=%s\n' "$e_extra"
     printf 'SHARED_MOUNT=%s\n' "$e_shared"
@@ -893,10 +898,11 @@ DUMMY
     printf 'CODEX_DIR=%s\n' "$e_codex"
   } > "$envf"
   run_launcher
-  check "E3: 許可キー 8 件が全て compose へ届く（rc=$rc）" \
+  check "E3: 許可キー 9 件が全て compose へ届く（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] \
       && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' \
       && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env' \
+      && grep -qxF 'CLAUDE_CONTAINER_IPV6=1' '$root/compose-env' \
       && grep -qxF 'CLAUDE_CONFIG_DIR=$e_cfg' '$root/compose-env' \
       && grep -qxF 'EXTRA_MOUNT=$e_extra' '$root/compose-env' \
       && grep -qxF 'SHARED_MOUNT=$e_shared' '$root/compose-env' \
@@ -934,7 +940,7 @@ DUMMY
   # 表に載っているのに無視されるキー（利用者の設定が黙って消える）か、無検証で通るキーが出る。
   check "E7: ENV_FILE_ALLOWED_KEYS と README「環境変数」節の表が一致する" \
     bash -c "diff <(awk '/^ENV_FILE_ALLOWED_KEYS=\(/{f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,\"\");print}' '${SCRIPT_DIR}/claude-container' | sort) \
-                  <(awk '/^## 環境変数/{f=1;next} f&&/^## /{exit} f' '${SCRIPT_DIR}/README.md' | grep -oE '^\| \`[A-Z_]+\`' | tr -d '| \`' | sort)"
+                  <(awk '/^## 環境変数/{f=1;next} f&&/^## /{exit} f' '${SCRIPT_DIR}/README.md' | grep -oE '^\| \`[A-Z0-9_]+\`' | tr -d '| \`' | sort)"
 
   launcher_sandbox_cleanup
 }
@@ -1009,13 +1015,60 @@ run_base_image_launcher_tests() {
   launcher_sandbox_cleanup
 }
 
+
+# IPv6 設定の誤受理と、build/run の片方だけ mode が変わる回帰を検出する。
+# shellcheck disable=SC2016 # bash -c の位置引数を子シェル側で展開する。
+run_ipv6_launcher_tests() {
+  local root bin home proj out rc before_ctx value
+  launcher_sandbox_init
+  mkdir -p "$proj/.claude-container.d"
+  for value in '' 0 1; do
+    printf 'CLAUDE_CONTAINER_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    run_launcher
+    if [[ "$value" == 1 ]]; then
+      check "IPv6=1 は固定 override を run に渡す" \
+        bash -c '[ "$1" -eq 0 ] && grep -qxF "$2/compose.ipv6.yml" "$3/compose-args"' _ "$rc" "$SCRIPT_DIR" "$root"
+    else
+      check "IPv6=$value は既定の Compose を維持" \
+        bash -c '[ "$1" -eq 0 ] && ! grep -qF compose.ipv6.yml "$2/compose-args"' _ "$rc" "$root"
+    fi
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+  for value in 2 true '1 ' '1;echo unsafe'; do
+    printf 'CLAUDE_CONTAINER_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    run_launcher
+    check "不正な IPv6=$value で起動を止める" \
+      bash -c '[ "$1" -ne 0 ] && [ ! -f "$2/compose-args" ] && [[ "$3" == *ERROR:* ]]' _ "$rc" "$root" "$out"
+    run_launcher_check
+    check "不正な IPv6=$value を --check も拒否する" [ "$rc" -ne 0 ]
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+  printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  run_launcher TEST_IPV6_SUPPORT=
+  check "IPv6 未対応の旧イメージでは起動前に -b を案内して拒否" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
+  run_launcher_check TEST_IPV6_SUPPORT=
+  check "IPv6 未対応の旧イメージを --check も拒否" [ "$rc" -ne 0 ]
+  cat > "$bin/curl" <<'CURL'
+#!/bin/sh
+printf '%s\n' '{"web":[],"api":[],"git":[]}'
+CURL
+  chmod +x "$bin/curl"
+  rm -f "$root/compose-args"
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "IPv6=1 の build と run は同じ override を使う" \
+    bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  launcher_sandbox_cleanup
+}
+
 # prepare_claude_config_ro() の検証（PR #47）。
 run_config_ro_launcher_tests() {
   local root bin home proj out rc d f before_ctx
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1176,6 +1229,7 @@ stage_common_context() {
   local dest="$1"
   cp "${SCRIPT_DIR}/entrypoint.sh" "$dest/entrypoint.sh"
   cp "${SCRIPT_DIR}/init-firewall.sh" "$dest/init-firewall.sh"
+  cp "${SCRIPT_DIR}/ipv6-firewall.py" "$dest/ipv6-firewall.py"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
@@ -1218,6 +1272,7 @@ podman images "$IMAGE" --format \
 log ""
 
 log "## Claude Code ツール"
+check "IPv6 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/ipv6-firewall.py --help
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version

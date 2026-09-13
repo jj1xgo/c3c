@@ -65,9 +65,17 @@ if [ "${LINT_SKIP_COMPOSE:-}" = "1" ]; then
   echo "WARNING: LINT_SKIP_COMPOSE=1 のため compose config 検証をスキップしました。" >&2
 elif command -v podman >/dev/null 2>&1; then
   podman compose -f compose.yml config >/dev/null || status=1
+  podman compose -f compose.yml -f compose.ipv6.yml config >/dev/null || status=1
 else
   echo "WARNING: podman が見つからないため compose config 検証をスキップしました（コンテナ内開発時は想定内）。" >&2
 fi
+
+# bytecode を生成せず Python の構文を確認する。
+python3 - <<'PYTHON' || status=1
+from pathlib import Path
+for path in [Path('ipv6-firewall.py'), *Path('tests').glob('test_ipv6_*.py')]:
+    compile(path.read_text(), str(path), 'exec')
+PYTHON
 
 if [ "$status" -eq 0 ]; then
   echo "lint OK"

@@ -49,7 +49,7 @@
   - `CLAUDE_CONFIG_HOST_BASE` が空（基点検証で失敗）なら何もしない（`--check` で不正な基点に対し成功風の INFO を出さない）。
   - `plugins_alias_target "$CLAUDE_CONFIG_HOST_BASE" "$HOME"` の結果で: 0 → `export CLAUDE_PLUGINS_HOST_PATH=<候補>`、`COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.plugins-alias.yml")`、`--check` では `[OK]   plugin 別名: <候補>`。1 → `--check` で `[INFO] plugin 別名: 不要（コンテナ内パスと一致）`。2 → `guard_warn "WARNING: ホストの plugins/ の綴り <候補> はコンテナ内で別名にできません（理由）。ホストで install した plugin はコンテナ内で読み込めません"`。
   - 呼び出し位置は両経路とも `prepare_claude_config_ro` の直後。`plugins/` は 11 項目準備で必ず存在するので、別名の source が無いことによるホスト側残骸は起きない。`--check` は固定ファイル参照と変数操作だけで何も作らない（`snapshot_check_targets` で担保）。
-- **`COMPOSE_IPV6_ARGS` → `COMPOSE_OVERRIDE_ARGS`**: `guard_ipv6()` と `guard_plugins_alias()` は通常起動の dispatch と `check_one_project()` の両経路から呼ばれる。初期化は関数定義群の後・dispatch 分岐の前のトップレベルで 1 回、`check_one_project()` 冒頭（複数プロジェクトをループ）でもリセット。両関数は `+=`。build と run の両 `podman compose` 行で同じ配列を渡す（`ASSET_HASH` と同じ理由）。
+- **`COMPOSE_IPV6_ARGS` → `COMPOSE_OVERRIDE_ARGS`**: `guard_ipv6()` と `guard_plugins_alias()` は通常起動の dispatch と `check_one_project()` の両経路から呼ばれる。初期化はスクリプト冒頭のトップレベル（`CHECK_*` の直後）で 1 回、`check_one_project()` 冒頭（複数プロジェクトをループ）でもリセット。両関数は `+=`。build と run の両 `podman compose` 行で同じ配列を渡す（`ASSET_HASH` と同じ理由）。
 - `CLAUDE_PLUGINS_HOST_PATH` は launcher 内部で算出する値であり、`.claude-container.d/env` の許可リスト（`ENV_FILE_ALLOWED_KEYS`）にも README「環境変数」表にも載せない（E7 は不変）。基点は `guard_env_boundary_keys()` が既に一覧表示する `CLAUDE_CONFIG_DIR` に従う。
 - `compose.plugins-alias.yml` を `resolve_asset_source()` の fixed 群と `ASSET_HASH_TARGETS` に登録する（ドリフト検知）。staging はしない（compose は `RUN_DIR` から直接読む。`compose.ipv6.yml` と同じ）。
 - **entrypoint.sh**: 37〜41 行の `sed` ループを削除する。`tests/test_ipv6_entrypoint.py` の `test_refresh_loop_preserves_mode` は `split('\nfor f in ')` でこのループを起動前半の抽出境界に使っているため、削除すると後半（シークレット読み込み・MCP ゲート・`exec claude`）まで実行対象になる。`entrypoint.sh` の同じ位置に明示のマーカーコメント（例: `# --- 起動前半ここまで（tests/test_ipv6_entrypoint.py の抽出境界） ---`）を置き、テストの区切りをそのマーカーに変える。境界アセットの変更なので利用側は `-b` が要り、`guard_asset_drift()` が警告する。
@@ -58,7 +58,7 @@
 
 ## 依存先の数え直し
 
-`grep -rn compose.ipv6.yml` の結果は 5 ファイル 8 参照: `lint.sh` 68、`claude-container` 304（選択）・855（fixed 群）・890（`ASSET_HASH_TARGETS`）、`test-build.sh` 1030〜1060（`compose-args` 検査）・1071（隔離コピー一覧）、README 101（IPv6 節、対象外）・299（`compose.yml` 項）。名前検索で拾えない依存先が 2 つある: `tests/test_ipv6_entrypoint.py`（`entrypoint.sh` の行構造に依存）と `run_config_ro_tests()`（`compose.yml` 単独で起動し、override 込みの構成は検証しない）。
+`grep -rn compose.ipv6.yml` の結果は 4 ファイル 8 参照: `lint.sh` 68、`claude-container` 304（選択）・855（fixed 群）・890（`ASSET_HASH_TARGETS`）、`test-build.sh` 1030〜1060（`compose-args` 検査）・1071（隔離コピー一覧）、README 101（IPv6 節、対象外）・299（`compose.yml` 項）。名前検索で拾えない依存先が 2 つある: `tests/test_ipv6_entrypoint.py`（`entrypoint.sh` の行構造に依存）と `run_config_ro_tests()`（`compose.yml` 単独で起動し、override 込みの構成は検証しない）。
 
 ## Task 1: テストを先に書く
 
@@ -86,7 +86,7 @@
 - [x] `resolve_asset_source()` fixed 群と `ASSET_HASH_TARGETS` に登録する。
 - [x] `lint.sh`: `CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias` を与えて `-f compose.yml -f compose.plugins-alias.yml` と、3 ファイル同時（`compose.ipv6.yml` も）の 2 通りを追加する。3 ファイル同時では `config` の出力に別名 volume と IPv6 の `network_mode`・sysctls・environment が残ることを `grep` で確認する（マージで消えないこと）。
 - [x] `./lint.sh`、`bash test-build.sh --launcher-only` が通る（コンテナ内では compose config は graceful skip になるので、config はホスト側で確認する — Task 5）。
-- [x] `${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed は compose provider 依存。ホストの `podman compose` バックエンドと CI の Docker Compose provider の両方で、変数未設定のまま 2 ファイル `config` を実行して非 0 で終わることを確認する。どちらかが空文字として通す場合は launcher の無条件 export が唯一のガードになるので、override のコメントにその旨を書く。
+- [ ] `${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed は compose provider 依存（podman-compose 側はホストで確認済み。Docker Compose 側は CI でしか走らないため、下記 Task 6 で lint に否定検査を足して CI に確認させるまで未完了）。ホストの `podman compose` バックエンドと CI の Docker Compose provider の両方で、変数未設定のまま 2 ファイル `config` を実行して非 0 で終わることを確認する。どちらかが空文字として通す場合は launcher の無条件 export が唯一のガードになるので、override のコメントにその旨を書く。
 
 ## Task 3: entrypoint.sh の死んだ sed を削除する
 
@@ -112,19 +112,28 @@
 
 - [x] ホストで `./lint.sh`（compose config 2 通りを含む）、`bash test-build.sh --launcher-only`。
 - [x] **受け入れ条件（メタデータの綴り）**: ホストの `~/.claude/plugins/known_marketplaces.json` の `installLocation` と `installed_plugins.json` の `installPath` の接頭辞が、launcher が export する `CLAUDE_PLUGINS_HOST_PATH` と一致する（`jq` で取り出して比較）。一致しなければ対応範囲の定義を見直す。
-- [x] `-b` で自己ホスト起動し、コンテナ内で: `mount | grep plugins` に別名 destination が `ro` で出る、`claude plugin list` が `enabled`、セッション内で plugin の skill（例: superpowers の brainstorming）が Skill 一覧に現れる、`/home/<host user>` が root 所有で作られ `touch` が失敗する。
+- [x] `-b` で自己ホスト起動し、コンテナ内で: `mount | grep plugins` に別名 destination が `ro` で出る、`claude plugin list` が `enabled`、`/home/<host user>` が root 所有で作られ `touch` が失敗する。
+- [ ] セッション内で plugin の skill（例: superpowers の brainstorming）が Skill 一覧に現れる（TUI の承認を要するため持ち主の実セッションで確認する。SessionStart の「You have superpowers」が出れば十分）。
 - [x] `run_config_ro_tests()` を override 込みの実構成でも走らせるよう拡張する（`CLAUDE_PLUGINS_HOST_PATH` を一時パスに設定し `-f compose.yml -f compose.plugins-alias.yml` で起動）。プローブは標準パス（11 項目）に加え別名パスでも作成・追記・削除・置換を試み、EROFS/EBUSY で失敗すること、ホスト側の内容が不変であること、ホスト側に実行ユーザー以外の所有エントリが無いことを確認する。`test-build.sh` 本体を通す。
 - [x] 旧イメージ（`-b` 前）で起動して `guard_asset_drift()` の警告が出ることを 1 回確認する。
 - [x] `git status` で利用側リポジトリとホスト `~/.claude` に残骸が無い。
 - [ ] 差分を commit し、PR 本文に実測結果・`not run`・レビュー全文を載せる。レビューは Fable と Codex（`codex exec --sandbox read-only`、background、`< /dev/null`）の二重。マージは持ち主が手で行う。
 - [ ] マージ後: 既定挙動の変更（plugin が読めるようになる）と `-b` 必須なので `release-tag` skill でタグ案（MINOR）を提示し、承認後に作成する。`--check` は `guard_asset_drift()` を呼ぶのでアセット差分の警告は出すが、別名マウントや plugin 読み込みの実動作は検証しない。タグ提案前の実機確認は「`--check` で drift 警告が出る」と Task 5 の実起動で行う。
 
+## Task 6: PR #103 レビュー反映（実装者の編集）
+
+Codex の実装レビュー（2026-09-13、host、`codex exec --sandbox read-only`、blocker 0・should-fix 2・nit 4）のうち、レビュアー（Fable）が直接直したのは nit 4 件（README の `/home/node` 例外、Skill 一覧の項目分離、件数、初期化位置の記述）。残り 2 件は実装者が次を逐語で当てる。
+
+- [ ] `lint.sh`（should-fix 2）: 3 ファイル同時 config の検査の直後に、`${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed を否定形で検査する。未設定（`env -u CLAUDE_PLUGINS_HOST_PATH`）と空文字（`CLAUDE_PLUGINS_HOST_PATH=`）の 2 通りで `podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null 2>&1` を実行し、**成功したら** `ERROR: compose.plugins-alias.yml の \${CLAUDE_PLUGINS_HOST_PATH:?} が未設定（または空）を通しています（provider が :? を強制していません）` を出して `status=1`。ホスト（podman-compose 1.6.0）では両方 rc=1 なので lint OK のまま。CI の Docker Compose provider が通してしまう場合は CI が赤になり、そのときは override のコメントどおり launcher の無条件 export を唯一のガードとして扱い、この検査を `WARNING` へ格下げする。
+- [ ] `test-build.sh` P6（should-fix 1、レビュアー判定では nit 相当）: 否定 grep の前に記録ファイルの存在と `run` 到達を肯定確認する。判定式を `[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] && grep -q . "$3/compose-env" && grep -qx run "$3/compose-args" && ! grep -q "^CLAUDE_PLUGINS_HOST_PATH=" "$3/compose-env" && ! grep -qF compose.plugins-alias.yml "$3/compose-args"` にする（`compose-args` は 1 行 1 引数の記録なので `grep -qx run` で `run` 到達を確認できる。P2 の `compose-args.2` の照合と同じ形）。
+- [ ] `./lint.sh` と `bash test-build.sh --launcher-only` を通し、push して CI（docker-compose provider）の結果で Task 2 の `:?` 項目を閉じる。
+
 ## 検証記録
 
 コンテナ内（worktree `fix/plugins-host-path-alias-98`、2026-09-13、実装は Opus）:
 
 - `./lint.sh`: OK（`bash -n`・shellcheck・Python 構文。compose config は podman 不在で graceful skip）。
-- `bash test-build.sh --launcher-only`: PASS=171 FAIL=0（新規: 判定関数の単体 21 件、P1〜P7 の配線・`--check` 不変 14 件。IPv6 の Python テスト 27 件を含む）。実装前は新テスト 30 件と IPv6 entrypoint テストが失敗することを確認済み。
+- `bash test-build.sh --launcher-only`: PASS=171 FAIL=0（新規: 判定関数の抽出 1 件と単体 21 件、P1〜P7 の配線・`--check` 不変 15 件の計 37 件。IPv6 の Python テスト 27 件を含む）。実装前は新テスト 30 件と IPv6 entrypoint テストが失敗することを確認済み。
 - `./test-build.sh --validator-only`: PASS=82 FAIL=0。
 - `python3 -m unittest discover -s tests -p 'test_ipv6_*.py'`: 27 件 OK（抽出境界をマーカーへ変更後）。
 - not run（ホスト側、Task 5）: `podman compose config`（override 単独・3 ファイル同時・`:?` の provider 依存）、`-b` 実起動での `claude plugin list`・別名マウントの `ro`・親ディレクトリの所有、`run_config_ro_tests()` の override 込みプローブ（実 podman）、メタデータ綴りの受け入れ条件、旧イメージでの drift 警告。

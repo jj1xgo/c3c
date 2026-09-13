@@ -378,6 +378,8 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 ## セキュリティモデル
 
+信頼できるリポジトリだけを扱う運用での評価と、実装未決定の強化候補は [Sandbox の今後の検討候補](docs/sandbox-considerations.md) に記録している。
+
 Claude は `--dangerously-skip-permissions` で起動するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界 — マウントされたワークスペースと `/data`・`/shared` への読み書きアクセスを持つ。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしないこと。`SHARED_MOUNT`（`/shared`）は同じホストパスを設定した全プロジェクトのコンテナが完全な rw アクセスを持つ共有領域のため、相互に信頼できるプロジェクト間でのみ設定すること。
 
 ネットワークは既定で `init-firewall.sh` によるエグレス許可リストで制限される。Claude Code に必要なエンドポイント（Anthropic API・GitHub 等）と `.claude-container.d/allowed-domains.txt` で指定したドメイン以外への外向き通信は遮断されるため、悪意ある pip パッケージやプロンプトインジェクションが認証情報（`~/.claude.json`）やソースコードを任意の外部ホストへ送信することを防ぐ。開放が必要な場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1` を書いて無効化できる（自己責任）。

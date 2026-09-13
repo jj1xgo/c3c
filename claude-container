@@ -247,7 +247,7 @@ record_project_in_ledger() {
 # 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
 #
 # 許可リスト（claude-container#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
-# 影響しないものと、コンテナへ渡す 2 キー（TZ・CLAUDE_CONTAINER_NO_FIREWALL）。一方 PATH・HOME・
+# 影響しないものと、コンテナのモードに使うキー（TZ・CLAUDE_CONTAINER_NO_FIREWALL・CLAUDE_CONTAINER_IPV6）。一方 PATH・HOME・
 # LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
 # ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
 # ことを実測）。拒否リストは列挙が閉じないので、許可リストで受け付けるキーを固定し、それ以外は
@@ -270,6 +270,7 @@ ENV_FILE_ALLOWED_KEYS=(
   SHARED_MOUNT
   TZ
   CLAUDE_CONTAINER_NO_FIREWALL
+  CLAUDE_CONTAINER_IPV6
   GITCONFIG_FILE
   SECRETS_DIR
   CODEX_DIR
@@ -293,6 +294,16 @@ load_env_file() {
   if [[ $_lef_ignored -eq 1 ]]; then
     guard_warn "  受け付けるキー: ${ENV_FILE_ALLOWED_KEYS[*]}（README「環境変数」節）。ホスト側で使う変数はシェル環境から渡してください。"
   fi
+}
+
+# 設定から固定の Compose override を選ぶ。任意の podman 引数は受け付けない。
+guard_ipv6() {
+  COMPOSE_IPV6_ARGS=()
+  case "${CLAUDE_CONTAINER_IPV6:-0}" in
+    ''|0) ;;
+    1) COMPOSE_IPV6_ARGS=(-f "$RUN_DIR/compose.ipv6.yml") ;;
+    *) guard_fail "ERROR: CLAUDE_CONTAINER_IPV6 は0または1で指定してください。"; return 1 ;;
+  esac
 }
 
 # ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
@@ -826,7 +837,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | compose.ipv6.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -860,6 +871,8 @@ resolve_asset_source() {
 ASSET_HASH_TARGETS=(
   entrypoint.sh
   init-firewall.sh
+  ipv6-firewall.py
+  compose.ipv6.yml
   git-askpass.sh
   Dockerfile.claude
   validate-build-input.sh
@@ -908,7 +921,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh git-askpass.sh validate-build-input.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -1064,6 +1077,7 @@ check_one_project() {
   guard_shared_mount || true
   guard_env_boundary_keys || true
   guard_base_image || true
+  guard_ipv6 || true
   prepare_claude_config_ro || true
 
   local file
@@ -1268,6 +1282,7 @@ guard_codex_dir
 guard_shared_mount
 guard_env_boundary_keys
 guard_base_image
+guard_ipv6
 guard_asset_drift
 
 check_mcp_approval
@@ -1320,7 +1335,7 @@ if [[ $BUILD -eq 1 ]]; then
     CODEX_CACHEBUST="$(date +%s)"
   fi
   CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_IPV6_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
 fi
 
 # BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は
@@ -1335,4 +1350,4 @@ fi
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
-  podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace
+  podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_IPV6_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace

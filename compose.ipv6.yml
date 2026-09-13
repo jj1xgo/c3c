@@ -1,0 +1,10 @@
+# launcher が CLAUDE_CONTAINER_IPV6=1 のときだけ追加する固定設定。
+# 単独 pasta に仮想IPv6ゲートウェイを渡し、共有bridgeの経路には依存しない。
+services:
+  claude-auth-workspace:
+    network_mode: "pasta:-g,fe80::1"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+      net.ipv6.conf.default.disable_ipv6: 0
+    environment:
+      CLAUDE_CONTAINER_IPV6: "1"

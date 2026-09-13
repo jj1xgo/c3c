@@ -55,7 +55,7 @@ RUN set -e; \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       curl git jq fzf unzip procps tzdata \
-      iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils && \
+      iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
@@ -213,6 +213,10 @@ RUN chmod 644 /etc/claude-container/github-meta.json && \
 # ディレクトリも、実行時に node ユーザーからは書き込めない（claude-container#40）。
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
+
+# IPv6 の正規化とルール管理。プロジェクトのパッケージ指定とは独立した境界アセット。
+COPY ipv6-firewall.py /usr/local/bin/ipv6-firewall.py
+RUN chmod 755 /usr/local/bin/ipv6-firewall.py
 
 WORKDIR /workspace
 USER node

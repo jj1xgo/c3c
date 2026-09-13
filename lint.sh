@@ -73,8 +73,10 @@ elif command -v podman >/dev/null 2>&1; then
     podman compose -f compose.yml -f compose.plugins-alias.yml config >/dev/null || status=1
   if merged=$(CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias \
       podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml config); then
+    # 値の引用符は provider 依存（podman-compose は '1'、docker compose は "1"）なので両方を許す。
+    q="['\"]?"
     for needle in '/tmp/lint-plugins-alias' 'fe80::1' \
-        'net\.ipv6\.conf\.all\.disable_ipv6: "?0"?' 'CLAUDE_CONTAINER_IPV6: "?1"?'; do
+        "net\.ipv6\.conf\.all\.disable_ipv6: ${q}0${q}" "CLAUDE_CONTAINER_IPV6: ${q}1${q}"; do
       grep -qE -- "$needle" <<<"$merged" \
         || { echo "ERROR: compose の 3 ファイル同時 config に '$needle' がありません（override のマージで消えています）" >&2; status=1; }
     done

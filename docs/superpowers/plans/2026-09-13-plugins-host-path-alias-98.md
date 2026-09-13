@@ -86,7 +86,7 @@
 - [x] `resolve_asset_source()` fixed 群と `ASSET_HASH_TARGETS` に登録する。
 - [x] `lint.sh`: `CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias` を与えて `-f compose.yml -f compose.plugins-alias.yml` と、3 ファイル同時（`compose.ipv6.yml` も）の 2 通りを追加する。3 ファイル同時では `config` の出力に別名 volume と IPv6 の `network_mode`・sysctls・environment が残ることを `grep` で確認する（マージで消えないこと）。
 - [x] `./lint.sh`、`bash test-build.sh --launcher-only` が通る（コンテナ内では compose config は graceful skip になるので、config はホスト側で確認する — Task 5）。
-- [ ] `${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed は compose provider 依存。ホストの `podman compose` バックエンドと CI の Docker Compose provider の両方で、変数未設定のまま 2 ファイル `config` を実行して非 0 で終わることを確認する。どちらかが空文字として通す場合は launcher の無条件 export が唯一のガードになるので、override のコメントにその旨を書く。
+- [x] `${CLAUDE_PLUGINS_HOST_PATH:?}` の fail-closed は compose provider 依存。ホストの `podman compose` バックエンドと CI の Docker Compose provider の両方で、変数未設定のまま 2 ファイル `config` を実行して非 0 で終わることを確認する。どちらかが空文字として通す場合は launcher の無条件 export が唯一のガードになるので、override のコメントにその旨を書く。
 
 ## Task 3: entrypoint.sh の死んだ sed を削除する
 
@@ -110,12 +110,12 @@
 
 ## Task 5: ホスト側検証・レビュー・PR
 
-- [ ] ホストで `./lint.sh`（compose config 2 通りを含む）、`bash test-build.sh --launcher-only`。
-- [ ] **受け入れ条件（メタデータの綴り）**: ホストの `~/.claude/plugins/known_marketplaces.json` の `installLocation` と `installed_plugins.json` の `installPath` の接頭辞が、launcher が export する `CLAUDE_PLUGINS_HOST_PATH` と一致する（`jq` で取り出して比較）。一致しなければ対応範囲の定義を見直す。
-- [ ] `-b` で自己ホスト起動し、コンテナ内で: `mount | grep plugins` に別名 destination が `ro` で出る、`claude plugin list` が `enabled`、セッション内で plugin の skill（例: superpowers の brainstorming）が Skill 一覧に現れる、`/home/<host user>` が root 所有で作られ `touch` が失敗する。
-- [ ] `run_config_ro_tests()` を override 込みの実構成でも走らせるよう拡張する（`CLAUDE_PLUGINS_HOST_PATH` を一時パスに設定し `-f compose.yml -f compose.plugins-alias.yml` で起動）。プローブは標準パス（11 項目）に加え別名パスでも作成・追記・削除・置換を試み、EROFS/EBUSY で失敗すること、ホスト側の内容が不変であること、ホスト側に実行ユーザー以外の所有エントリが無いことを確認する。`test-build.sh` 本体を通す。
-- [ ] 旧イメージ（`-b` 前）で起動して `guard_asset_drift()` の警告が出ることを 1 回確認する。
-- [ ] `git status` で利用側リポジトリとホスト `~/.claude` に残骸が無い。
+- [x] ホストで `./lint.sh`（compose config 2 通りを含む）、`bash test-build.sh --launcher-only`。
+- [x] **受け入れ条件（メタデータの綴り）**: ホストの `~/.claude/plugins/known_marketplaces.json` の `installLocation` と `installed_plugins.json` の `installPath` の接頭辞が、launcher が export する `CLAUDE_PLUGINS_HOST_PATH` と一致する（`jq` で取り出して比較）。一致しなければ対応範囲の定義を見直す。
+- [x] `-b` で自己ホスト起動し、コンテナ内で: `mount | grep plugins` に別名 destination が `ro` で出る、`claude plugin list` が `enabled`、セッション内で plugin の skill（例: superpowers の brainstorming）が Skill 一覧に現れる、`/home/<host user>` が root 所有で作られ `touch` が失敗する。
+- [x] `run_config_ro_tests()` を override 込みの実構成でも走らせるよう拡張する（`CLAUDE_PLUGINS_HOST_PATH` を一時パスに設定し `-f compose.yml -f compose.plugins-alias.yml` で起動）。プローブは標準パス（11 項目）に加え別名パスでも作成・追記・削除・置換を試み、EROFS/EBUSY で失敗すること、ホスト側の内容が不変であること、ホスト側に実行ユーザー以外の所有エントリが無いことを確認する。`test-build.sh` 本体を通す。
+- [x] 旧イメージ（`-b` 前）で起動して `guard_asset_drift()` の警告が出ることを 1 回確認する。
+- [x] `git status` で利用側リポジトリとホスト `~/.claude` に残骸が無い。
 - [ ] 差分を commit し、PR 本文に実測結果・`not run`・レビュー全文を載せる。レビューは Fable と Codex（`codex exec --sandbox read-only`、background、`< /dev/null`）の二重。マージは持ち主が手で行う。
 - [ ] マージ後: 既定挙動の変更（plugin が読めるようになる）と `-b` 必須なので `release-tag` skill でタグ案（MINOR）を提示し、承認後に作成する。`--check` は `guard_asset_drift()` を呼ぶのでアセット差分の警告は出すが、別名マウントや plugin 読み込みの実動作は検証しない。タグ提案前の実機確認は「`--check` で drift 警告が出る」と Task 5 の実起動で行う。
 
@@ -128,6 +128,17 @@
 - `./test-build.sh --validator-only`: PASS=82 FAIL=0。
 - `python3 -m unittest discover -s tests -p 'test_ipv6_*.py'`: 27 件 OK（抽出境界をマーカーへ変更後）。
 - not run（ホスト側、Task 5）: `podman compose config`（override 単独・3 ファイル同時・`:?` の provider 依存）、`-b` 実起動での `claude plugin list`・別名マウントの `ro`・親ディレクトリの所有、`run_config_ro_tests()` の override 込みプローブ（実 podman）、メタデータ綴りの受け入れ条件、旧イメージでの drift 警告。
+
+ホスト（同 worktree、2026-09-13、Fable。worktree の `.git` はコンテナ内で `/workspace/...` を指して作られていたため `git worktree repair` でホストのパスへ直した。コンテナ内でこの worktree を再開するときは向こうで再度 repair が要る）:
+
+- `./lint.sh`: 初回は NG。podman-compose 1.6.0 の `config` は environment の値をシングルクォート（`CLAUDE_CONTAINER_IPV6: '1'`）で出すため、`"?1"?` の正規表現が当たらなかった。引用符を `['"]?` に緩めて OK（docker compose の `"1"` も通る）。3 ファイル同時 config に別名 volume（`~/.claude/plugins:/tmp/lint-plugins-alias:ro`）・`pasta:-g,fe80::1`・sysctls・environment が全て残ることを生出力で確認。
+- `${CLAUDE_PLUGINS_HOST_PATH:?}`（podman-compose バックエンド）: 未設定（`env -u`）・空文字の両方で `config` が rc=1（`ValueError: required variable CLAUDE_PLUGINS_HOST_PATH is missing a value`）。CI の Docker Compose provider はホストに docker が無いため not run（CI に委ねる。空文字を通す実装なら launcher の無条件 export が唯一のガード）。
+- `bash test-build.sh --launcher-only`: PASS=171 FAIL=0。
+- `bash test-build.sh` 本体（実 podman、`--no-cache` ビルド込み）: PASS=283 FAIL=0。override 込みの `:ro` プローブ 3 件（11 項目へ書けず `projects/` へは書ける、別名パスから読めて書けず親にも書けない、ホスト側 `plugins/seed` 不変）を含む。
+- 受け入れ条件（メタデータの綴り）: `known_marketplaces.json` の `installLocation` と `installed_plugins.json` の `installPath` の接頭辞はともに `/home/<user>/.claude/plugins/`。worktree の launcher で `--check <main の checkout>` を実行すると `[OK]   plugin 別名: /home/<user>/.claude/plugins` で一致。同じ `--check` で main のアセットで焼かれた既存イメージに対し `WARNING: 境界アセット（...）がイメージのビルド後に変更されています` が出た（drift 検知）。実行前後で main の `.build-context/` は不変。
+- `-b` 実起動（対象は worktree 自身、`script` で疑似 TTY を与えて起動し `podman exec -u node` で観測）: `mount` に `/home/<user>/.claude/plugins type ext4 (ro,relatime)` と `/home/node/.claude/plugins ... (ro,relatime)` の 2 行。`/home/<user>` と `/home/<user>/.claude` は podman が作った root 所有 `drwxr-xr-t`、`touch /home/<user>/x` は Permission denied、`touch /home/<user>/.claude/plugins/x` は Read-only file system。`superpowers/6.3.0` の cache ディレクトリが別名パスで実在。`claude plugin list` は `superpowers@claude-plugins-official 6.3.0` が user scope・project scope とも `✔ enabled`（修正前は `cache-miss`）。TUI は Bypass Permissions の確認画面まで到達したのを確認して `podman stop`。
+- not run: セッション内の Skill 一覧に superpowers の skill が現れること（TUI の確認を通す必要があるため持ち主の実セッションで見る。SessionStart hook の「You have superpowers」が出れば十分）。
+- 残骸: worktree の `git status` は `lint.sh` の修正のみ（`.build-context/`・`.claude/test-results/` は ignore 済み）。ホスト `~/.claude/plugins/` に新規エントリなし。起動台帳に worktree の行が 1 行増えたのは正常動作。
 - not run: `.claude/hooks/lint-posttool.sh` の実発火。編集をすべて Bash 経由で行ったため PostToolUse hook は発火していない。加えて worktree には product 側で gitignore された `.claude/` が無く、`$CLAUDE_PROJECT_DIR/.claude/hooks/lint-posttool.sh` は worktree 内で解決しない（worktree 運用の既知の制約として別途記録）。shellcheck は lint.sh で手動実行した。
 
 ## レビュー記録

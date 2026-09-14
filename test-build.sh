@@ -3,9 +3,9 @@
 # 結果は .claude/test-results/YYYY-MM-DD_HHMMSS.log に保存される
 # --clean オプションでテスト用イメージと dangling イメージを削除
 
-IMAGE="localhost/claude-test"
+IMAGE="${TEST_IMAGE:-localhost/claude-test}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="${SCRIPT_DIR}/.claude/test-results"
+LOG_DIR="${TEST_LOG_DIR:-${SCRIPT_DIR}/.claude/test-results}"
 LOG_FILE="${LOG_DIR}/$(date +%Y-%m-%d_%H%M%S).log"
 PASS=0
 FAIL=0
@@ -471,7 +471,7 @@ exit $fail
 
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
-  local proj="claude-test-config-ro"
+  local proj="${TEST_COMPOSE_PROJECT:-claude-test-config-ro-${BASHPID}}"
   local svc_image="localhost/${proj}_claude-auth-workspace:latest"
   local root cfg d f
   root="$(mktemp -d)"
@@ -1651,7 +1651,7 @@ stage_common_context() {
   : > "$dest/allowed-ports.txt"
 
   local sibling
-  if curl -fsS https://api.github.com/meta 2>/dev/null | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 10 --max-time 60 --retry 2 https://api.github.com/meta | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
     return 0
   fi
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
@@ -1678,6 +1678,11 @@ fi
 rm -rf "$BUILD_STAGE_DIR"
 log ""
 
+# ビルド段階が失敗したら、同じタグに残る古いイメージで起動検査を続けない。
+if [[ "${1:-}" == "--build-only" && "$FAIL" != 0 ]]; then
+  finish_by_result
+fi
+
 log "## イメージサイズ"
 podman images "$IMAGE" --format \
   "  Repository: {{.Repository}}\n  Tag:        {{.Tag}}\n  Size:       {{.Size}}" \
@@ -1690,6 +1695,12 @@ check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version
 log ""
+
+# 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。
+# 全体実行の追加パッケージ・不正入力のビルド検査は、従来どおり引数なしで実行する。
+if [[ "${1:-}" == "--build-only" ]]; then
+  finish_by_result
+fi
 
 log "## .claude-container.d によるパッケージ上書き"
 OVERRIDE_IMAGE="localhost/claude-test-override"

@@ -580,6 +580,7 @@ run_launcher_tests() {
   log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
   run_plugins_alias_launcher_tests
+  run_instruction_mount_launcher_tests
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   run_base_image_launcher_tests
@@ -1224,7 +1225,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1479,6 +1480,14 @@ CURL
 
   launcher_sandbox_cleanup
 }
+
+# shellcheck source=tests/test-instruction-mounts.sh
+source "${SCRIPT_DIR}/tests/test-instruction-mounts.sh"
+
+if [[ "${1:-}" == "--instruction-mounts-only" ]]; then
+  run_instruction_mount_launcher_tests
+  finish_by_result
+fi
 
 if [[ "${1:-}" == "--validator-only" ]]; then
   run_validator_layer1_and_contract

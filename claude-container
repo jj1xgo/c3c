@@ -306,6 +306,8 @@ ENV_FILE_ALLOWED_KEYS=(
   CLAUDE_CONFIG_DIR
   EXTRA_MOUNT
   SHARED_MOUNT
+  SHARED_MOUNT_HOME_ALIAS
+  AGENTS_DIR
   TZ
   CLAUDE_CONTAINER_NO_FIREWALL
   CLAUDE_CONTAINER_IPV6
@@ -759,6 +761,98 @@ guard_shared_mount() {
   fi
 }
 
+# 指示ファイルの別名は HOME 配下の明示したディレクトリだけに限定する（#99）。
+# .. や制御文字は解決せず拒否する。ホストで使う綴りは symlink 解決前に保存する。
+normalize_instruction_path() {
+  local value="$1"
+  [[ "$value" == /* && "$value" != *:* && ! "$value" =~ [[:cntrl:]] ]] || return 1
+  while [[ "$value" == *//* ]]; do value="${value//\/\//\/}"; done
+  value="${value%/}"
+  [[ -n "$value" && "$value" != */. && "$value" != */.. && "$value" != */./* && "$value" != */../* ]] || return 1
+  printf '%s\n' "$value"
+}
+
+instruction_paths_overlap() {
+  [[ "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]
+}
+
+guard_shared_home_alias() {
+  unset CLAUDE_SHARED_HOME_PATH CLAUDE_SHARED_HOST_PATH
+  case "${SHARED_MOUNT_HOME_ALIAS:-0}" in
+    ''|0) return 0 ;;
+    1) ;;
+    *) guard_fail "ERROR: SHARED_MOUNT_HOME_ALIAS は 0 または 1 を指定してください。" || return 1 ;;
+  esac
+  local source_path host_home relative home_target fixed plugin_target config_base
+  if ! source_path=$(normalize_instruction_path "${SHARED_MOUNT:-}") ||
+     ! host_home=$(normalize_instruction_path "$HOME") ||
+     [[ "$source_path" != "$host_home"/* || ! -d "$source_path" ]]; then
+    guard_fail "ERROR: SHARED_MOUNT_HOME_ALIAS=1 は HOME 配下の存在する SHARED_MOUNT（HOME 自体を除く）が必要です。..・相対パス・コロン・制御文字は使えません。" || return 1
+  fi
+  relative="${source_path#"$host_home"/}"
+  home_target="/home/node/$relative"
+  # HOME 直下の隠し項目は設定・認証・実行環境のため予約する。
+  if [[ "$relative" == .* ]]; then
+    guard_fail "ERROR: SHARED_MOUNT の別名が HOME の設定領域と重なります: $home_target" || return 1
+  fi
+  # ホストとコンテナの HOME が同じならマウントは1本。その他のホスト別名が
+  # 既存の固定マウントやシステム領域へ入る場合は拒否する。
+  if [[ "$source_path" != "$home_target" ]]; then
+    for fixed in /workspace /data /shared /home/node /bin /sbin /lib /lib64 /usr /etc /proc /sys /dev /run /var /opt /root; do
+      if instruction_paths_overlap "$source_path" "$fixed"; then
+        guard_fail "ERROR: SHARED_MOUNT のホスト別名がコンテナの予約領域と重なります: $source_path" || return 1
+      fi
+    done
+    if instruction_paths_overlap "$source_path" "$home_target"; then
+      guard_fail "ERROR: SHARED_MOUNT の2つの別名が重なります。" || return 1
+    fi
+  fi
+  config_base="${CLAUDE_CONFIG_DIR:-$HOME}"
+  [[ "$config_base" == '~' ]] && config_base="$HOME"
+  config_base="${config_base/#\~\//$HOME/}"
+  if plugin_target=$(plugins_alias_target "$config_base" "$HOME"); then
+    if instruction_paths_overlap "$source_path" "$plugin_target" || instruction_paths_overlap "$home_target" "$plugin_target"; then
+      guard_fail "ERROR: SHARED_MOUNT の別名が plugin 別名と重なります: $plugin_target" || return 1
+    fi
+  fi
+  if ! SHARED_MOUNT=$(cd "$source_path" 2>/dev/null && pwd -P); then
+    guard_fail "ERROR: SHARED_MOUNT=$source_path を解決できません。" || return 1
+  fi
+  export SHARED_MOUNT CLAUDE_SHARED_HOME_PATH="$home_target"
+  COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.shared-home.yml")
+  if [[ "$source_path" != "$home_target" ]]; then
+    export CLAUDE_SHARED_HOST_PATH="$source_path"
+    COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.shared-host.yml")
+  fi
+  [[ "$CHECK_MODE" == 1 ]] && echo "[OK]   共有別名 (ro): $home_target / $source_path（/shared は rw）"
+  return 0
+}
+
+guard_agents_dir() {
+  [[ -n "${AGENTS_DIR:-}" ]] || return 0
+  local agents_path other other_real
+  agents_path="${AGENTS_DIR/#\~\//$HOME/}"
+  if [[ "$agents_path" != /* || ! -d "$agents_path" || "$agents_path" =~ [[:cntrl:]] ]] ||
+     ! agents_path=$(cd "$agents_path" 2>/dev/null && pwd -P); then
+    guard_fail "ERROR: AGENTS_DIR=$AGENTS_DIR は存在するディレクトリを絶対パス（または ~/ 始まり）で指定してください。" || return 1
+  fi
+  export AGENTS_DIR="$agents_path"
+  COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.agents.yml")
+  [[ "$CHECK_MODE" == 1 ]] && echo "[OK]   AGENTS_DIR: $AGENTS_DIR -> /home/node/.agents (ro)"
+  # 指定した source と別の rw source の包含を調べる。リンク先は正規化するが、
+  # ディレクトリ内部の symlink・別マウントまでは探索しない。
+  for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}" "${CODEX_DIR:-}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude"; do
+    other="${other/#\~\//$HOME/}"
+    [[ -d "$other" ]] || continue
+    other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
+    other_real="${other_real%/}"
+    if instruction_paths_overlap "$agents_path" "$other_real"; then
+      guard_warn "WARNING: AGENTS_DIR=$agents_path と $other の範囲が重なるため、別の rw マウント経由で書けます。"
+    fi
+  done
+  return 0
+}
+
 # .claude-container.d/env は運用者が書く信頼入力として扱う（`claude-container#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
@@ -770,7 +864,7 @@ guard_env_boundary_keys() {
   fi
   local key
   local -a boundary_keys_found=()
-  for key in EXTRA_MOUNT SHARED_MOUNT SECRETS_DIR GITCONFIG_FILE CODEX_DIR CLAUDE_CONFIG_DIR; do
+  for key in EXTRA_MOUNT SHARED_MOUNT SHARED_MOUNT_HOME_ALIAS AGENTS_DIR SECRETS_DIR GITCONFIG_FILE CODEX_DIR CLAUDE_CONFIG_DIR; do
     if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
       boundary_keys_found+=("$key")
     fi
@@ -974,7 +1068,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | compose.ipv6.yml | compose.plugins-alias.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -1011,6 +1105,9 @@ ASSET_HASH_TARGETS=(
   ipv6-firewall.py
   compose.ipv6.yml
   compose.plugins-alias.yml
+  compose.shared-home.yml
+  compose.shared-host.yml
+  compose.agents.yml
   git-askpass.sh
   Dockerfile.claude
   validate-build-input.sh
@@ -1214,6 +1311,8 @@ check_one_project() {
   guard_secrets_dir || true
   guard_codex_dir || true
   guard_shared_mount || true
+  guard_shared_home_alias || true
+  guard_agents_dir || true
   guard_env_boundary_keys || true
   guard_base_image || true
   guard_ipv6 || true
@@ -1422,6 +1521,8 @@ guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir
 guard_shared_mount
+guard_shared_home_alias
+guard_agents_dir
 guard_env_boundary_keys
 guard_base_image
 guard_ipv6

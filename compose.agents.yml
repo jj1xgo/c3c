@@ -1,0 +1,11 @@
+# launcher が opt-in とパスを検証した場合だけ追加する固定 override（#99）。
+# /shared は rw のまま。この別名からの書き込みだけを拒否する。
+services:
+  claude-auth-workspace:
+    volumes:
+      - type: bind
+        source: ${AGENTS_DIR:?launcher が export する}
+        target: /home/node/.agents
+        read_only: true
+        bind:
+          create_host_path: false

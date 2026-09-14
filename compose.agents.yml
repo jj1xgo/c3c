@@ -1,0 +1,17 @@
+# launcher が guard_agents_dir() で AGENTS_DIR を検証したときだけ追加する固定設定（claude-container#99）。
+# エージェント共通のスキル置き場（通常 ~/.agents。~/.claude/agents/ の subagent 定義とは別物）を
+# コンテナ内の /home/node/.agents に :ro で付ける。compose.yml の CODEX_DIR のような
+# ${VAR:-/dev/null} の 1 行にしないのは、未設定時に ~/.agents へ /dev/null の実体が現れて
+# スキル探索を壊すのを避けるため。この override 自体は rw の経路を追加しない。launcher の WARNING は
+# AGENTS_DIR と他の rw マウントの source パスの包含だけを検出し、内部の symlink や hard link は検出しない。
+# source は launcher が実体解決して export する。${VAR:?} は export 漏れを config 段階で失敗させる
+# 保険で、保護の本体は launcher 側の無条件 export にある。
+services:
+  claude-auth-workspace:
+    volumes:
+      - type: bind
+        source: ${AGENTS_DIR:?launcher が export する}
+        target: /home/node/.agents
+        read_only: true
+        bind:
+          create_host_path: false

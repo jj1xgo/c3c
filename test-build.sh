@@ -444,6 +444,31 @@ if touch /home/hostuser-probe/probe 2>/dev/null; then echo "RW-LEAK alias-parent
 exit $fail
 '
 
+# SHARED_MOUNT の別名 2 箇所と ~/.agents（#99）から読めて書けず、/shared には書けることを確認する。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+SHARED_ALIAS_PROBE='
+set -u
+fail=0
+expect_ro() {
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+for d in /home/node/vault-probe /home/hostuser-probe/vault-probe /home/node/.agents; do
+  if [ "$(cat "$d/seed" 2>/dev/null)" = seed ]; then echo "READ-OK $d"; else echo "READ-BROKEN $d"; fail=1; fi
+  expect_ro "$d/create" sh -c "echo x > $d/probe-new"
+  expect_ro "$d/append" sh -c "echo x >> $d/seed"
+done
+if echo x > /shared/shared-probe 2>/dev/null; then echo "RW-OK /shared"; else echo "RW-BROKEN /shared"; fail=1; fi
+exit $fail
+'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="claude-test-config-ro"
@@ -483,6 +508,21 @@ run_config_ro_tests() {
     bash -c '[ "$(cat "$1/plugins/seed")" = seed ] && [ ! -e "$1/plugins/probe-new" ] && [ ! -e "$1/plugins/seed.tmp" ]' _ "$cfg"
   # ホスト側に別 uid（サブ uid の root 等）所有の残骸が生えていないこと。
   # 「特定 uid が無い」ではなく全エントリが実行ユーザー所有であることを見る。
+  # SHARED_MOUNT の別名と AGENTS_DIR（#99）込みの実構成。
+  local shared="$root/vault" agents="$root/agents"
+  mkdir -p "$shared" "$agents"
+  echo seed > "$shared/seed"
+  echo seed > "$agents/seed"
+  check "SHARED_MOUNT の別名 2 箇所と ~/.agents は読めて書けず、/shared には書ける" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    SHARED_MOUNT="$shared" CLAUDE_SHARED_HOME_PATH=/home/node/vault-probe \
+    CLAUDE_SHARED_HOST_PATH=/home/hostuser-probe/vault-probe AGENTS_DIR="$agents" \
+    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.shared-home.yml" \
+      -f "${SCRIPT_DIR}/compose.shared-host.yml" -f "${SCRIPT_DIR}/compose.agents.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$SHARED_ALIAS_PROBE"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "別名経由の書き込み試行後もホスト側 seed が不変で、/shared 経由の書き込みだけ残る" \
+    bash -c '[ "$(cat "$1/vault/seed")" = seed ] && [ ! -e "$1/vault/probe-new" ] && [ -e "$1/vault/shared-probe" ] && [ "$(cat "$1/agents/seed")" = seed ] && [ ! -e "$1/agents/probe-new" ]' _ "$root"
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
@@ -580,6 +620,7 @@ run_launcher_tests() {
   log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
   run_plugins_alias_launcher_tests
+  run_instruction_mount_launcher_tests
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   run_base_image_launcher_tests
@@ -1224,7 +1265,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1477,6 +1518,83 @@ CURL
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
 
+  launcher_sandbox_cleanup
+}
+
+# 指示ファイル・スキルの追加共有（claude-container#99）の検証。launcher が opt-in と値を検証し、
+# compose.shared-home.yml / compose.shared-host.yml / compose.agents.yml を build・run の各呼び出しへ
+# export と一緒に渡すこと、不正値と HOME 外・保護先と重なる値を compose に到達する前に拒否すること。
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
+run_instruction_mount_launcher_tests() {
+  local root bin home proj out rc before_ctx value
+  launcher_sandbox_init
+  log "## 指示ファイルとスキルの追加共有（#99）"
+  mkdir -p "$home/obsidian-vault/knowledge" "$home/.agents/skills" "$proj/.claude-container.d"
+  printf '索引\n' > "$home/obsidian-vault/knowledge/索引.md"
+
+  run_launcher SHARED_MOUNT="$home/obsidian-vault" \
+    CLAUDE_SHARED_HOME_PATH=/tmp/injected CLAUDE_SHARED_HOST_PATH=/tmp/injected
+  check "未設定なら /shared のみで内部別名変数も破棄する" \
+    bash -c '[ "$1" = 0 ] && ! grep -qE "compose\.(shared|agents)|^CLAUDE_SHARED_(HOME|HOST)_PATH=" "$2/compose-args" "$2/compose-env"' _ "$rc" "$root"
+
+  printf 'SHARED_MOUNT=~/obsidian-vault\nSHARED_MOUNT_HOME_ALIAS=1\nAGENTS_DIR=~/.agents\n' > "$proj/.claude-container.d/env"
+  run_launcher
+  check "env の opt-in が ~/ とホスト絶対パスの別名、およびスキル共有を渡す" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/obsidian-vault" "$2/compose-env" && grep -qxF "CLAUDE_SHARED_HOST_PATH=$3/obsidian-vault" "$2/compose-env" && grep -qxF "AGENTS_DIR=$3/.agents" "$2/compose-env" && grep -qxF "$4/compose.shared-home.yml" "$2/compose-args" && grep -qxF "$4/compose.shared-host.yml" "$2/compose-args" && grep -qxF "$4/compose.agents.yml" "$2/compose-args"' _ "$rc" "$root" "$home" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  local snapshot_ok=1
+  snapshot_check_targets > "$root/before" 2>> "$LOG_FILE" || snapshot_ok=0
+  run_launcher_check
+  snapshot_check_targets > "$root/after" 2>> "$LOG_FILE" || snapshot_ok=0
+  check "有効な --check は追加共有を診断し対象を変更しない" \
+    bash -c '[ "$1" -eq 1 ] && [ "$2" = 0 ] && [[ "$3" == *"/home/node/obsidian-vault"* && "$3" == *"AGENTS_DIR"* ]] && cmp -s "$4/before" "$4/after"' _ "$snapshot_ok" "$rc" "$out" "$root"
+
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONTAINER_IPV6=1 \
+    "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "build と run に共有・スキル・plugin・IPv6 の override が共存する" \
+    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] || exit 1
+      for n in 1 2; do for f in shared-home shared-host agents plugins-alias ipv6; do
+        grep -qxF "$3/compose.$f.yml" "$2/compose-args.$n" || exit 1
+      done; done' _ "$rc" "$root" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  : > "$proj/.claude-container.d/env"
+
+  # ガードを落とすと、これらが compose に到達して設定を隠すか、ホストに空の実体を作る。
+  for value in '' 2 true '1 '; do
+    [[ -n "$value" ]] || continue
+    run_launcher SHARED_MOUNT_HOME_ALIAS="$value" SHARED_MOUNT="$home/obsidian-vault"
+    check "別名フラグの不正値 '$value' を起動時に拒否する" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check SHARED_MOUNT_HOME_ALIAS="$value" SHARED_MOUNT="$home/obsidian-vault"
+    check "別名フラグの不正値 '$value' を --check も拒否する" [ "$rc" -ne 0 ]
+  done
+  mkdir -p "$home/.claude/notes" "$home/.config/notes" "$home/nested/vault" "$root/outside"
+  for value in '' "$home" "$root/outside" "$home/.claude" "$home/.claude/notes" "$home/.agents" "$home/.config/notes" "$home/nested/../obsidian-vault"; do
+    run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$value"
+    check "未指定・HOME外・保護先と重なる別名を拒否する: $value" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$value"
+    check "--check も同じ別名を拒否する: $value" [ "$rc" -ne 0 ]
+  done
+  for value in relative "$home/missing-agents" "$home/obsidian-vault/knowledge/索引.md"; do
+    run_launcher AGENTS_DIR="$value"
+    check "不正な AGENTS_DIR を compose 前に拒否する: $value" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"AGENTS_DIR"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check AGENTS_DIR="$value"
+    check "--check も同じ AGENTS_DIR を拒否する: $value" [ "$rc" -ne 0 ]
+  done
+  run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$home/nested/vault/" AGENTS_DIR="$home/.agents"
+  check "HOME 配下の階層を保ち末尾 / を正規化する" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/nested/vault" "$2/compose-env"' _ "$rc" "$root"
+  run_launcher AGENTS_DIR="$home/.agents" EXTRA_MOUNT="$home"
+  check "別 rw マウントによるスキル共有への書き込み経路を警告する" \
+    bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"AGENTS_DIR"*"rw"* ]]' _ "$rc" "$out"
+  ln -s "$home/obsidian-vault" "$home/vault-link"
+  run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$home/vault-link"
+  check "symlink の SHARED_MOUNT は綴りを別名に、実体を /shared の source にする" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/vault-link" "$2/compose-env" && grep -qxF "CLAUDE_SHARED_HOST_PATH=$3/vault-link" "$2/compose-env" && grep -qxF "SHARED_MOUNT=$(cd "$3/obsidian-vault" && pwd -P)" "$2/compose-env"' _ "$rc" "$root" "$home"
   launcher_sandbox_cleanup
 }
 

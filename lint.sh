@@ -103,6 +103,41 @@ elif command -v podman >/dev/null 2>&1; then
       "$compose_var_literal" >&2
     status=1
   fi
+  # 指示ファイル・スキルの追加共有 override（claude-container#99）。source と destination は
+  # launcher が export するので lint ではダミー値を与える。6 ファイル同時のマージで plugin 別名・
+  # IPv6・3 本の別名 volume が消えないことも見る。
+  SHARED_MOUNT=/tmp CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home \
+    podman compose -f compose.yml -f compose.shared-home.yml config >/dev/null || status=1
+  SHARED_MOUNT=/tmp CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host \
+    podman compose -f compose.yml -f compose.shared-host.yml config >/dev/null || status=1
+  AGENTS_DIR=/tmp \
+    podman compose -f compose.yml -f compose.agents.yml config >/dev/null || status=1
+  if merged=$(CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias SHARED_MOUNT=/tmp \
+      CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host AGENTS_DIR=/tmp \
+      podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml \
+        -f compose.shared-home.yml -f compose.shared-host.yml -f compose.agents.yml config); then
+    for needle in '/tmp/lint-plugins-alias' 'fe80::1' '/home/node/lint-shared-home' '/tmp/lint-shared-host' '/home/node/\.agents'; do
+      grep -qE -- "$needle" <<<"$merged" \
+        || { echo "ERROR: compose の 6 ファイル同時 config に '$needle' がありません（override のマージで消えています）" >&2; status=1; }
+    done
+  else
+    status=1
+  fi
+  # ${VAR:?} の fail-closed 検査（#98 の CLAUDE_PLUGINS_HOST_PATH と同じ理由）。
+  for pair in compose.shared-home.yml:CLAUDE_SHARED_HOME_PATH compose.shared-host.yml:CLAUDE_SHARED_HOST_PATH compose.agents.yml:AGENTS_DIR; do
+    file="${pair%%:*}"
+    var="${pair#*:}"
+    # shellcheck disable=SC2016 # 意図的にリテラル表示（変数展開ではなく compose 変数名の文字列）
+    var_literal='${'"$var"':?}'
+    if env -u "$var" SHARED_MOUNT=/tmp podman compose -f compose.yml -f "$file" config >/dev/null 2>&1; then
+      printf 'ERROR: %s の %s が未設定を通しています（provider が :? を強制していません）\n' "$file" "$var_literal" >&2
+      status=1
+    fi
+    if env "$var=" SHARED_MOUNT=/tmp podman compose -f compose.yml -f "$file" config >/dev/null 2>&1; then
+      printf 'ERROR: %s の %s が空文字を通しています（provider が :? を強制していません）\n' "$file" "$var_literal" >&2
+      status=1
+    fi
+  done
 else
   echo "WARNING: podman が見つからないため compose config 検証をスキップしました（コンテナ内開発時は想定内）。" >&2
 fi

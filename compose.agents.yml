@@ -2,8 +2,8 @@
 # エージェント共通のスキル置き場（通常 ~/.agents。~/.claude/agents/ の subagent 定義とは別物）を
 # コンテナ内の /home/node/.agents に :ro で付ける。compose.yml の CODEX_DIR のような
 # ${VAR:-/dev/null} の 1 行にしないのは、未設定時に ~/.agents へ /dev/null の実体が現れて
-# スキル探索を壊すのを避けるため。rw の経路は無いので、AGENTS_DIR が他の rw マウントの範囲と
-# 重ならない限りコンテナ内から書けない（重なりは launcher が WARNING を出す）。
+# スキル探索を壊すのを避けるため。この override 自体は rw の経路を追加しない。launcher の WARNING は
+# AGENTS_DIR と他の rw マウントの source パスの包含だけを検出し、内部の symlink や hard link は検出しない。
 # source は launcher が実体解決して export する。${VAR:?} は export 漏れを config 段階で失敗させる
 # 保険で、保護の本体は launcher 側の無条件 export にある。
 services:

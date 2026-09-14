@@ -1543,11 +1543,12 @@ run_instruction_mount_launcher_tests() {
     bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/obsidian-vault" "$2/compose-env" && grep -qxF "CLAUDE_SHARED_HOST_PATH=$3/obsidian-vault" "$2/compose-env" && grep -qxF "AGENTS_DIR=$3/.agents" "$2/compose-env" && grep -qxF "$4/compose.shared-home.yml" "$2/compose-args" && grep -qxF "$4/compose.shared-host.yml" "$2/compose-args" && grep -qxF "$4/compose.agents.yml" "$2/compose-args"' _ "$rc" "$root" "$home" "$SCRIPT_DIR"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  snapshot_check_targets > "$root/before"
+  local snapshot_ok=1
+  snapshot_check_targets > "$root/before" 2>> "$LOG_FILE" || snapshot_ok=0
   run_launcher_check
-  snapshot_check_targets > "$root/after"
+  snapshot_check_targets > "$root/after" 2>> "$LOG_FILE" || snapshot_ok=0
   check "有効な --check は追加共有を診断し対象を変更しない" \
-    bash -c '[ "$1" = 0 ] && [[ "$2" == *"/home/node/obsidian-vault"* && "$2" == *"AGENTS_DIR"* ]] && cmp -s "$3/before" "$3/after"' _ "$rc" "$out" "$root"
+    bash -c '[ "$1" -eq 1 ] && [ "$2" = 0 ] && [[ "$3" == *"/home/node/obsidian-vault"* && "$3" == *"AGENTS_DIR"* ]] && cmp -s "$4/before" "$4/after"' _ "$snapshot_ok" "$rc" "$out" "$root"
 
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONTAINER_IPV6=1 \

@@ -14,7 +14,8 @@ CHECK_HAS_ERROR=0
 CHECK_HAS_WARN=0
 
 # launcher が設定から選ぶ固定 Compose override の -f 引数列（compose.ipv6.yml・
-# compose.plugins-alias.yml）。guard_ipv6()・guard_plugins_alias() が += で積み、
+# compose.plugins-alias.yml・compose.shared-home.yml・compose.shared-host.yml・compose.agents.yml）。
+# guard_ipv6()・guard_plugins_alias()・guard_shared_home_alias()・guard_agents_dir() が += で積み、
 # dispatch の build と run の両方へ同じ配列を渡す（片方だけだと -b の build と直後の
 # run で構成が食い違う）。--check は check_one_project() の冒頭でプロジェクトごとに
 # リセットする。任意の podman 引数は受け付けない。

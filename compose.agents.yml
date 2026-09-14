@@ -1,5 +1,11 @@
-# launcher が opt-in とパスを検証した場合だけ追加する固定 override（#99）。
-# /shared は rw のまま。この別名からの書き込みだけを拒否する。
+# launcher が guard_agents_dir() で AGENTS_DIR を検証したときだけ追加する固定設定（claude-container#99）。
+# エージェント共通のスキル置き場（通常 ~/.agents。~/.claude/agents/ の subagent 定義とは別物）を
+# コンテナ内の /home/node/.agents に :ro で付ける。compose.yml の CODEX_DIR のような
+# ${VAR:-/dev/null} の 1 行にしないのは、未設定時に ~/.agents へ /dev/null の実体が現れて
+# スキル探索を壊すのを避けるため。rw の経路は無いので、AGENTS_DIR が他の rw マウントの範囲と
+# 重ならない限りコンテナ内から書けない（重なりは launcher が WARNING を出す）。
+# source は launcher が実体解決して export する。${VAR:?} は export 漏れを config 段階で失敗させる
+# 保険で、保護の本体は launcher 側の無条件 export にある。
 services:
   claude-auth-workspace:
     volumes:

@@ -1,5 +1,10 @@
-# launcher が opt-in とパスを検証した場合だけ追加する固定 override（#99）。
-# /shared は rw のまま。この別名からの書き込みだけを拒否する。
+# launcher が guard_shared_home_alias() の条件を満たすときだけ追加する固定設定（claude-container#99）。
+# ホストの ~/.claude/CLAUDE.md が `@~/...` で参照する共有ディレクトリ（SHARED_MOUNT）を、コンテナ内の
+# ~（/home/node）配下の同じ相対位置にも :ro で見せる。/shared（compose.yml、rw）は変えないので、
+# この :ro は境界ではなく「書き込みは /shared 経由」の目印に留まる。
+# source は launcher が実体解決して export した SHARED_MOUNT、target は launcher が算出して export する。
+# ${VAR:?} は export 漏れを config 段階で失敗させるための保険で、compose provider によっては
+# 空文字として通す可能性がある。保護の本体は launcher 側の無条件 export と unset にある。
 services:
   claude-auth-workspace:
     volumes:

@@ -10,7 +10,7 @@
 
 - ブランチ `fix/shared-instruction-paths-99` の先頭には、2026-09-14 に削除した Codex worktree の未コミット差分を**未レビューのまま**復元したコミット（`wip: #99 の Codex 草稿を復元する`）が載っている。本計画はその草稿を出発点にし、Task 1〜4 で差分を当てる。草稿を捨てて書き直さない。
 - 草稿のまま `./test-build.sh --launcher-only` を回すと `PASS=232 FAIL=1` で、赤は `E7: ENV_FILE_ALLOWED_KEYS と README「環境変数」節の表が一致する` だけ（README に新キーの行が無いため）。`./lint.sh` は緑（host、podman-compose 1.6.0）。草稿自身のテスト群（`## 指示ファイルとスキルの追加共有（#99）`）は全て PASS。
-- 草稿の compose override 3 本は `podman compose config` を通り、`${VAR:?}` は未設定・空文字とも rc=1 で拒否する（host 実測）。
+- 草稿の compose override 3 本はヘッダコメントだけ Fable が #98 の流儀に揃えた（`compose.agents.yml` の「/shared は rw のまま」という誤ったコピーを直し、export の責務と `:?` が保険である旨を書いた）。volumes の定義は草稿のまま。3 本とも `podman compose config` を通り、`${VAR:?}` は未設定・空文字とも rc=1 で拒否する（host 実測）。
 - 入れ子の bind mount は volumes の並び順に依存しない（podman 5.8.6 で、親 `/x` と子 `/x/y` をどちらの順で渡しても両方見え、両方 `:ro` が効くことを実測）。
 
 ## 検討して採らなかった案
@@ -20,6 +20,7 @@
 - **別名を rw にする**: 同上の追記に従い `:ro`。ただし `/shared` が rw のままなので**境界ではない**（README に明記する）。書き込みは従来どおり `/shared` 経由で行う運用の目印に留まる。
 - **plugin 別名との重なり検査**（草稿に含まれる）: 草稿はこの検査のために `CLAUDE_CONFIG_DIR` の `~` 展開を `prepare_claude_config_ro()` と別に再実装している（2 箇所で解決規則を持つとドリフトする、`.claude/CLAUDE.md` の `resolve_asset_source()` 項と同じ懸念）。`SHARED_MOUNT` の HOME 直下の隠しディレクトリ（`.claude` 等）は別途拒否済みで、残る重なりは「`CLAUDE_CONFIG_DIR` が `SHARED_MOUNT` 配下」の場合だけ。その場合も `:ro` 同士の入れ子で順序に依存せず両方見える（上記実測）ため無害。検査ごと削除する（Task 1）。
 - **新ガードを `guard_plugins_alias()` の後ろへ移す**（`CLAUDE_CONFIG_HOST_BASE` を使うため）: `guard_plugins_alias()` は MCP 監査ゲートの TTY 承認より後に走るので、fail-closed の拒否が承認の後になる。上記のとおり検査自体を消すので移さない。位置は草稿のまま（`guard_shared_mount()` の直後）。
+- **`AGENTS_DIR` を `compose.yml` の 1 行（`${AGENTS_DIR:-/dev/null}:/home/node/.agents:ro`、`CODEX_DIR` と同型）にする**: 未設定時に `/home/node/.agents` へ `/dev/null` の実体（キャラクタデバイス）が現れ、Codex 等のスキル探索が「ディレクトリでない `~/.agents`」を踏む。`CODEX_DIR` は Codex 自身が `~/.codex` を作り直す前提で許容しているが、`~/.agents` は読むだけの置き場なので幽霊を作らない override にする。`SHARED_MOUNT` の別名 2 本と同じ形になる利点もある。
 - **テストを `tests/*.sh` に分けて `source` する**（草稿）: #98 のランチャーテストは `test-build.sh` 内の関数で、`--launcher-only` の入口も既にある。新しい入口 `--instruction-mounts-only` と `source` 経路を増やさず、関数を `test-build.sh` に置く（Task 2）。`tests/test-*.sh` に単独実行できる形で置いているのは firewall のテスト群だけで、こちらは隔離ハーネス（`launcher_sandbox_init` 等）に依存するため単独実行できない。
 
 ## 設計（草稿からの差分を含む確定版）
@@ -61,7 +62,7 @@
 
 対象: `test-build.sh`、`tests/test-instruction-mounts.sh`（削除）
 
-- [ ] `tests/test-instruction-mounts.sh` の関数 `run_instruction_mount_launcher_tests()` の本体を、`test-build.sh` の `run_plugins_alias_launcher_tests()` の閉じ `}` の直後（`run_base_image_launcher_tests()` の説明コメントより前）に移す。関数の直前に次のコメントを付ける:
+- [ ] `tests/test-instruction-mounts.sh` の関数 `run_instruction_mount_launcher_tests()` の本体を、`test-build.sh` の `run_plugins_alias_launcher_tests()` の閉じ `}`（草稿の状態で 1482 行目。直後に空行を挟んで `# shellcheck source=tests/test-instruction-mounts.sh` と `source ...` の 2 行、`--instruction-mounts-only` の `if` ブロック、`--validator-only` の `if` ブロックが続く）の直後に置く。つまり削除する `source` 2 行と `if` ブロックのあった場所に関数本体が入る。関数の直前に次のコメントを付ける:
   ```bash
   # 指示ファイル・スキルの追加共有（claude-container#99）の検証。launcher が opt-in と値を検証し、
   # compose.shared-home.yml / compose.shared-host.yml / compose.agents.yml を build・run の各呼び出しへ
@@ -167,14 +168,73 @@
 - [ ] `compose.yml` 不変条件の「固定 Compose override の選択（`compose.ipv6.yml`・`compose.plugins-alias.yml`）」に 3 ファイルと `guard_shared_home_alias()`・`guard_agents_dir()` を足す。
 - [ ] `claude-container` 不変条件に 1 項目: `SHARED_MOUNT_HOME_ALIAS` の別名は `:ro` だが境界ではない（`/shared` が rw）。`AGENTS_DIR` の rw 重なり検査は `guard_warn` に留める。両ガードは `CLAUDE_SHARED_HOME_PATH`・`CLAUDE_SHARED_HOST_PATH` を冒頭で `unset` してから export する構成を崩さない（環境からの注入で任意の destination にマウントさせない）。
 
+## Task 5b: 実 compose での `:ro` 検証を `run_config_ro_tests()` に足す（Codex が書き、Fable がレビュー時に host で実行する）
+
+対象: `test-build.sh`
+
+`run_config_ro_tests()` は実 podman で `compose.yml` と plugin 別名 override を起動し、別名経由で書けないことを確認する既存のハーネス（通常の `./test-build.sh` でだけ走る。`--launcher-only` には含まれない）。同じ形で 3 本の override を検証する。
+
+- [ ] `CONFIG_RO_ALIAS_PROBE='...'` の定義（`exit $fail` と閉じ `'` で終わる）の直後に次を足す:
+  ```bash
+  # SHARED_MOUNT の別名 2 箇所と ~/.agents（#99）から読めて書けず、/shared には書けることを確認する。
+  # shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+  SHARED_ALIAS_PROBE='
+  set -u
+  fail=0
+  expect_ro() {
+    local label="$1"; shift
+    local out
+    if out=$("$@" 2>&1); then
+      echo "RW-LEAK $label (succeeded)"; fail=1; return
+    fi
+    case "$out" in
+      *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+      *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+    esac
+  }
+  for d in /home/node/vault-probe /home/hostuser-probe/vault-probe /home/node/.agents; do
+    if [ "$(cat "$d/seed" 2>/dev/null)" = seed ]; then echo "READ-OK $d"; else echo "READ-BROKEN $d"; fail=1; fi
+    expect_ro "$d/create" sh -c "echo x > $d/probe-new"
+    expect_ro "$d/append" sh -c "echo x >> $d/seed"
+  done
+  if echo x > /shared/shared-probe 2>/dev/null; then echo "RW-OK /shared"; else echo "RW-BROKEN /shared"; fail=1; fi
+  exit $fail
+  '
+  ```
+- [ ] `run_config_ro_tests()` 内、`check "一時 ~/.claude 配下の全エントリが実行ユーザー所有"` の直前に次を足す:
+  ```bash
+    # SHARED_MOUNT の別名と AGENTS_DIR（#99）込みの実構成。
+    local shared="$root/vault" agents="$root/agents"
+    mkdir -p "$shared" "$agents"
+    echo seed > "$shared/seed"
+    echo seed > "$agents/seed"
+    check "SHARED_MOUNT の別名 2 箇所と ~/.agents は読めて書けず、/shared には書ける" env \
+      CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+      SHARED_MOUNT="$shared" CLAUDE_SHARED_HOME_PATH=/home/node/vault-probe \
+      CLAUDE_SHARED_HOST_PATH=/home/hostuser-probe/vault-probe AGENTS_DIR="$agents" \
+      podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.shared-home.yml" \
+        -f "${SCRIPT_DIR}/compose.shared-host.yml" -f "${SCRIPT_DIR}/compose.agents.yml" -p "$proj" --in-pod false \
+        run --rm -T --entrypoint bash claude-auth-workspace -c "$SHARED_ALIAS_PROBE"
+    # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+    check "別名経由の書き込み試行後もホスト側 seed が不変で、/shared 経由の書き込みだけ残る" \
+      bash -c '[ "$(cat "$1/vault/seed")" = seed ] && [ ! -e "$1/vault/probe-new" ] && [ -e "$1/vault/shared-probe" ] && [ "$(cat "$1/agents/seed")" = seed ] && [ ! -e "$1/agents/probe-new" ]' _ "$root"
+  ```
+- [ ] Codex の検証は `bash -n test-build.sh` と `shellcheck test-build.sh`（`./lint.sh` に含まれる）まで。実行は podman と `claude-test` イメージが要るため **Fable がレビュー時に host で `./test-build.sh` を回して** 2 件の PASS を確認する。Codex の sandbox で podman が使えなければ、PR 本文に `not run（podman 不可）` と書く。
+
 ## Task 6: 検証と PR
 
 - [ ] `./lint.sh` → `lint OK`、rc=0。
 - [ ] `./test-build.sh --launcher-only` → 末尾 `FAIL=0`、rc=0。PASS の実測値を PR 本文に書く。
-- [ ] `--check` の実測: `mktemp -d` で作ったプロジェクトに `.claude-container.d/env` を `SHARED_MOUNT=~/obsidian-vault`・`SHARED_MOUNT_HOME_ALIAS=1`・`AGENTS_DIR=~/.agents` で置き、`./claude-container --check <dir>` の出力に `[OK]   共有別名 (ro): /home/node/obsidian-vault / /home/<user>/obsidian-vault（/shared は rw）` と `[OK]   AGENTS_DIR: /home/<user>/.agents -> /home/node/.agents (ro)` が出る。`SHARED_MOUNT_HOME_ALIAS=2` に変えると `ERROR: SHARED_MOUNT_HOME_ALIAS は 0 または 1 を指定してください。` で rc≠0。終わったら `mktemp` のディレクトリを消す（起動台帳 `~/.local/state/claude-container/projects` は `--check` では増えない）。ホストに `~/.agents` が無ければ `mkdir -p ~/.agents/skills` で作ってよい（空ディレクトリ）。
-- [ ] コミットは Task ごとでなく次の 3 つにまとめる: (1) Task 1（launcher）、(2) Task 2〜3（テストと lint）、(3) Task 4（README）。復元コミット `wip:` はそのまま履歴に残す（squash しない。草稿の出自を残す）。
+- [ ] `--check` の実測: `mktemp -d` で作ったプロジェクトに `.claude-container.d/env` を `SHARED_MOUNT=~/obsidian-vault`・`SHARED_MOUNT_HOME_ALIAS=1`・`AGENTS_DIR=~/.agents` で置き、`./claude-container --check <dir>` の出力に `[OK]   共有別名 (ro): /home/node/obsidian-vault / /home/<user>/obsidian-vault（/shared は rw）` と `[OK]   AGENTS_DIR: /home/<user>/.agents -> /home/node/.agents (ro)` が出る。`SHARED_MOUNT_HOME_ALIAS=2` に変えると `ERROR: SHARED_MOUNT_HOME_ALIAS は 0 または 1 を指定してください。` で rc≠0。`AGENTS_DIR` はホストの `~/.agents` でなく、この `mktemp` ディレクトリ内に作った `agents/` を絶対パスで指す（ホストの HOME に何も作らない）。期待する `[OK]   AGENTS_DIR:` 行のパスもそれに合わせる。終わったら `mktemp` のディレクトリを消す（起動台帳 `~/.local/state/claude-container/projects` は `--check` では増えない）。
+- [ ] コミットは Task ごとでなく次の 3 つにまとめる: (1) Task 1（launcher）、(2) Task 2・3・5b（テストと lint）、(3) Task 4（README）。復元コミット `wip:` はそのまま履歴に残す（squash しない。草稿の出自を残す）。
 - [ ] PR 作成前に `claude-review` skill で Opus のレビューを受け、should-fix 以上を直してから `gh pr create`（ベース `main`、タイトル `feat: SHARED_MOUNT の ~ 別名と AGENTS_DIR で指示ファイルとスキルをコンテナ内で解決する（#99）`）。本文に `Closes #99`、検証コマンドごとの実出力（Expected との照合）、未実行項目を書く。Draft にしない。
-- [ ] **実コンテナでの確認は Codex の範囲外**（Fable がレビュー時に host で行う）: 利用側プロジェクトで `-b` 起動したコンテナ内で `ls ~/obsidian-vault/knowledge/索引.md`、`touch ~/obsidian-vault/x`（Read-only file system）、`touch /shared/x && rm /shared/x`（成功）、`ls ~/.agents/skills/claude-review`、`ls /home/<host user>/obsidian-vault`、`~/.agents` への `touch` が失敗、env を外して起動すると `~/obsidian-vault`・`~/.agents` が無いこと。`@~/obsidian-vault/knowledge/索引.md` が実際に展開されるかはコンテナ内の Claude セッションで `/memory` またはシステムプロンプトの表示で持ち主が確認する。
+- [ ] **実コンテナでの確認は Codex の範囲外**（Fable がレビュー時に host で行う。Task 5b の自動確認に加えて、利用側の実起動で次を見る）: 利用側プロジェクトで `-b` 起動したコンテナ内で `ls ~/obsidian-vault/knowledge/索引.md`、`touch ~/obsidian-vault/x`（Read-only file system）、`touch /shared/x && rm /shared/x`（成功）、`ls ~/.agents/skills/claude-review`、`ls /home/<host user>/obsidian-vault`、`~/.agents` への `touch` が失敗、env を外して起動すると `~/obsidian-vault`・`~/.agents` が無いこと。`@~/obsidian-vault/knowledge/索引.md` が実際に展開されるかはコンテナ内の Claude セッションで `/memory` またはシステムプロンプトの表示で持ち主が確認する。
+
+## 未検証（計画時点で確認手段が無いもの）
+
+- ホストの `$HOME` が `/home/node` のときの「別名 1 本」分岐: sandbox の HOME は `mktemp` 配下なので `test-build.sh` では作れない。コードレビューで読むだけ。
+- `bind.create_host_path: false` は `podman compose config` が受理することは実測したが、`run` 時に podman-compose 1.6.0 が尊重するか（source 不在で空ディレクトリを作らないか）は未確認。launcher が `-d` で存在を確認してから override を選ぶため、実害は「ガードを迂回した場合」に限る。
+- Task 5b は Codex が書く時点では未実行（Fable が host で回す）。
 
 ## 利用側への影響
 
@@ -203,9 +263,9 @@ docs/superpowers/plans/2026-09-14-shared-instruction-paths-99.md を上から順
 
 既決事項（蒸し返し不要）: 機構は #98 と同型の固定 Compose override 3 本。opt-in は SHARED_MOUNT_HOME_ALIAS=1 と AGENTS_DIR。別名は :ro だが境界ではない。plugin 別名との重なり検査は削除する。テストは test-build.sh 内の関数にし tests/test-instruction-mounts.sh は消す。ガードの呼び出し位置は草稿のまま。
 
-制約: 編集するのは claude-container・test-build.sh・lint.sh・README.md と、削除する tests/test-instruction-mounts.sh だけ。compose.*.yml 3 本と計画ファイル自身、.claude/ 配下は変更しない。検証用の一時ファイルは mktemp の範囲で作って消す。Expected と実結果がずれたら修正せず止めて報告する。
+制約: 編集するのは claude-container・test-build.sh・lint.sh・README.md と、削除する tests/test-instruction-mounts.sh だけ。compose.*.yml 3 本と計画ファイル自身、.claude/ 配下は変更しない。ホストの HOME 配下（~/.agents を含む）に何も作らない。検証用の一時ファイルは mktemp の範囲で作って消す。Expected と実結果がずれたら修正せず止めて報告する。
 
-手順: Task 1 → Task 2 → Task 3 → Task 4 → Task 6（lint.sh、test-build.sh --launcher-only、--check の実測、3 コミット、claude-review、gh pr create）。Task 5 と「実コンテナでの確認」は範囲外。
+手順: Task 1 → Task 2 → Task 3 → Task 4 → Task 5b（書くだけ。実行は podman が使えれば ./test-build.sh、使えなければ not run と報告）→ Task 6（lint.sh、test-build.sh --launcher-only、--check の実測、3 コミット、claude-review、gh pr create）。Task 5 と「実コンテナでの確認」は範囲外。
 
 成果物: PR の URL と、検証コマンドごとの実出力（Expected との照合）、未実行項目の一覧。
 ```

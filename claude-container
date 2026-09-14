@@ -761,8 +761,11 @@ guard_shared_mount() {
   fi
 }
 
-# 指示ファイルの別名は HOME 配下の明示したディレクトリだけに限定する（#99）。
-# .. や制御文字は解決せず拒否する。ホストで使う綴りは symlink 解決前に保存する。
+# SHARED_MOUNT の別名マウント（claude-container#99）。SHARED_MOUNT_HOME_ALIAS=1 のとき、
+# SHARED_MOUNT の実体をコンテナ内の ~（/home/node）配下の同じ相対位置と、ホストと同じ
+# 絶対パスにも :ro で重ねる固定 override を選ぶ。/shared は rw のままなので境界ではない。
+# HOME 直下の隠し項目（.claude・.codex 等）は設定・認証・実行環境のため別名にしない。
+# ホストで使う綴りは symlink 解決前に保存し、/shared の source は実体に解決する。
 normalize_instruction_path() {
   local value="$1"
   [[ "$value" == /* && "$value" != *:* && ! "$value" =~ [[:cntrl:]] ]] || return 1
@@ -783,7 +786,7 @@ guard_shared_home_alias() {
     1) ;;
     *) guard_fail "ERROR: SHARED_MOUNT_HOME_ALIAS は 0 または 1 を指定してください。" || return 1 ;;
   esac
-  local source_path host_home relative home_target fixed plugin_target config_base
+  local source_path host_home relative home_target fixed
   if ! source_path=$(normalize_instruction_path "${SHARED_MOUNT:-}") ||
      ! host_home=$(normalize_instruction_path "$HOME") ||
      [[ "$source_path" != "$host_home"/* || ! -d "$source_path" ]]; then
@@ -807,14 +810,6 @@ guard_shared_home_alias() {
       guard_fail "ERROR: SHARED_MOUNT の2つの別名が重なります。" || return 1
     fi
   fi
-  config_base="${CLAUDE_CONFIG_DIR:-$HOME}"
-  [[ "$config_base" == '~' ]] && config_base="$HOME"
-  config_base="${config_base/#\~\//$HOME/}"
-  if plugin_target=$(plugins_alias_target "$config_base" "$HOME"); then
-    if instruction_paths_overlap "$source_path" "$plugin_target" || instruction_paths_overlap "$home_target" "$plugin_target"; then
-      guard_fail "ERROR: SHARED_MOUNT の別名が plugin 別名と重なります: $plugin_target" || return 1
-    fi
-  fi
   if ! SHARED_MOUNT=$(cd "$source_path" 2>/dev/null && pwd -P); then
     guard_fail "ERROR: SHARED_MOUNT=$source_path を解決できません。" || return 1
   fi
@@ -828,6 +823,9 @@ guard_shared_home_alias() {
   return 0
 }
 
+# エージェント共通のスキル置き場（AGENTS_DIR、通常 ~/.agents）を /home/node/.agents に :ro で
+# 付ける opt-in（claude-container#99）。~/.claude/agents/（Claude Code の subagent 定義、
+# :ro 保護 11 項目の一つ）とは別物。
 guard_agents_dir() {
   [[ -n "${AGENTS_DIR:-}" ]] || return 0
   local agents_path other other_real

@@ -7,9 +7,9 @@ tmp
 # サンプルは .claude-container.d/env.example を参照。
 .claude-container.d/env
 
-# CLAUDE.md と .claude/ はメンテナ個人の開発運用ファイル（プロダクト本体ではない）。
-# 別途管理するため追跡しない。
-CLAUDE.md
+# .claude/ はメンテナ個人の開発運用ファイル（プロダクト本体ではない）。
+# private nested git リポジトリとして別途管理するため追跡しない。
+# root CLAUDE.md は公開の実体ファイル（`@AGENTS.md` の loader）でありコミット対象。
 .claude/
 
 # .mcp.json はメンテナ自身のセッション用GitHub MCP実設定（自セッションのローカルファイル）。

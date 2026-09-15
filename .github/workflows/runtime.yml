@@ -18,7 +18,7 @@ jobs:
   runtime:
     name: 実ビルド・マウント・権限・IPv4 通信
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 55
     steps:
       - name: 対象ブランチを取得する
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,7 +51,7 @@ jobs:
 
       - name: 実コンテナをビルドして検証する
         id: runtime
-        timeout-minutes: 42
+        timeout-minutes: 45
         run: bash tests/test-runtime.sh
 
       - name: 結果と総所要時間を記録する

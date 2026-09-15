@@ -46,6 +46,7 @@ def main():
         return 0
 
     # setpriv を外す、capability を子へ継承する、root で起動する回帰を検出する。
+    print(f"検査プロセスの UID:GID={os.getuid()}:{os.getgid()}", flush=True)
     if os.getuid() == 0:
         raise RuntimeError("検査プロセスが root で動いています")
     status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
@@ -54,7 +55,10 @@ def main():
         print(f"{name}={value:x}", flush=True)
         if value:
             raise RuntimeError(f"{name} に capability が残っています")
-    result = subprocess.run(["iptables", "-L", "OUTPUT", "-n"], capture_output=True, text=True, timeout=10)
+    try:
+        result = subprocess.run(["iptables", "-L", "OUTPUT", "-n"], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError as error:
+        raise RuntimeError("iptables が見つからず、直接操作の拒否を検査できません") from error
     if result.returncode == 0:
         raise RuntimeError("非 root のプロセスから iptables を操作できています")
     print("[PASS] 非 root の子プロセスに capability がなく、iptables の直接操作も拒否されます")

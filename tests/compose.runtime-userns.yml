@@ -1,0 +1,5 @@
+# runner の UID/GID に依存せず、実行者をイメージ内の node（1000:1000）へ対応付ける。
+# CI 用の対応付けだけを変え、マウント・capability・起動処理は製品の構成を使う。
+services:
+  claude-auth-workspace:
+    userns_mode: keep-id:uid=1000,gid=1000

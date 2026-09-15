@@ -23,6 +23,7 @@ PR 用の `CI` とは独立し、必須チェックは追加しない。定期�
 通信先は最初の対照コンテナで IPv4 に解決して固定する。ファイアウォールを初期化しない
 対照コンテナから全接続先へ到達できることを、保護検査の前後に確認する。
 対照から接続できなければ、外部障害を遮断成功と区別できないので `not run` とする。
+保護検査が失敗した場合も後段の対照を試し、最初の失敗の終了コードを維持する。
 プロキシ設定と個人の認証情報は渡さない。Claude への質問・有料 API 呼び出しは行わない。
 起動処理自身のネットワーク自己検証は実行する。
 
@@ -54,23 +55,32 @@ bash tests/test-runtime.sh --image localhost/claude-test
 `RUNTIME_RESULTS_DIR` で結果の保存先を指定できる。既定は
 `.claude/test-results/claude-runtime-<時刻>-<PID>/`。
 再利用する `test-build.sh` には `TEST_IMAGE`・`TEST_LOG_DIR`・`TEST_COMPOSE_PROJECT` を渡し、
-この検査用のタグ・ログ・Compose project を他の実行から分ける。
+`TEST_RUNTIME_USERNS=1` と併せて、この検査用のタグ・ログ・Compose project を他の実行から分ける。
 
 ## runner の前提と判定
 
 - GitHub hosted `ubuntu-24.04` の rootless Podman を使用する。Podman 本体・ネットワーク backend
   の版は runner に従い、`environment.log` に記録する。rootful や privileged コンテナへは切り替えない。
 - `podman-compose 1.6.0`、`PyYAML 6.0.2`、`python-dotenv 1.1.1` を専用 venv に導入する。
+  Python パッケージは版固定のみで、配布物のハッシュ固定は行わない。
   実マウント検査の `--in-pod false` を使うため、PR CI の Docker Compose とは別 provider にする。
+- runner の UID/GID を `environment.log` に記録する。CI 専用の
+  `tests/compose.runtime-userns.yml` で `keep-id:uid=1000,gid=1000` を指定し、
+  ホストの実行者をイメージ内の node に対応付ける。マウント検査にも同じ override を渡す。
+  素の keep-id はホストの UID/GID を維持するため、この対応付けがない UID 1000 以外の
+  ホストでの製品 launcher の動作は、この CI の保証範囲外になる。
+  仕様は [Podman 4.9.3 の userns](https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#userns-mode) を参照。
 - user namespace、keep-id、コンテナ内の iptables・sysctl 操作と外部 IPv4 通信が必要。
   Podman の起動不能・provider 不在は環境段階の `not run`。環境確認を通った後のビルド・
   マウント・通常起動の異常は `FAIL` とし、ログから原因を調べる。
+- `--build-only` の GitHub meta 取得が失敗し fallback もない場合は `not run`（77）。
+  未認証 API のレート制限、通信障害、応答形式をログから確認する。個人トークンは使わない。
 - IPv6 opt-in の疎通は **not run**。この検査は既定の IPv4 構成を対象とする。
   IPv6 の実疎通には別途対応 runner を用意する。CLI helper の起動検査は IPv6 疎通を証明しない。
 - 検査失敗は非 0、環境の前提未達は 77。環境の `not run` も workflow を成功にはしない。
   未到達の段階は `not run` として残す。
 
-ジョブ全体は 50 分、検査ステップは 42 分で打ち切る。スクリプト内もビルド 30 分、
+ジョブ全体は 55 分、検査ステップは 45 分で打ち切る。スクリプト内もビルド 25 分、
 マウント 5 分、保護起動 5 分、前後の対照各 2 分で打ち切り、30 秒後に強制終了する。
 終了コード・対象 commit・段階別結果・所要時間を `summary.md` に記録し、Actions のサマリにも載せる。
 準備段階での失敗や中断で検査サマリがなければ、workflow が未生成の旨とステップ状態を記録する。
@@ -82,3 +92,17 @@ bash tests/test-runtime.sh --image localhost/claude-test
 この検査は実プロセスの権限と固定した接続先の疎通を確認するが、すべての接続先、
 長時間の DNS 更新、対話 UI や実アカウントでの認証を網羅するものではない。
 製品の境界全体の保証には、既存のテスト・コードレビュー・利用側の実起動確認も必要になる。
+
+## 初回のローカル実測と実行頻度
+
+2026-09-15（JST）、commit `4470876d2c964235f0dc3d01310f7a90409361c2` で
+`tests/test-runtime.sh` をビルドから実行した。rootless Podman 5.8.6、netavark 1.17.2、
+podman-compose 1.6.0、Linux 7.2.4-local / amd64 のホストで **62 秒、終了コード 0**。
+ビルド・ツール起動は 7 件、マウント保護は 25 件すべて PASS。権限・通信・前後の対照と清掃も成功した。
+ビルドした Claude Code は 2.1.271、gh は 2.100.0、jq は 1.7。
+Podman のビルドキャッシュは無効、ベースイメージはホストに取得済みだった。
+
+この実測を踏まえ、依存パッケージと runner の変化を定点観測する初期頻度を週 1 回とする。
+GitHub hosted runner での実測は **not run（初回導入のマージ前）**。
+ホストの 62 秒は hosted runner の所要時間ではない。初回マージ後に手動実行し、
+artifact に記録される準備込みの所要時間と成功・失敗を確認して、頻度・上限の調整に使う。

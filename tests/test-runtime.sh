@@ -7,8 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 run_id="claude-runtime-$(date +%s)-$$"
 mount_project="$run_id-mounts"
 results="${RUNTIME_RESULTS_DIR:-$SCRIPT_DIR/.claude/test-results/$run_id}"
-mkdir -p "$results"
-results="$(cd "$results" && pwd)"
 started=$SECONDS
 image="localhost/$run_id"
 build=1
@@ -19,6 +17,8 @@ elif [[ "$#" != 0 ]]; then
   echo "使い方: $0 [--image <ビルド済みイメージ>]" >&2
   exit 2
 fi
+mkdir -p "$results"
+results="$(cd "$results" && pwd)"
 
 phases=(environment build mounts control-before protected control-after)
 declare -A outcome
@@ -27,9 +27,10 @@ phase=environment
 root=""
 compose=()
 clean_env=(env -i "HOME=$HOME" "PATH=$PATH" "TMPDIR=/tmp"
-  "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   "PODMAN_COMPOSE_PROVIDER=${PODMAN_COMPOSE_PROVIDER:-podman-compose}")
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then clean_env+=("XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"); fi
 
+# shellcheck disable=SC2329 # EXIT trap から間接的に呼び出す。
 finish() {
   local rc=$? cleanup_rc=0 ids network
   trap - EXIT
@@ -62,7 +63,7 @@ finish() {
     fi
     rm -rf -- "$root"
   fi
-  [[ "$cleanup_rc" == 0 ]] || rc=1
+  if [[ "$rc" == 0 && "$cleanup_rc" != 0 ]]; then rc=1; fi
   {
     printf '# 実コンテナ検証\n\n'
     # shellcheck disable=SC2016 # Markdown のバッククォートはリテラル。
@@ -86,25 +87,35 @@ run_phase() {
   printf '\n## %s の検査\n' "$phase"
   local rc=0
   timeout --signal=TERM --kill-after=30s "$@" 2>&1 | tee "$results/$phase.log" || rc=$?
-  if [[ "$rc" != 0 ]]; then return "$rc"; fi
+  if [[ "$rc" != 0 ]]; then
+    if [[ "$rc" == 77 ]]; then outcome[$phase]='not run（環境の前提を満たさない）'
+    else outcome[$phase]="FAIL（終了コード $rc）"; fi
+    return "$rc"
+  fi
   outcome[$phase]=PASS
 }
 
 outcome[environment]=running
-{
+environment_rc=0
+(
+  # exit の際に親の EXIT trap をリダイレクト内で動かさない。
+  trap - EXIT
   printf '対象 commit: %s\n' "$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
   git -C "$SCRIPT_DIR" status --short
   uname -srmo
+  id
   for command in podman python3 curl jq timeout; do
-    command -v "$command" || exit 77
+    command -v "$command" || { echo "not run: 必要なコマンド $command がありません"; exit 77; }
   done
-  "${clean_env[@]}" podman info || exit 77
-  "${clean_env[@]}" podman compose version || exit 77
+  timeout 30s "${clean_env[@]}" podman info || exit 77
+  timeout 10s "${clean_env[@]}" podman compose version || exit 77
   # 実マウント検査に必要な --in-pod は podman-compose のオプション。
-  "${clean_env[@]}" podman compose --help | grep -q -- --in-pod || exit 77
-  [[ "$(podman info --format '{{.Host.Security.Rootless}}')" == true ]] || exit 77
-} > "$results/environment.log" 2>&1
+  provider_help=$(timeout 10s "${clean_env[@]}" "${PODMAN_COMPOSE_PROVIDER:-podman-compose}" --help) || exit 77
+  grep -q -- --in-pod <<< "$provider_help" || { echo 'not run: provider に --in-pod がありません'; exit 77; }
+  [[ "$(timeout 10s podman info --format '{{.Host.Security.Rootless}}')" == true ]] || { echo 'not run: rootless Podman が必要です'; exit 77; }
+) > "$results/environment.log" 2>&1 || environment_rc=$?
 cat "$results/environment.log"
+if [[ "$environment_rc" != 0 ]]; then exit "$environment_rc"; fi
 outcome[environment]=PASS
 
 root="$(mktemp -d /tmp/claude-runtime.XXXXXX)"
@@ -118,10 +129,10 @@ cp "$SCRIPT_DIR/tests/runtime-probe.py" "$root/probe/bin/claude"
 chmod 755 "$root/probe/bin/claude"
 clean_env+=("CLAUDE_CONFIG_DIR=$root/config" "CONTEXT=$root/project"
   "CLAUDE_CONTAINER_DIR=$SCRIPT_DIR" "BUILD_CONTEXT_DIR=$root"
-  "TEST_IMAGE=$image" "TEST_LOG_DIR=$results/details")
+  "TEST_IMAGE=$image" "TEST_LOG_DIR=$results/details" "TEST_RUNTIME_USERNS=1")
 
 if [[ "$build" == 1 ]]; then
-  run_phase build 30m "${clean_env[@]}" bash "$SCRIPT_DIR/test-build.sh" --build-only
+  run_phase build 25m "${clean_env[@]}" bash "$SCRIPT_DIR/test-build.sh" --build-only
 else
   phase=build
   outcome[build]=running
@@ -131,7 +142,7 @@ fi
 run_phase mounts 5m "${clean_env[@]}" "TMPDIR=$root/mount-tmp" "TEST_COMPOSE_PROJECT=$mount_project" \
   bash "$SCRIPT_DIR/test-build.sh" --config-ro-only
 
-# image と検査プログラムのマウントのみ追加し、製品の ENTRYPOINT・CMD・cap_add は維持。
+# UID の対応付け・image・検査用マウントを追加し、製品の ENTRYPOINT・CMD・cap_add は維持。
 # Claude のバイナリ自体は --build-only で確認済み。ここでは対話・API 課金を発生させない。
 python3 - "$image" "$root" <<'PYTHON'
 import json
@@ -145,16 +156,21 @@ config = {"services": {"claude-auth-workspace": {
 }}}
 Path(root, "compose.runtime.json").write_text(json.dumps(config))
 PYTHON
-compose=("${clean_env[@]}" podman compose -f "$SCRIPT_DIR/compose.yml" -f "$root/compose.runtime.json" -p "$run_id" --in-pod false)
+compose=("${clean_env[@]}" podman compose -f "$SCRIPT_DIR/compose.yml" -f "$SCRIPT_DIR/tests/compose.runtime-userns.yml"
+  -f "$root/compose.runtime.json" -p "$run_id" --in-pod false)
 run_phase control-before 2m "${compose[@]}" run --rm -T --name "$run_id-control-before" \
   claude-auth-workspace python3 /runtime-probe/bin/claude --control-before
-run_phase protected 5m "${compose[@]}" run --rm -T --name "$run_id-protected" claude-auth-workspace
+protected_rc=0
+run_phase protected 5m "${compose[@]}" run --rm -T --name "$run_id-protected" claude-auth-workspace || protected_rc=$?
 # entrypoint が検査プログラムを実行せず 0 で終わる回帰も成功にしない。
-outcome[protected]=running
-if ! grep -qx 'RUNTIME_PROBE_OK' "$results/protected.log"; then
+if [[ "$protected_rc" == 0 ]] && ! grep -qx 'RUNTIME_PROBE_OK' "$results/protected.log"; then
   echo 'ERROR: entrypoint から検査プログラムの完了まで到達していません' | tee -a "$results/protected.log" >&2
-  exit 1
+  protected_rc=1
+  outcome[protected]='FAIL（検査プログラムの完了印なし）'
 fi
-outcome[protected]=PASS
+# 保護検査の失敗時も対照を記録する。最初の失敗の終了コードは維持する。
+control_rc=0
 run_phase control-after 2m "${compose[@]}" run --rm -T --name "$run_id-control-after" \
-  claude-auth-workspace python3 /runtime-probe/bin/claude --control-after
+  claude-auth-workspace python3 /runtime-probe/bin/claude --control-after || control_rc=$?
+if [[ "$protected_rc" != 0 ]]; then exit "$protected_rc"; fi
+exit "$control_rc"

@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import selectors
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from time import sleep as pause
 
 DIRECTORY = Path('/tmp/claude-firewall-refresh')
 LOG_BYTES = 256 * 1024
@@ -27,8 +29,13 @@ def prepare_directory(directory):
 
 @contextmanager
 def writer_lock(directory):
-    prepare_directory(directory)
-    with (directory / 'writer.lock').open('a') as lock:
+    # 診断ディレクトリを清掃・再作成しても同じ inode のロックを保持する。
+    path = directory.with_name(directory.name + '.lock')
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a') as lock:
+        info = os.fstat(lock.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise OSError('監視ロックの種類または所有者が不正です')
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
 
@@ -37,6 +44,8 @@ class BoundedLog:
     def __init__(self, directory):
         self.path = directory / 'refresh.log'
         self.previous = directory / 'refresh.log.1'
+
+    def write(self, data):
         # 再起動時も既存の各世代を上限内へ収める。
         for path in (self.path, self.previous):
             if path.exists() and path.stat().st_size > LOG_BYTES:
@@ -45,7 +54,6 @@ class BoundedLog:
                     tail = stream.read(LOG_BYTES)
                 path.write_bytes(tail)
 
-    def write(self, data):
         while data:
             size = self.path.stat().st_size if self.path.exists() else 0
             if size >= LOG_BYTES:
@@ -61,32 +69,62 @@ class Monitor:
 
     def __init__(self, directory, command):
         self.directory = directory
-        prepare_directory(directory)
         self.command = command
         self.log = BoundedLog(directory)
         self.state = dict(pid=os.getpid(), started_at=time.time(), phase='waiting',
                           result='not_run', last_attempt_at=None, last_completed_at=None,
-                          last_success_at=None, consecutive_failures=0, last_failure=None)
+                          last_success_at=None, consecutive_failures=0, last_failure=None,
+                          diagnostic_errors={}, last_diagnostic_error=None)
         self.save()
+
+    def diagnostic_error(self, operation, error):
+        summary = str(error)[-1024:]
+        self.state['diagnostic_errors'][operation] = summary
+        self.state['last_diagnostic_error'] = dict(at=time.time(), operation=operation, summary=summary)
+
+    def emit(self, data):
+        try:
+            prepare_directory(self.directory)
+            self.log.write(data)
+            self.state['diagnostic_errors'].pop('log', None)
+        except OSError as error:
+            # 診断の失敗で pipe の読み取りや次サイクルの更新を止めない。
+            self.diagnostic_error('log', error)
 
     def save(self):
         self.state['heartbeat_at'] = time.time()
-        fd, name = tempfile.mkstemp(prefix='state-', dir=self.directory)
+        name = None
         try:
+            prepare_directory(self.directory)
+            fd, name = tempfile.mkstemp(prefix='state-', dir=self.directory)
+            self.state['diagnostic_errors'].pop('state', None)
             with os.fdopen(fd, 'w') as stream:
                 json.dump(self.state, stream, ensure_ascii=False)
                 stream.write('\n')
             os.replace(name, self.directory / 'state.json')
+        except OSError as error:
+            self.diagnostic_error('state', error)
         finally:
-            Path(name).unlink(missing_ok=True)
+            if name is not None:
+                try:
+                    Path(name).unlink(missing_ok=True)
+                except OSError as error:
+                    self.diagnostic_error('state', error)
 
     def run_cycle(self):
         self.state.update(phase='running', last_attempt_at=time.time())
         self.save()
-        self.log.write(f"--- attempt {self.state['last_attempt_at']} ---\n".encode())
+        stamp = datetime.fromtimestamp(self.state['last_attempt_at'], timezone.utc).isoformat()
+        self.emit(f"--- attempt {stamp} ---\n".encode())
         tail = b''
         try:
-            with subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+            proc = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except OSError as error:
+            rc = 127
+            tail = str(error).encode()[-4096:]
+            self.emit(tail + b'\n')
+        else:
+            with proc:
                 with selectors.DefaultSelector() as selector:
                     selector.register(proc.stdout, selectors.EVENT_READ)
                     next_heartbeat = time.monotonic() + self.heartbeat_interval
@@ -95,7 +133,7 @@ class Monitor:
                         for key, _ in selector.select(delay):
                             data = os.read(key.fd, 4096)
                             if data:
-                                self.log.write(data)
+                                self.emit(data)
                                 tail = (tail + data)[-4096:]
                             else:
                                 selector.unregister(key.fileobj)
@@ -103,10 +141,6 @@ class Monitor:
                             self.save()
                             next_heartbeat = time.monotonic() + self.heartbeat_interval
                     rc = proc.wait()
-        except OSError as error:
-            rc = 127
-            tail = str(error).encode()[-4096:]
-            self.log.write(tail + b'\n')
         result = 'success' if rc == 0 else 'partial' if rc == 75 else 'failure'
         completed = time.time()
         self.state.update(phase='waiting', result=result, last_completed_at=completed)
@@ -117,7 +151,7 @@ class Monitor:
             self.state['consecutive_failures'] += 1
             self.state['last_failure'] = dict(at=completed, result=result, exit_code=rc,
                                              summary=tail.decode(errors='replace')[-1024:].strip())
-        self.log.write(f'--- result {result} rc={rc} ---\n'.encode())
+        self.emit(f'--- result {result} rc={rc} ---\n'.encode())
         self.save()
 
 
@@ -131,8 +165,9 @@ def read_status(directory, now=None):
     for name in ('started_at', 'heartbeat_at', 'last_attempt_at', 'last_completed_at', 'last_success_at'):
         if state[name] is not None:
             state[name] = datetime.fromtimestamp(state[name], timezone.utc).isoformat(timespec='seconds')
-    if state['last_failure']:
-        state['last_failure']['at'] = datetime.fromtimestamp(state['last_failure']['at'], timezone.utc).isoformat(timespec='seconds')
+    for name in ('last_failure', 'last_diagnostic_error'):
+        if state[name]:
+            state[name]['at'] = datetime.fromtimestamp(state[name]['at'], timezone.utc).isoformat(timespec='seconds')
     return state
 
 
@@ -151,7 +186,7 @@ def main():
             with writer_lock(DIRECTORY):
                 monitor = Monitor(DIRECTORY, command)
                 while True:
-                    time.sleep(15)
+                    pause(15)
                     monitor.run_cycle()
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f'ERROR: 更新診断を利用できません: {error}', file=sys.stderr)

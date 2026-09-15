@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """実更新関数と監視ヘルパーの状態遷移・ログ上限を検査する（#106）。"""
 import importlib.util
+import errno
+import io
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,6 +28,25 @@ def shell_function(name):
 
 
 class RefreshResultTests(unittest.TestCase):
+    def test_failed_listing_still_adds_but_never_deletes_from_partial_output(self):
+        script = '''set -euo pipefail
+CHAIN=CLAUDE_EGRESS
+iptables() {
+  if [[ "$1" == -S ]]; then
+    printf '%s\\n' '-N CLAUDE_EGRESS' '-A CLAUDE_EGRESS -d 192.0.2.1/32 --comment "domain=fixture.invalid;gen=900"'
+    return 1
+  fi
+  echo WRONG_DELETE
+}
+add_cidr_tagged() { echo ADDED; }
+'''
+        result = subprocess.run(['bash', '-c', script + shell_function('add_or_touch_domain_ip') + '\nadd_or_touch_domain_ip 192.0.2.1 fixture.invalid 1000'],
+                                capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ADDED', result.stdout)
+        self.assertNotIn('WRONG_DELETE', result.stdout)
+        self.assertIn('WARNING:', result.stderr)
+
     def test_cycle_reports_partial_failure_but_still_prunes(self):
         for refresh_rc, prune_rc, expected in ((0, 0, 0), (1, 0, 75), (0, 1, 75), (1, 1, 75)):
             with self.subTest(refresh=refresh_rc, prune=prune_rc):
@@ -148,6 +170,51 @@ class MonitorTests(unittest.TestCase):
                 with self.module.writer_lock(self.directory):
                     self.fail('二重 writer を許可しました')
 
+    def test_deleted_directory_recovers_without_losing_writer_lock(self):
+        with self.module.writer_lock(self.directory):
+            self.worker(rc=75)
+            self.monitor.run_cycle()
+            shutil.rmtree(self.directory)
+            self.monitor.run_cycle()
+            self.assertEqual(self.state()['consecutive_failures'], 2)
+            self.assertTrue((self.directory / 'refresh.log').exists())
+            with self.assertRaises(BlockingIOError):
+                with self.module.writer_lock(self.directory):
+                    self.fail('診断ディレクトリ削除でロックを失いました')
+
+    def test_storage_failures_do_not_stop_or_misclassify_worker(self):
+        for operation in ('state', 'log'):
+            with self.subTest(operation=operation):
+                target = self.module.tempfile if operation == 'state' else self.module.BoundedLog
+                method = 'mkstemp' if operation == 'state' else 'write'
+                self.worker(output='healthy worker')
+                with patch.object(target, method, side_effect=OSError(errno.ENOSPC, 'fixture disk full')):
+                    self.monitor.run_cycle()
+                self.assertEqual(self.monitor.state['result'], 'success')
+                self.assertEqual(self.monitor.state['consecutive_failures'], 0)
+                self.assertIn(operation, self.monitor.state['diagnostic_errors'])
+                self.worker(rc=75, output='WARNING: actual update failure')
+                self.monitor.run_cycle()
+                self.assertEqual(self.state()['result'], 'partial')
+                self.assertEqual(self.state()['last_failure']['exit_code'], 75)
+                self.assertEqual(self.state()['diagnostic_errors'], {})
+                self.assertIn('fixture disk full', self.state()['last_diagnostic_error']['summary'])
+
+    def test_status_cli_reports_missing_and_corrupt_state(self):
+        for content in (None, 'broken'):
+            with self.subTest(content=content):
+                path = self.directory / 'state.json'
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(content)
+                error = io.StringIO()
+                with patch.object(self.module, 'DIRECTORY', self.directory), \
+                     patch.object(sys, 'argv', ['firewall-refresh.py', '--status']), \
+                     patch.object(sys, 'stderr', error):
+                    self.assertEqual(self.module.main(), 1)
+                self.assertIn('ERROR:', error.getvalue())
+
     def test_main_retries_partial_cycles_and_preserves_ipv6_mode(self):
         fake = self.root / 'sudo'
         fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$RECORD"\nexit 75\n')
@@ -159,7 +226,7 @@ class MonitorTests(unittest.TestCase):
                 with patch.object(self.module, 'DIRECTORY', self.directory), \
                      patch.object(sys, 'argv', ['firewall-refresh.py', *mode]), \
                      patch.dict(os.environ, PATH=f'{self.root}:{os.defpath}', RECORD=str(record)), \
-                     patch.object(self.module.time, 'sleep', side_effect=[None, None, KeyboardInterrupt]):
+                     patch.object(self.module, 'pause', side_effect=[None, None, KeyboardInterrupt]):
                     with self.assertRaises(KeyboardInterrupt):
                         self.module.main()
                 self.assertEqual(self.state()['consecutive_failures'], 2)

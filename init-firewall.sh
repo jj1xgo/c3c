@@ -26,7 +26,7 @@ CHAIN=CLAUDE_EGRESS
 readonly IPV6_HELPER=/usr/local/bin/ipv6-firewall.py
 # 観測された最短の CDN TTL は 13 秒。それよりやや遅く更新することで、1 回の取りこぼしを
 # 毎回の揺らぎを追いかけるのではなく次のサイクルで拾えるようにする。
-# sleep 自体は entrypoint.sh の更新ループ側にある — 両者を同期させておくこと。
+# sleep 自体は firewall-refresh.py の更新ループ側にある — 両者を同期させておくこと。
 # ここでの定数は、下の猶予期間のサイズを決めるためのもの。
 REFRESH_INTERVAL_SECONDS=15
 # 更新サイクル 12 回分の猶予: CDN が 1 回のクエリで稼働中エッジ IP の一部しか
@@ -169,11 +169,21 @@ add_cidr_tagged() {
 # 追加した後も一致し続ける。
 add_or_touch_domain_ip() {
   local ip="$1" domain="$2" generation="$3"
-  local existing_idx
-  existing_idx=$(iptables -S "$CHAIN" | tail -n +2 | \
-    grep -nF -- "-d ${ip}/32 " | grep -F "domain=${domain};" | \
-    cut -d: -f1 | head -n1 || true)
+  local existing_idx="" rules listing_failed=0
+  if rules=$(iptables -S "$CHAIN"); then
+    existing_idx=$(printf '%s\n' "$rules" | tail -n +2 | \
+      grep -nF -- "-d ${ip}/32 " | grep -F "domain=${domain};" | \
+      cut -d: -f1 | head -n1 || true)
+  else
+    listing_failed=1
+  fi
   add_cidr_tagged "$ip" "$domain" "$generation" || return 1
+  # 一覧取得に失敗しても従来どおり新しい IP の追加は試すが、成功扱いにしない。
+  # 失敗した一覧の部分出力から行番号を選んで削除しない。
+  if [[ "$listing_failed" == 1 ]]; then
+    echo "WARNING: $CHAIN の旧ルール一覧を取得できませんでした" >&2
+    return 1
+  fi
   if [ -n "$existing_idx" ]; then
     iptables -D "$CHAIN" "$existing_idx"
   fi
@@ -296,7 +306,11 @@ refresh_domains() {
 # ここで一致することはない。行番号の降順で削除する。`iptables -D CHAIN N` は
 # N を削除するとそれ以降の全行の番号が詰まるため。
 prune_stale_domain_rules() {
-  local cutoff="$1"
+  local cutoff="$1" rules had_errors=0
+  if ! rules=$(iptables -S "$CHAIN"); then
+    echo "WARNING: $CHAIN の期限切れルール一覧を取得できませんでした" >&2
+    return 1
+  fi
   local -a stale_line_numbers=()
   local idx=0 line rule_gen
   while IFS= read -r line; do
@@ -307,12 +321,15 @@ prune_stale_domain_rules() {
         stale_line_numbers+=("$idx")
       fi
     fi
-  done < <(iptables -S "$CHAIN" | tail -n +2)
+  done < <(printf '%s\n' "$rules" | tail -n +2)
   local n
   for (( n=${#stale_line_numbers[@]}-1; n>=0; n-- )); do
-    iptables -D "$CHAIN" "${stale_line_numbers[n]}" 2>/dev/null || \
+    if ! iptables -D "$CHAIN" "${stale_line_numbers[n]}" 2>/dev/null; then
       echo "WARNING: $CHAIN の ${stale_line_numbers[n]} 行目の古いルールを削除できませんでした" >&2
+      had_errors=1
+    fi
   done
+  return "$had_errors"
 }
 
 # dual-stack でも IPv6 の成功が IPv4 の故障を隠さないよう、アドレス族を固定する。
@@ -522,11 +539,19 @@ full_init() {
 # fail-open で動く: 失敗したサイクルは警告をログに残し、コンテナを畳むのではなく
 # 次のサイクルの再試行に任せる。
 do_refresh() {
-  local gen
+  local gen result=0
   gen="$(date +%s)"
   echo "--- 更新サイクル $(date -Is) ---"
-  refresh_domains "$gen" || echo "WARNING: このサイクルで更新に失敗したドメインがあります" >&2
-  prune_stale_domain_rules "$(( gen - GRACE_WINDOW_SECONDS ))"
+  if ! refresh_domains "$gen"; then
+    echo "WARNING: このサイクルで更新に失敗したドメインがあります" >&2
+    result=75
+  fi
+  if ! prune_stale_domain_rules "$(( gen - GRACE_WINDOW_SECONDS ))"; then
+    echo "WARNING: このサイクルで期限切れルールの削除に失敗しました" >&2
+    result=75
+  fi
+  # 75 はサイクルを完走したが一部処理で失敗。監視ループは止めず次回も実行する。
+  return "$result"
 }
 
 case "$MODE" in

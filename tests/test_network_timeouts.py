@@ -131,7 +131,7 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
         self.run_dir = self.root / 'run'
         self.stage = self.run_dir / '.build-context' / 'current'
         self.stage.mkdir(parents=True)
-        for file in ('entrypoint.sh', 'init-firewall.sh', 'ipv6-firewall.py',
+        for file in ('entrypoint.sh', 'init-firewall.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
                      'git-askpass.sh', 'validate-build-input.sh', 'allowed-domains.txt'):
             shutil.copy2(ROOT / file, self.run_dir / file)
 

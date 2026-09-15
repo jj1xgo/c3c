@@ -628,6 +628,7 @@ run_launcher_tests() {
   run_instruction_mount_launcher_tests
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
+  check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
@@ -1253,7 +1254,15 @@ run_ipv6_launcher_tests() {
   check "IPv6 未対応の旧イメージを --check も拒否" [ "$rc" -ne 0 ]
   cat > "$bin/curl" <<'CURL'
 #!/bin/sh
-printf '%s\n' '{"web":[],"api":[],"git":[]}'
+# 実 curl と同じく --output 先へ書く（stdout へ出すと再試行時に巻き戻せない）。
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then
+    printf '%s\n' '{"web":[],"api":[],"git":[]}' > "$2"
+    exit 0
+  fi
+  shift
+done
+exit 2
 CURL
   chmod +x "$bin/curl"
   launcher_sandbox_reset_records
@@ -1440,7 +1449,15 @@ CASES
   # P2: -b では build・run の各呼び出しに export と override が 1 回ずつ渡る
   cat > "$bin/curl" <<'CURL'
 #!/bin/sh
-printf '%s\n' '{"web":[],"api":[],"git":[]}'
+# 実 curl と同じく --output 先へ書く（stdout へ出すと再試行時に巻き戻せない）。
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then
+    printf '%s\n' '{"web":[],"api":[],"git":[]}' > "$2"
+    exit 0
+  fi
+  shift
+done
+exit 2
 CURL
   chmod +x "$bin/curl"
   launcher_sandbox_reset_records
@@ -1655,10 +1672,20 @@ stage_common_context() {
   : > "$dest/codex-version.txt"
   : > "$dest/allowed-ports.txt"
 
-  local sibling
-  if curl -fsS --connect-timeout 10 --max-time 60 --retry 2 https://api.github.com/meta | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
-    return 0
+  local sibling gh_meta fetch_rc
+  gh_meta=$(mktemp "$dest/github-meta.XXXXXX") || return 1
+  # launcher と同じ上限。部分応答を再試行で連結しないよう curl 自身にファイルを渡す。
+  if timeout --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
+      --retry 2 --retry-connrefused --retry-max-time 60 \
+      --output "$gh_meta" https://api.github.com/meta \
+      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1; then
+    mv "$gh_meta" "$dest/github-meta.json"
+    return
+  else
+    fetch_rc=$?
   fi
+  rm -f "$gh_meta"
+  echo "WARNING: GitHub meta の取得・検証に失敗しました（rc=$fetch_rc、接続10秒・1試行30秒・再試行2回・全体90秒上限）。通信・レート制限・応答形式を確認してください" >&2
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)
   if [[ -n "$sibling" ]]; then

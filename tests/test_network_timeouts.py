@@ -250,9 +250,10 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
             start = time.monotonic()
             proc.stdin.write(b'\x03')
             proc.stdin.flush()
-            proc.communicate(timeout=6)
+            out, err = proc.communicate(timeout=6)
             self.assertLess(time.monotonic() - start, 1.5)
             self.assertNotEqual(proc.returncode, 0)
+            self.assertNotIn(b'ERROR:', out + err, '中断後に通常の取得失敗経路へ進んでいます')
             self.assertEqual(list(self.stage.glob('github-meta.*')), [])
         finally:
             if proc.poll() is None:

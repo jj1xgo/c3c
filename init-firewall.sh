@@ -319,11 +319,11 @@ prune_stale_domain_rules() {
 # shellcheck disable=SC2016 # bash -c 内の位置引数は接続確認の子シェルで展開する。
 verify_ipv4() {
   echo "ファイアウォールのルールを検証しています..."
-  if curl -4 --connect-timeout 5 -s https://example.com >/dev/null 2>&1; then
+  if curl -q -4 --connect-timeout 5 --max-time 10 --retry 0 -s https://example.com >/dev/null 2>&1; then
     echo "ERROR: ファイアウォール検証に失敗しました。https://example.com へ到達できてしまいました" >&2
     exit 1
   fi
-  echo "検証 OK: 想定どおり https://example.com へ到達できません"
+  echo "検証 OK: 想定どおり https://example.com へ到達できません（接続5秒・全体10秒上限）"
   # TCP の接続確認のみ（HTTP リクエストはしない）。これにより、コンテナ起動の
   # たびに未認証の GitHub API のレート制限を消費しない。
   local github_ipv4
@@ -333,11 +333,13 @@ verify_ipv4() {
     exit 1
   fi
   echo "検証 OK: 想定どおり api.github.com:443 へ到達できます"
-  if ! curl -4 --connect-timeout 10 -s -o /dev/null https://api.anthropic.com; then
-    echo "ERROR: ファイアウォール検証に失敗しました。https://api.anthropic.com へ到達できません" >&2
+  if curl -q -4 --connect-timeout 10 --max-time 20 --retry 0 -sS -o /dev/null https://api.anthropic.com; then
+    echo "検証 OK: 想定どおり https://api.anthropic.com へ到達できます"
+  else
+    local curl_rc=$?
+    echo "ERROR: ファイアウォール検証に失敗しました。https://api.anthropic.com へ到達できません（curl rc=$curl_rc、接続10秒・全体20秒上限、再試行なし）" >&2
     exit 1
   fi
-  echo "検証 OK: 想定どおり https://api.anthropic.com へ到達できます"
   # ポート制限（claude-container#31）が、それ以外は許可された IP の非許可
   # ポートを実際に遮断していることを確認する。github.com は実際に 80 番でも
   # 待ち受けている（HTTP → HTTPS リダイレクト）ので、ここでの失敗は「相手が

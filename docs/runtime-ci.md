@@ -93,12 +93,14 @@ bash tests/test-runtime.sh --image localhost/claude-test
 長時間の DNS 更新、対話 UI や実アカウントでの認証を網羅するものではない。
 製品の境界全体の保証には、既存のテスト・コードレビュー・利用側の実起動確認も必要になる。
 
-## 初回のローカル実測と実行頻度
+## 初回の実測と実行頻度
+
+### ローカル
 
 2026-09-15（JST）、commit `4470876d2c964235f0dc3d01310f7a90409361c2` で
 `tests/test-runtime.sh` をビルドから実行した。rootless Podman 5.8.6、netavark 1.17.2、
 podman-compose 1.6.0、Linux 7.2.4-local / amd64 のホストで **62 秒、終了コード 0**。
-ビルド・ツール起動は 7 件、マウント保護は 25 件すべて PASS。権限・通信・前後の対照と清掃も成功した。
+静的チェック・ビルド・ツール起動は 7 件、マウント保護は 25 件すべて PASS。権限・通信・前後の対照と清掃も成功した。
 ビルドした Claude Code は 2.1.271、gh は 2.100.0、jq は 1.7。
 Podman のビルドキャッシュは無効、ベースイメージはホストに取得済みだった。
 
@@ -107,7 +109,27 @@ Podman のビルドキャッシュは無効、ベースイメージはホスト�
 CI 専用の UID 対応付けを含め、probe の UID:GID は `1000:1000`、
 `CapInh`・`CapPrm`・`CapEff`・`CapAmb` はすべて 0 だった。
 
-この実測を踏まえ、依存パッケージと runner の変化を定点観測する初期頻度を週 1 回とする。
-GitHub hosted runner での実測は **not run（初回導入のマージ前）**。
-ホストの 62 秒は hosted runner の所要時間ではない。初回マージ後に手動実行し、
-artifact に記録される準備込みの所要時間と成功・失敗を確認して、頻度・上限の調整に使う。
+### GitHub hosted runner
+
+2026-09-15（JST）、初回マージ後の main commit
+`f497a5e6fc68c9f251a41b00779427839b39dffa` を
+[手動実行](https://github.com/jj1xgo/claude-container/actions/runs/34912915312)した。
+検査スクリプトは **64 秒、準備込み 69 秒、終了コード 0、全 6 段階 PASS**。
+静的チェック・ビルド・ツール起動 7 件、マウント保護 25 件が PASS、後始末の終了コードも 0 だった。
+Actions のジョブ時刻から計算した開始〜終了は 73 秒で、準備込みの値には artifact 保存と checkout 前後の処理を含めない。
+
+環境は Ubuntu 24.04 / amd64、Linux 6.17.0-1022-azure、rootless Podman 4.9.3、
+netavark 1.4.0、podman-compose 1.6.0。ホストの UID:GID は `1001:1001`、
+CI 専用の対応付け後の検査プロセスは `1000:1000` だった。
+`CapInh`・`CapPrm`・`CapEff`・`CapAmb` はすべて 0 で、許可通信・禁止通信と前後の対照も成功した。
+IPv6 opt-in の疎通は引き続き **not run**。
+`/proc/sys` 経由の IPv6 無効化は読み取り専用のため失敗し、非致命のフォールバック警告が出た。
+Compose の sysctls の効果と IPv6 の実疎通は、この実行では確認していない。
+
+main 以外のブランチ指定も、`docs/runtime-ci-hosted-105` の commit
+`055102b4c1d59c8e5e908c718e551a8192ec1d29` を指定した
+[手動実行](https://github.com/jj1xgo/claude-container/actions/runs/34913253632)で成功した。
+
+この実測を踏まえ、依存パッケージと runner の変化を定点観測する頻度は週 1 回を維持する。
+定期実行の cron は main に登録済みだが、この記録時点では schedule イベントによる起動は未観測。
+今後の実行結果と所要時間を基に頻度・上限を調整する。

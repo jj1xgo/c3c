@@ -1214,16 +1214,19 @@ stage_build_context() {
   # curl の --max-time は試行ごとにリセットされる。Retry-After の待機も含め
   # timeout で全体を制限する。-q は利用者の curlrc による再試行等の上書きを避ける。
   # -o なら再試行時に部分応答が巻き戻される（stdout の連結では JSON が壊れる）。
-  if timeout --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
+  # --foreground は端末の Ctrl-C を curl にも届ける。一時ファイルは中断時も清掃。
+  if (
+    trap 'rm -f "$gh_meta"' EXIT
+    timeout --foreground --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
       --retry 2 --retry-connrefused --retry-max-time 60 \
       --output "$gh_meta" https://api.github.com/meta \
-      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1; then
-    mv "$gh_meta" "$BUILD_CONTEXT_DIR/github-meta.json"
-    return
+      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1 \
+      && mv "$gh_meta" "$BUILD_CONTEXT_DIR/github-meta.json"
+  ); then
+    return 0
   else
     fetch_rc=$?
   fi
-  rm -f "$gh_meta"
   echo "WARNING: GitHub meta の取得・検証に失敗しました（rc=$fetch_rc、接続10秒・1試行30秒・再試行2回・全体90秒上限）。通信・レート制限・応答形式を確認してください" >&2
   # shellcheck disable=SC2012 # ls は下の elif のみ。パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   if [[ -f "$BUILD_CONTEXT_DIR/github-meta.json" ]]; then

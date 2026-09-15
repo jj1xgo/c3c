@@ -1675,16 +1675,18 @@ stage_common_context() {
   local sibling gh_meta fetch_rc
   gh_meta=$(mktemp "$dest/github-meta.XXXXXX") || return 1
   # launcher と同じ上限。部分応答を再試行で連結しないよう curl 自身にファイルを渡す。
-  if timeout --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
+  if (
+    trap 'rm -f "$gh_meta"' EXIT
+    timeout --foreground --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
       --retry 2 --retry-connrefused --retry-max-time 60 \
       --output "$gh_meta" https://api.github.com/meta \
-      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1; then
-    mv "$gh_meta" "$dest/github-meta.json"
-    return
+      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1 \
+      && mv "$gh_meta" "$dest/github-meta.json"
+  ); then
+    return 0
   else
     fetch_rc=$?
   fi
-  rm -f "$gh_meta"
   echo "WARNING: GitHub meta の取得・検証に失敗しました（rc=$fetch_rc、接続10秒・1試行30秒・再試行2回・全体90秒上限）。通信・レート制限・応答形式を確認してください" >&2
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)

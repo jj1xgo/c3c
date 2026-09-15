@@ -344,6 +344,7 @@ GitHub meta の取得はランチャー・`test-build.sh` ともに、接続10�
 `--max-time` は試行ごとにリセットされ、`--retry-max-time` は進行中の試行を止めないため、
 [全体を別に制限する](https://curl.se/docs/manpage.html#--retry-max-time)。
 部分応答は一時ファイルに受け、取得と JSON 検証が成功した場合だけ保存先を更新する。
+Ctrl-C は取得処理にも伝え、中断時も一時ファイルを清掃する。
 失敗時は終了コード（curl の28はタイムアウト、timeout の124は全体上限）と上限をログに残し、
 上記のスナップショット再利用へ進む。`test-build.sh --build-only` は再利用元もなければ77（not run）。
 
@@ -466,6 +467,9 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 ## 変更後の確認
 
+通信の回帰テストはローカル HTTP サーバーと実 curl を使う。
+Ctrl-C の確認には util-linux の `script` で疑似端末を用意する。
+
 テストは `lint.sh`、`test-build.sh`（ベクタ表・契約テスト・ランチャーテスト・実イメージのビルドと起動確認）、`examples/hooks/tests/test-block-pr-approve.sh`（同梱 hook の回帰テスト）で行う。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
 
 GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push のたびに `lint.sh`（Compose 検証を含む）、`./test-build.sh --validator-only`、`./test-build.sh --launcher-only`、`bash examples/hooks/tests/test-block-pr-approve.sh` を `ubuntu-24.04` の runner で実行する。`test-build.sh` は検査の詳細を `.claude/test-results/` のログにしか書かないので、CI はどれかが失敗したときだけそのログを Actions に出す。Compose 検証は runner 同梱の Docker Compose を `PODMAN_COMPOSE_PROVIDER` で指定し、Podman 経由で実行する。Podman と provider が無ければ CI は失敗し、使用した版をログに残す。shellcheck はホストの開発環境と同じ版を SHA256 固定で取得する。実コンテナ検証は独立した手動・定期 workflow（`.github/workflows/runtime.yml`）で行う。`test-build.sh --build-only` と `--config-ro-only` を再利用し、起動後の権限・IPv4 の許可／禁止通信も確認する。PR の必須チェックは増やさない。実行方法・runner の前提・`not run` の扱いは [実コンテナの手動・定期検証](docs/runtime-ci.md) を参照。追加パッケージ・不正入力のビルド検査を含む `./test-build.sh` の全体実行は引き続きホストで行う。fork からの PR は GitHub の設定により初回の実行が承認待ちになることがあり、その間は赤でも緑でもない。
@@ -518,4 +522,3 @@ gh release create vX.Y.Z -R jj1xgo/claude-container --verify-tag --title vX.Y.Z 
 ## ライセンス
 
 GPL-3.0。フォーク元（sethjensen1/claude-container）は MIT ライセンス。詳細は [LICENSE](LICENSE) を参照。
-

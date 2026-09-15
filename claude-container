@@ -1067,7 +1067,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -1102,6 +1102,7 @@ ASSET_HASH_TARGETS=(
   entrypoint.sh
   init-firewall.sh
   ipv6-firewall.py
+  firewall-refresh.py
   compose.ipv6.yml
   compose.plugins-alias.yml
   compose.shared-home.yml
@@ -1155,7 +1156,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py git-askpass.sh validate-build-input.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done

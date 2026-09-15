@@ -211,6 +211,8 @@ RUN chmod 644 /etc/claude-container/github-meta.json && \
 # 境界アセット（ASSET_HASH_TARGETS に列挙）: init-firewall.sh・git-askpass.sh と
 # 同じ root 所有の /usr/local/bin に置くことで、ファイル自体もそれを保持する
 # ディレクトリも、実行時に node ユーザーからは書き込めない（claude-container#40）。
+COPY firewall-refresh.py /usr/local/bin/firewall-refresh.py
+RUN chmod 755 /usr/local/bin/firewall-refresh.py
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 

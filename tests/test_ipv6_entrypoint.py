@@ -30,7 +30,7 @@ class EntrypointTests(unittest.TestCase):
 
     def test_refresh_loop_preserves_mode(self):
         # 起動前半をそのまま実行し、後半の認証ファイル処理は実行しない。
-        # sudo/sleep とログ出力先だけを fixture にする。境界が消えたり後半が混入したら
+        # sudo と監視ヘルパーだけを fixture にする。境界が消えたり後半が混入したら
         # ここで検出する（黙って exec claude まで実行対象にしない）。
         full = (ROOT / 'entrypoint.sh').read_text()
         self.assertIn(BOUNDARY, full)
@@ -38,20 +38,20 @@ class EntrypointTests(unittest.TestCase):
         self.assertNotIn('\nexec claude', source)
         self.assertNotIn('SECRETS_MOUNT=', source)
         self.assertNotIn('MCP_CONFIG=', source)
-        source = source.replace('/tmp/claude-firewall-refresh.log', '"$REFRESH_LOG"')
+        source = source.replace('/usr/local/bin/firewall-refresh.py', '"$REFRESH_HELPER"')
         for value, expected in [('0', []), ('1', ['--ipv6'])]:
             with self.subTest(value=value), tempfile.TemporaryDirectory() as td:
                 tmp = pathlib.Path(td)
                 for name, body in {
                     'sudo': '#!/bin/sh\nprintf "%s\n" "$*" >> "$RECORD"\n',
-                    'sleep': '#!/bin/sh\nexec /bin/sleep 0.05\n',
+                    'helper': '#!/bin/sh\nprintf "helper %s\\n" "$*" >> "$RECORD"\n',
                 }.items():
                     fake = tmp / name
                     fake.write_text(body)
                     fake.chmod(0o755)
                 record = tmp / 'record'
                 env = {'PATH': td + ':' + os.defpath, 'RECORD': str(record),
-                       'CLAUDE_CONTAINER_IPV6': value, 'REFRESH_LOG': str(tmp / 'refresh.log')}
+                       'CLAUDE_CONTAINER_IPV6': value, 'REFRESH_HELPER': str(tmp / 'helper')}
                 proc = subprocess.Popen(['bash', '-c', source + '\nwait'], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
                 try:
@@ -64,7 +64,7 @@ class EntrypointTests(unittest.TestCase):
                         time.sleep(0.01)
                     self.assertGreaterEqual(len(lines), 2)
                     self.assertEqual(lines[0].split(), ['/usr/local/bin/init-firewall.sh', *expected])
-                    self.assertEqual(lines[1].split(), ['/usr/local/bin/init-firewall.sh', '--refresh-domains', *expected])
+                    self.assertEqual(lines[1].split(), ['helper', *expected])
                 finally:
                     os.killpg(proc.pid, signal.SIGTERM)
                     proc.communicate(timeout=3)

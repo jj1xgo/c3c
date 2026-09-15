@@ -14,24 +14,11 @@ else
     echo "ERROR: ファイアウォールの設定に失敗しました。起動を中止します（無効化するには CLAUDE_CONTAINER_NO_FIREWALL=1）" >&2
     exit 1
   fi
-  # CDN 経由（例: CloudFront 配下）の許可ドメインは、長いセッション時間の中では
-  # 短い ~13 秒程度の TTL で IP をローテーションしうる。init-firewall.sh の
-  # 起動時解決は一発限りのスナップショットなので、追随できるようバックグラウンドで
-  # 更新する。`&` によりサブシェルとしてバックグラウンド化する。下の `exec claude` は
-  # このスクリプト自身のプロセスイメージを置き換えるだけなので、サブシェルはその
-  # 子として生き残る。出力先は /tmp（bind mount された ~/.claude ではない）とする
-  # のは、これがセッションローカルなノイズだからで、共有 tty（compose.yml が
-  # claude の対話 UI 用に tty: true を設定）を汚さないようにするため。
-  # （コンテナの実際の PID1 は tini で、Dockerfile.claude の ENTRYPOINT で設定
-  # されている — このスクリプトと、これが exec する claude プロセスはどちらも
-  # tini の子として動くため、終了時に podman が転送するシグナルは生きている
-  # プロセスに届く。）
-  (
-    while true; do
-      sleep 15
-      sudo /usr/local/bin/init-firewall.sh --refresh-domains "${firewall_args[@]}"
-    done
-  ) >>/tmp/claude-firewall-refresh.log 2>&1 &
+  # 初期化後に非特権の監視ヘルパーを起動する。15秒待機後の差分更新、
+  # 容量制限付きログ、最終成功と連続失敗の記録を担当する。
+  # sudo は従来と同じ init-firewall.sh のみに使い、シークレットの export より前に起動する。
+  # 対話 UI には定期出力しない。状態は firewall-refresh.py --status で確認する。
+  /usr/local/bin/firewall-refresh.py "${firewall_args[@]}" >/dev/null 2>&1 &
 fi
 
 # --- 起動前半ここまで（tests/test_ipv6_entrypoint.py の抽出境界） ---

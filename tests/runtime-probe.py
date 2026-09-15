@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import time
 
 
 def connects(ip, port):
@@ -70,6 +71,23 @@ def main():
         if connects(ip, port):
             raise RuntimeError(f"禁止した宛先・ポート {ip}:{port} に到達しました")
     print("[PASS] 許可 IP の非許可ポートと、非許可 IP への接続が拒否されます")
+    # 実 entrypoint が起動した監視プロセスの最初の定期更新まで確認する。
+    # sudo の配線・アセットの組み込み漏れ・状態ファイルの読み取りを検査する。
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        result = subprocess.run(['/usr/local/bin/firewall-refresh.py', '--status'],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            refresh = json.loads(result.stdout)
+            if refresh['last_completed_at'] is not None:
+                print(f"定期更新の状態: {result.stdout}", flush=True)
+                if refresh['stale'] or refresh['result'] != 'success':
+                    raise RuntimeError('定期更新が成功していないか、診断状態が古くなっています')
+                break
+        time.sleep(.5)
+    else:
+        raise RuntimeError(f'定期更新の完了を確認できません: {result.stderr}')
+    print('[PASS] 定期更新が実行され、最新の成功状態を読み取れます')
     print("RUNTIME_PROBE_OK", flush=True)
     return 0
 

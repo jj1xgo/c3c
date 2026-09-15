@@ -145,7 +145,7 @@ fi
 # bytecode を生成せず Python の構文を確認する。
 python3 - <<'PYTHON' || status=1
 from pathlib import Path
-for path in [Path('ipv6-firewall.py'), *Path('tests').glob('*.py')]:
+for path in [*Path('.').glob('*.py'), *Path('tests').glob('*.py')]:
     compile(path.read_text(), str(path), 'exec')
 PYTHON
 

@@ -469,6 +469,8 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 ## 変更後の確認
 
+claude-container 自体を開発する場合は [AGENTS.md](AGENTS.md) と [docs/development-invariants.md](docs/development-invariants.md) を参照する。
+
 通信の回帰テストはローカル HTTP サーバーと実 curl を使う。
 Ctrl-C の確認には util-linux の `script` で疑似端末を用意する。
 
@@ -520,7 +522,6 @@ gh release create vX.Y.Z -R jj1xgo/claude-container --verify-tag --title vX.Y.Z 
 ## 参考
 
 - [Running Claude Code CLI in a Container (Endpoint Dev Blog)](https://www.endpointdev.com/blog/2026/03/claude-code-cli-in-container/) — フォーク元作者 Seth Jensen によるコンテナ化の解説記事
-- claude-container 自体を開発する場合は [AGENTS.md](AGENTS.md) と [docs/development-invariants.md](docs/development-invariants.md) を参照
 
 ## ライセンス
 

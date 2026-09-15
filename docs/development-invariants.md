@@ -23,7 +23,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - MCP監査ゲートのTOFU承認記録パス（`MCP_APPROVAL_STORE`/`MCP_APPROVAL_RECORD`）は `load_env_file()` より前に `$HOME` から直接算出し freeze する構成を変えない — プロジェクト側 `env` 経由での `HOME` 等書き換えによるパス乗っ取りを防ぐため。`MCP_APPROVAL_FILE` は `check_mcp_approval()` の全分岐の末尾で無条件 export する構成を変えない（env 由来の値を信用しない設計。`claude-container#28`）。
   - **起動可否を判定するガード**は全て `guard_*` 関数（一覧の正本は `claude-container` の dispatch 直前の呼び出し列）として通常起動と `--check` モードで共用する構成を壊さない。新ガードは必ず `guard_fail`/`guard_warn` 経由で関数化し両モードを通す（片側だけに足すと診断結果と実際の起動挙動がドリフトする）。起動台帳（`~/.local/state/claude-container/projects`）のパスも `load_env_file()` より前に freeze する（MCP承認記録と同じ流儀）。
   - **`--check` 専用のビルド入力診断**（`packages.txt`/`requirements.txt` の内容診断、`claude-container#34`）は上記と定義上分離する。判定は `validate-build-input.sh` が行い、強制は `Dockerfile.claude` の `RUN` が行う。`guard_warn` は表示・集計のためだけに使う（「新ガードの例外」ではなく別区分）。
-  - `--check` の保証は「**対象リポジトリと `.build-context/` を変更しない**」（`/tmp` 配下の一時ファイルは対象外 — 内容診断は `mktemp` 経由で必ず作業ファイルを作るため、無限定の「書き込みなし」は偽になる。文言の正本は README「利用側プロジェクトの設定」の `--check` 節で、実装コメントもこれに揃える）。`podman`/`jq` 不在は fail ではなく graceful skip。
+  - `--check` の保証は「**対象リポジトリと `.build-context/` を変更しない**」（`/tmp` 配下の一時ファイルは対象外 — 内容診断は `mktemp` 経由で必ず作業ファイルを作るため、無限定の「書き込みなし」は偽になる。文言の正本は README「起動前チェック（`--check`）」節で、実装コメントもこれに揃える）。`podman`/`jq` 不在は fail ではなく graceful skip。
   - `env` による境界変数の直接上書き対策（`claude-container#39`）: 該当する変数は `readonly` 属性そのものが保護対象の登録簿であり、本ファイルには列挙しない（新しい境界変数は宣言箇所で `readonly` するだけで自動保護される）。`readonly` 化時は次を守る — (1) 「最後の書き込みの後」かつ全 dispatch 経路で `load_env_file()` より前に置く、(2) `readonly VAR="$(...)"` は代入と別文にする（コマンド置換の失敗を握り潰すため）、(3) 保護変数を子プロセスへ渡すときは前置代入でなく `export` を使う（前置代入は代入エラーになり `set -euo pipefail` 下で起動が止まる）。
   - 境界アセットのドリフト検知（`claude-container#30`）: `resolve_asset_source()`（fixed/overridable/optionalの解決規則分岐、副作用なし）を `stage_build_context()` と `compute_asset_hash()` の両方から使う構成を壊さない — 2箇所が別々に解決規則を持つとドリフトする。`compute_asset_hash()` はファイル内容のみをハッシュする（パスを含めない — 同一内容を別パスへ clone しただけの誤警告を防ぐ）。`ASSET_HASH` は dispatch セクションで `build` と `run` 両方の env プレフィックスへ渡す構成を崩さない — `run` 側を外すと `-b` 無しの初回起動（暗黙ビルド）でラベルが空になり、直後の通常起動で必ず誤警告が出る。`guard_asset_drift()` は fail-open（`guard_warn` に留め `guard_fail` にしない）— セルフホスト開発時に本リポジトリを編集した瞬間ドリフトするため fail-closed にすると開発フローが壊れる。ベースイメージは内容ハッシュに加えラベル `claude-container.base-image` との直接比較も行う（「変更→`-b`→元の値へ戻して `-b` 忘れ」は内容ハッシュが一致し検知できないため）。この比較は `$BASE_IMAGE` に依存するため `guard_base_image()` を `guard_asset_drift()` より先に呼ぶ順序を崩さない。
   - 固定 Compose override の選択（`compose.ipv6.yml`・`compose.plugins-alias.yml`・`compose.shared-home.yml`・`compose.shared-host.yml`・`compose.agents.yml`）は `COMPOSE_OVERRIDE_ARGS` 配列 1 本に集約し、`guard_ipv6()`・`guard_plugins_alias()`・`guard_shared_home_alias()`・`guard_agents_dir()` が `+=` で積む。`ASSET_HASH` と同じ理由で dispatch の `build` と `run` の両方へ渡す構成を崩さない（片方だけだと `-b` の build と直後の run で構成が食い違う）。`check_one_project()` の冒頭でプロジェクトごとにリセットする。任意の podman 引数は受け付けない。
@@ -58,6 +58,10 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - ドメイン IP の追従は「CDN IP ローテーション追従」節を参照。
   - `refresh_domains()` のNXDOMAIN判定（一時的な解決失敗とは区別し、恒久的にドメイン自体が存在しない場合のみ `had_errors` をセットしない）を壊さない — ハードコード済み許可ドメインが恒久的にNXDOMAIN化すると起動そのものがfail-closedで止まり続ける（`statsig.anthropic.com`、2026-07-06）。
   - エグレス許可のポート限定（`ALLOWED_PORTS`、既定 `443,22`。`claude-container#31`）は `add_cidr()`/`add_cidr_tagged()`（＝`CHAIN` 経由のGitHub CIDR・タグ付きドメインルール）にのみ適用する。DNSリゾルバ宛ルールとホストネットワーク宛ルール（`OUTPUT`/`INPUT` へ直接 append、`CHAIN` を経由しない）を対象に含めない — 誤って含めると起動そのものが壊れる（DNS）か、host_network限定の意図が失われる。`host_network` はゲートウェイ単一IP（`/32`）に縮小済み、`/24` へ戻さない。
+- **`ipv6-firewall.py`** / **`firewall-refresh.py`**
+  - 固定境界アセットとして root 所有 755 で `/usr/local/bin/` に配置する。`init-firewall.sh` の `REFRESH_INTERVAL_SECONDS` と `firewall-refresh.py` の更新後待機時間、`GRACE_WINDOW_SECONDS` と `ipv6-firewall.py` の `GRACE_SECONDS` をそれぞれ同期させる。
+  - `firewall-refresh.py` は非特権の監視ヘルパーとしてシークレットの export より前に起動する。sudo の許可対象は `init-firewall.sh` のみとし、監視ヘルパー自体を特権起動しない。
+  - `init-firewall.sh --refresh-domains` の終了コード 75 を部分失敗として区別する契約を維持する。更新・診断の詳細は [firewall-refresh.md](firewall-refresh.md) を参照する。
 - **`git-askpass.sh`**
   - `init-firewall.sh` と同じ root 所有 755 パターンで `/usr/local/bin/` へ配置し、ランタイムに node ユーザーが改変できないようにする構成を変えない。
   - fail-closed 設計（github.com 宛の Username/Password プロンプト以外は応答せず exit 1）を壊さない。ホスト判定は `github.com.evil.com` 型の前方一致すり抜けを防ぐアンカー済み正規表現を維持する。
@@ -78,7 +82,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
 
 ### CDN IP ローテーション追従
 
-詳細は README.md「アーキテクチャ」節（`init-firewall.sh` の説明内）を参照。世代タグ（`gen=<epoch>`）による差分リフレッシュ構造を壊さない — 起動時1回解決に戻すと CDN の IP ローテーション後に新規接続が全滅する（2026-07-02）。
+詳細は README.md「アーキテクチャ」節（`init-firewall.sh` の説明内）と [firewall-refresh.md](firewall-refresh.md) を参照。世代タグ（`gen=<epoch>`）による差分リフレッシュ構造を壊さない — 起動時1回解決に戻すと CDN の IP ローテーション後に新規接続が全滅する（2026-07-02）。
 
 ### プロジェクト固有設定（`.claude-container.d/`）
 

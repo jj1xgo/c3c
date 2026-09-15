@@ -102,6 +102,11 @@ podman-compose 1.6.0、Linux 7.2.4-local / amd64 のホストで **62 秒、終�
 ビルドした Claude Code は 2.1.271、gh は 2.100.0、jq は 1.7。
 Podman のビルドキャッシュは無効、ベースイメージはホストに取得済みだった。
 
+レビュー修正後の commit `2514fbdb2c65d4dbd7191b57901986d482e37203` でも、
+同じホスト・provider でビルドから清掃まで再実行し、**61 秒、終了コード 0、全段階 PASS**。
+CI 専用の UID 対応付けを含め、probe の UID:GID は `1000:1000`、
+`CapInh`・`CapPrm`・`CapEff`・`CapAmb` はすべて 0 だった。
+
 この実測を踏まえ、依存パッケージと runner の変化を定点観測する初期頻度を週 1 回とする。
 GitHub hosted runner での実測は **not run（初回導入のマージ前）**。
 ホストの 62 秒は hosted runner の所要時間ではない。初回マージ後に手動実行し、

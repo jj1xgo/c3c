@@ -112,7 +112,7 @@ environment_rc=0
   # 実マウント検査に必要な --in-pod は podman-compose のオプション。
   provider_help=$(timeout 10s "${clean_env[@]}" "${PODMAN_COMPOSE_PROVIDER:-podman-compose}" --help) || exit 77
   grep -q -- --in-pod <<< "$provider_help" || { echo 'not run: provider に --in-pod がありません'; exit 77; }
-  [[ "$(timeout 10s podman info --format '{{.Host.Security.Rootless}}')" == true ]] || { echo 'not run: rootless Podman が必要です'; exit 77; }
+  [[ "$(timeout 10s "${clean_env[@]}" podman info --format '{{.Host.Security.Rootless}}')" == true ]] || { echo 'not run: rootless Podman が必要です'; exit 77; }
 ) > "$results/environment.log" 2>&1 || environment_rc=$?
 cat "$results/environment.log"
 if [[ "$environment_rc" != 0 ]]; then exit "$environment_rc"; fi

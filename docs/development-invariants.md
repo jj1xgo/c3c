@@ -86,7 +86,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
 
 ## セキュリティ設計の帰結（開発者が壊してはいけない前提）
 
-コンテナ内で Claude は `--dangerously-skip-permissions` で動作するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界であり、Claude は `/workspace` と、rw で opt-in された追加マウントへの読み書き権限を全面的に持つ（詳細は README.md「セキュリティモデル」節）。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしない。複数プロジェクトから同じホストパスを共有する追加マウント（`SHARED_MOUNT` の `/shared`）は、他プロジェクトのセッションも書き込める領域として扱う。書き込みは他プロジェクトへ波及し、読み取る内容は自セッション由来でない入力になりうる（信頼境界の詳細は README.md「セキュリティモデル」節）。
+コンテナ内で Claude は `--dangerously-skip-permissions` で動作するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界であり、Claude は `/workspace` と、rw で opt-in された追加マウント（一覧の正本は README.md「環境変数」節）への読み書き権限を全面的に持つ（詳細は README.md「セキュリティモデル」節）。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしない。複数プロジェクトから同じホストパスを共有する追加マウント（`SHARED_MOUNT` の `/shared`）は、他プロジェクトのセッションも書き込める領域として扱う。書き込みは他プロジェクトへ波及し、読み取る内容は自セッション由来でない入力になりうる（信頼境界の詳細は README.md「セキュリティモデル」節）。
 
 ネットワーク面は `init-firewall.sh` による deny-by-default のエグレス許可リストで制限される（既定で有効）。認証情報（`~/.claude.json`）やソースが実行時にマウントされるため、悪意ある pip パッケージやプロンプトインジェクションによる外部送信・C2 化を「許可済みエンドポイント以外への通信不可」で封じる。
 
@@ -98,4 +98,4 @@ claude-container 本体を変更する開発者（AI エージェントを含む
 
 ## 変更後の確認
 
-`Dockerfile.claude` の `ENTRYPOINT` を触った場合、または `packages.txt`/`requirements.txt` の検証呼び出し配線（`validate-build-input.sh` の呼び出し、`claude-container#34`）を触った場合は lint では担保できず、`-b` リビルド＋実機起動での確認が要る（`test-build.sh` の層1〈`--validator-only`、コンテナ内可〉・層2静的検査が担保する範囲があり、実ビルドを伴う確認のみホスト側が必要）。テストコマンドの全体像・CI の実行内容は README.md「変更後の確認」節を参照する。
+`Dockerfile.claude` の `ENTRYPOINT` を触った場合、または `packages.txt`/`requirements.txt` の検証呼び出し配線（`validate-build-input.sh` の呼び出し、`claude-container#34`）を触った場合は lint では担保できず、`-b` リビルド＋実機起動での確認が要る（後者は `test-build.sh` の層1〈`--validator-only`、コンテナ内可〉・層2静的検査が担保する範囲があり、実ビルドを伴う確認のみホスト側が必要）。テストコマンドの全体像・CI の実行内容は README.md「変更後の確認」節を参照する。

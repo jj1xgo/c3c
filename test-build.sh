@@ -2,10 +2,11 @@
 # コンテナイメージのビルド・動作確認スクリプト
 # 結果は .claude/test-results/YYYY-MM-DD_HHMMSS.log に保存される
 # --clean オプションでテスト用イメージと dangling イメージを削除
+# --build-only は実ビルドと CLI 起動、--config-ro-only は既存イメージのマウント保護を検査。
 
-IMAGE="localhost/claude-test"
+IMAGE="${TEST_IMAGE:-localhost/claude-test}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="${SCRIPT_DIR}/.claude/test-results"
+LOG_DIR="${TEST_LOG_DIR:-${SCRIPT_DIR}/.claude/test-results}"
 LOG_FILE="${LOG_DIR}/$(date +%Y-%m-%d_%H%M%S).log"
 PASS=0
 FAIL=0
@@ -471,7 +472,11 @@ exit $fail
 
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
-  local proj="claude-test-config-ro"
+  local proj="${TEST_COMPOSE_PROJECT:-claude-test-config-ro}"
+  local compose_args=(-f "${SCRIPT_DIR}/compose.yml")
+  if [[ "${TEST_RUNTIME_USERNS:-}" == 1 ]]; then
+    compose_args+=(-f "${SCRIPT_DIR}/tests/compose.runtime-userns.yml")
+  fi
   local svc_image="localhost/${proj}_claude-auth-workspace:latest"
   local root cfg d f
   root="$(mktemp -d)"
@@ -489,19 +494,19 @@ run_config_ro_tests() {
   fi
   check "11項目へ書けず projects/ へは書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
-    podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false \
+    podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
   # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
   # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
   check "別名 override 込みでも 11項目へ書けず projects/ へは書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
-    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
+    podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
   check "別名パスから読めて書けず、親ディレクトリにも書けない" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
-    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
+    podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_ALIAS_PROBE"
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "別名経由の書き込み試行後もホスト側 plugins/seed が不変" \
@@ -517,7 +522,7 @@ run_config_ro_tests() {
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     SHARED_MOUNT="$shared" CLAUDE_SHARED_HOME_PATH=/home/node/vault-probe \
     CLAUDE_SHARED_HOST_PATH=/home/hostuser-probe/vault-probe AGENTS_DIR="$agents" \
-    podman compose -f "${SCRIPT_DIR}/compose.yml" -f "${SCRIPT_DIR}/compose.shared-home.yml" \
+    podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.shared-home.yml" \
       -f "${SCRIPT_DIR}/compose.shared-host.yml" -f "${SCRIPT_DIR}/compose.agents.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$SHARED_ALIAS_PROBE"
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
@@ -526,7 +531,7 @@ run_config_ro_tests() {
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
-    podman compose -f "${SCRIPT_DIR}/compose.yml" -p "$proj" --in-pod false down >/dev/null 2>&1
+    podman compose "${compose_args[@]}" -p "$proj" --in-pod false down >/dev/null 2>&1
   podman rmi "$svc_image" >/dev/null 2>&1
   rm -rf "$root"
   log ""
@@ -1651,7 +1656,7 @@ stage_common_context() {
   : > "$dest/allowed-ports.txt"
 
   local sibling
-  if curl -fsS https://api.github.com/meta 2>/dev/null | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 10 --max-time 60 --retry 2 https://api.github.com/meta | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
     return 0
   fi
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
@@ -1660,8 +1665,8 @@ stage_common_context() {
     echo "WARNING: GitHub meta の取得に失敗しました。$sibling を再利用します" >&2
     cp "$sibling" "$dest/github-meta.json"
   else
-    echo "ERROR: github-meta.json を取得できず、既存スナップショットも見つかりません" >&2
-    return 1
+    echo "ERROR: GitHub meta の取得に失敗し、既存スナップショットもありません（通信・未認証 API のレート制限・応答形式を確認してください）" >&2
+    return 77
   fi
 }
 
@@ -1673,10 +1678,21 @@ if stage_common_context "$BUILD_STAGE_DIR"; then
   check "podman build --no-cache" podman build --no-cache \
     -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$IMAGE" "$BUILD_STAGE_DIR"
 else
+  stage_rc=$?
+  if [[ "${1:-}" == --build-only && "$stage_rc" == 77 && "$FAIL" == 0 ]]; then
+    log 'not run: GitHub meta を取得できないため実ビルドを開始できません'
+    rm -rf "$BUILD_STAGE_DIR"
+    exit 77
+  fi
   check "podman build --no-cache (staging failed: see stderr above)" false
 fi
 rm -rf "$BUILD_STAGE_DIR"
 log ""
+
+# ビルド段階が失敗したら、同じタグに残る古いイメージで起動検査を続けない。
+if [[ "${1:-}" == "--build-only" && "$FAIL" != 0 ]]; then
+  finish_by_result
+fi
 
 log "## イメージサイズ"
 podman images "$IMAGE" --format \
@@ -1690,6 +1706,12 @@ check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version
 log ""
+
+# 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。
+# 全体実行の追加パッケージ・不正入力のビルド検査は、従来どおり引数なしで実行する。
+if [[ "${1:-}" == "--build-only" ]]; then
+  finish_by_result
+fi
 
 log "## .claude-container.d によるパッケージ上書き"
 OVERRIDE_IMAGE="localhost/claude-test-override"

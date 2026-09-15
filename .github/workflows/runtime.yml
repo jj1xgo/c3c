@@ -1,0 +1,81 @@
+# PR の必須 CI とは独立した、手動・定期の実コンテナ検証。
+name: 実コンテナ検証
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 週 1 回、水曜 03:23 UTC（12:23 JST）。毎正時の集中を避ける。
+    - cron: '23 3 * * 3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    name: 実ビルド・マウント・権限・IPv4 通信
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: 対象ブランチを取得する
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 実行対象と環境準備のログを作る
+        env:
+          RUNTIME_RESULTS_DIR: ${{ runner.temp }}/runtime-results
+        run: |
+          mkdir -p "$RUNTIME_RESULTS_DIR"
+          git rev-parse HEAD | tee "$RUNTIME_RESULTS_DIR/commit.txt"
+          date +%s > "$RUNTIME_RESULTS_DIR/started-at"
+          echo "RUNTIME_RESULTS_DIR=$RUNTIME_RESULTS_DIR" >> "$GITHUB_ENV"
+          echo "PODMAN_COMPOSE_PROVIDER=$RUNNER_TEMP/runtime-venv/bin/podman-compose" >> "$GITHUB_ENV"
+
+      - name: 実検査用の Compose provider を準備する
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # --in-pod false と bind.create_host_path を扱う podman-compose を使う。
+          # PR CI の Docker Compose provider とは独立。ホストのパッケージを変更しない。
+          {
+            python3 -m venv "$RUNNER_TEMP/runtime-venv"
+            "$RUNNER_TEMP/runtime-venv/bin/pip" install --disable-pip-version-check --no-deps \
+              podman-compose==1.6.0 PyYAML==6.0.2 python-dotenv==1.1.1
+            "$RUNNER_TEMP/runtime-venv/bin/pip" freeze
+            podman --version
+          } 2>&1 | tee "$RUNTIME_RESULTS_DIR/setup.log"
+
+      - name: 実コンテナをビルドして検証する
+        id: runtime
+        timeout-minutes: 45
+        run: bash tests/test-runtime.sh
+
+      - name: 結果と総所要時間を記録する
+        if: always()
+        env:
+          RUNTIME_RESULTS_DIR: ${{ runner.temp }}/runtime-results
+          RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
+        run: |
+          mkdir -p "$RUNTIME_RESULTS_DIR"
+          if [ ! -f "$RUNTIME_RESULTS_DIR/summary.md" ]; then
+            printf '# 実コンテナ検証\n\n結果: not run または中断（検査サマリ未生成）\n' > "$RUNTIME_RESULTS_DIR/summary.md"
+            printf '検査ステップの状態: %s\n対象 commit: %s\n' "$RUNTIME_OUTCOME" "$GITHUB_SHA" >> "$RUNTIME_RESULTS_DIR/summary.md"
+          fi
+          if [ -f "$RUNTIME_RESULTS_DIR/started-at" ]; then
+            start=$(cat "$RUNTIME_RESULTS_DIR/started-at")
+            printf '\n準備を含む総所要時間: %s 秒\n' "$(( $(date +%s) - start ))" >> "$RUNTIME_RESULTS_DIR/summary.md"
+          fi
+          cat "$RUNTIME_RESULTS_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 成否にかかわらず診断ログを保存する
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-results/
+          if-no-files-found: error
+          retention-days: 14

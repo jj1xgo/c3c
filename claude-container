@@ -390,8 +390,9 @@ guard_legacy_vars() {
       "  1. $ENV_FILE（およびシェル環境）から上記変数の行を削除する" \
       "  2. push・PR 用のメイン PAT は SECRETS_DIR 直下に GITHUB_MAIN_PAT として置く（chmod 600）。" \
       "     コンテナ内で export されず、git push（askpass 自動配線）と" \
-      "     GH_TOKEN=\$(cat \"\$GITHUB_MAIN_PAT_FILE\") gh ... の明示読みでのみ使う" \
-      "  3. Issues/MCP 用 PAT は SECRETS_DIR/export/GITHUB_MCP_PAT として置く（chmod 600。コンテナ内で環境変数として export される）" \
+      "     gh CLI への明示読みで使う（読み取り失敗時に実行しない手順は README を参照）" \
+      "  3. Issues 用 PAT を gh CLI の明示読みだけで使う場合は SECRETS_DIR/GITHUB_ISSUES_PAT として置く（chmod 600）。" \
+      "     MCP・hook 等が環境変数を必要とする場合だけ export/GITHUB_MCP_PAT に置く（chmod 600。値が export される）" \
       "  4. $ENV_FILE に SECRETS_DIR=<ディレクトリ> を書く（chmod 700 推奨）" \
       "注意: GH_TOKEN の自動 export は撤廃されました。gh は既定で未認証になります。" \
       "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" || return 1
@@ -414,7 +415,7 @@ guard_gitconfig_file() {
 
 # 汎用シークレットディレクトリの参照（SECRETS_DIR）。任意設定のため未設定時は何もしない。
 # 設計原則（exposure 軸、claude-container#24）: 直下のファイルは export されない
-# （メインPAT等の広い権限向け）。export/ サブディレクトリのファイルのみ、コンテナ内で
+# （メインPATや、gh の明示読みだけで使う Issues 用PAT等）。export/ サブディレクトリのファイルのみ、コンテナ内で
 # 「ファイル名＝環境変数名」として export される（issues 限定PAT等、entrypoint.sh 参照）。
 # v3 以前とは直下/export の意味が逆転している。設定済みでディレクトリが無い場合は
 # 起動を中止する（GITCONFIG_FILE と同じ理由: 不存在パスを bind mount すると podman が
@@ -450,11 +451,11 @@ guard_secrets_dir() {
       if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
         guard_warn "WARNING: SECRETS_DIR 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。"
       fi
-      # 直下は export されない（新レイアウト）。export 前提のファイル名が直下に
-      # 置かれていると export/ への移動忘れの可能性が高いため気づけるよう注意喚起する
+      # 直下は export されない（新レイアウト）。MCP 向けのファイル名が直下に
+      # 置かれている場合は、環境変数を必要とする消費者の有無を確認するよう案内する
       # （ブロックはしない — 直下＝非exportは有効な選択でもあるため）。
       if [[ "$(basename "$secret_file")" == "GITHUB_MCP_PAT" ]]; then
-        guard_warn "WARNING: SECRETS_DIR/GITHUB_MCP_PAT は直下に置かれているため export されません（v4〜）。MCP・gh CLI から使うには export/GITHUB_MCP_PAT へ移動してください。"
+        guard_warn "WARNING: SECRETS_DIR/GITHUB_MCP_PAT は直下に置かれているため export されません（v4〜）。MCP・hook 等が環境変数を必要とする場合は export/GITHUB_MCP_PAT へ移動してください。gh CLI でファイルを明示読みする場合は直下のまま利用できます（gh 専用なら GITHUB_ISSUES_PAT 等へ改名すると本警告は出ません）。"
       fi
     done
     # export/ サブディレクトリ（コンテナ内で export されるファイル秘密の規約、

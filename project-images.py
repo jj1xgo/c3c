@@ -81,11 +81,11 @@ def read_ledger(path):
     return paths
 
 
-def podman(*args):
+def podman(*args, timeout=30):
     try:
         # 元パスはこのホストで検査するため、接続設定で別ホストへ切り替えない。
         return subprocess.run(['podman', '--remote=false', *args], capture_output=True, text=True,
-                              encoding='utf-8', errors='replace', timeout=30, check=False)
+                              encoding='utf-8', errors='replace', timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise InspectionError(f'Podman の検査・操作を完了できません: {exc}') from exc
 
@@ -146,9 +146,15 @@ def parse_image(row, inspect=False):
 
 def read_inventory():
     images = [parse_image(row) for row in podman_json('images', '--all', '--format', 'json')]
-    if len({item['id'] for item in images}) != len(images):
-        raise InspectionError('イメージ一覧の ID が重複しています')
-    return images
+    unique = {}
+    for item in images:
+        # Podman はタグごとに同一の Names を持つ行を繰り返す。
+        # 内容の違う同一 ID は統合せず、一覧全体を検査不能とする。
+        previous = unique.get(item['id'])
+        if previous is not None and previous != item:
+            raise InspectionError('同一イメージ ID の一覧内容が一致しません')
+        unique[item['id']] = item
+    return list(unique.values())
 
 
 def provenance(item, ledger):
@@ -188,7 +194,8 @@ def remove_image(item, path):
         raise InspectionError('削除直前にパスの欠落を確認できなくなりました')
     if item['id'] in container_images():
         raise InspectionError('稼働中・停止中またはビルド用コンテナから参照されています')
-    result = podman('rmi', '--no-prune', item['id'])
+    # ストレージ更新中の削除プロセスを検査用の期限で強制終了しない。
+    result = podman('rmi', '--no-prune', item['id'], timeout=None)
     if result.returncode:
         raise InspectionError(f'イメージ削除失敗（終了コード {result.returncode}）: '
                               + result.stderr.strip())

@@ -32,7 +32,7 @@
 
 ラベルはホストのパスを含む。README に、イメージの共有・export 時にもこのメタデータが含まれることを記載する。既存イメージに後付けしない。新ラベルは次回ビルドで付く。
 
-`podman images --all --format json` と対象の `podman image inspect` を使う。元パスの検査先と一致させるため、全呼び出しに `--remote=false` を付けてローカル Podman に限定する。各操作は30秒を上限とする。JSON の検査に失敗した場合は空一覧へ置換しない。`Names` / `RepoTags` の現在の名前と、`History` の過去の名前を混同しない。名前・label・ID の型を検証する。
+`podman images --all --format json` と対象の `podman image inspect` を使う。元パスの検査先と一致させるため、全呼び出しに `--remote=false` を付けてローカル Podman に限定する。読み取り検査は30秒を上限とし、ストレージを更新する削除処理は強制終了せず完了を待つ。タグ数に応じた同一 ID の完全一致行はまとめ、内容が矛盾する重複は検査不能とする。JSON の検査に失敗した場合は空一覧へ置換しない。`Names` / `RepoTags` の現在の名前と、`History` の過去の名前を混同しない。名前・label・ID の型を検証する。
 
 削除可能なのは以下のすべてを満たすものに限る。
 

@@ -20,7 +20,7 @@ IMAGE_B = 'b' * 64
 
 # 実 Podman の JSON 形状と更新を模す。削除要求と状態変化の両方を検査する。
 PODMAN = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 root = Path(os.environ['FAKE_STORAGE'])
 args = sys.argv[1:]
@@ -57,6 +57,7 @@ elif args == ['ps', '--all', '--external', '--no-trunc', '--format', 'json']:
         containers = state.get('late_containers', containers)
     print(state.get('raw_containers', json.dumps(containers)))
 elif args[:2] == ['rmi', '--no-prune'] and len(args) == 3:
+    time.sleep(state.get('remove_delay', 0))
     if state.get('move_directory_on_remove'):
         os.rename(state['move_directory_on_remove'], state['move_directory_on_remove'] + '-moved')
     if not state.get('keep_after_remove'):
@@ -131,7 +132,8 @@ class ImageTests(unittest.TestCase):
     def assert_kept(self, result, fail=True):
         if fail:
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse(any(c[0] in ('rmi', 'prune', 'rm', 'network') for c in self.calls))
+        self.assertFalse(any(c[0] in ('rmi', 'prune', 'rm', 'network')
+                             or c[:2] in (['image', 'rm'], ['image', 'prune']) for c in self.calls))
         self.assertIn(IMAGE_A, [i['Id'] for i in self.state['images']])
 
     def test_diagnosis_never_deletes(self):
@@ -147,6 +149,47 @@ class ImageTests(unittest.TestCase):
         self.assertEqual([i['Id'] for i in self.state['images']], [IMAGE_B])
         self.assertIn(['rmi', '--no-prune', IMAGE_A], self.calls)
         self.assertEqual(self.run_helper(clean=True).returncode, 0)
+
+    def test_identical_multitag_rows_do_not_block_other_cleanup(self):
+        other = self.item(self.live, IMAGE_B)
+        other['Names'].append('localhost/shared:latest')
+        self.state['images'].extend([other, dict(other)])
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = self.run_helper(clean=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(IMAGE_A, [i['Id'] for i in self.state['images']])
+        self.assertIn(IMAGE_B, [i['Id'] for i in self.state['images']])
+
+    def test_identical_missing_multitag_rows_remain_protected(self):
+        self.state['images'][0]['Names'].append('localhost/shared:latest')
+        self.state['images'].append(dict(self.state['images'][0]))
+        self.assert_kept(self.run_helper(clean=True))
+
+    def test_conflicting_duplicate_rows_fail_before_any_removal(self):
+        duplicate = dict(self.state['images'][0])
+        duplicate['Names'] = ['localhost/unrelated:latest']
+        self.state['images'].append(duplicate)
+        self.assert_kept(self.run_helper(clean=True))
+
+    def test_slow_removal_is_not_killed_by_inspection_deadline(self):
+        spec = importlib.util.spec_from_file_location('slow_images', HELPER)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.state['remove_delay'] = 1.0
+        (self.root / 'state').write_text(json.dumps(self.state))
+        (self.root / 'calls').write_text('')
+        original_run = subprocess.run
+
+        def short_deadline(*args, **kwargs):
+            # 実子プロセスを使い、読み取りの上限だけを試験用に短縮する。
+            if kwargs.get('timeout') is not None:
+                kwargs['timeout'] = 0.5
+            return original_run(*args, **kwargs)
+
+        with patch.dict(os.environ, self.env), patch.object(mod.subprocess, 'run', short_deadline):
+            mod.remove_image(mod.parse_image(self.state['images'][0]), self.missing)
+        self.assertEqual(json.loads((self.root / 'state').read_text())['images'], [])
 
     def test_legacy_image_matches_ledger_despite_old_labels(self):
         self.state['images'] = [self.item(self.missing, labels=False)]
@@ -303,7 +346,7 @@ class ImageTests(unittest.TestCase):
         self.assertNotIn(IMAGE_A, result.stdout)
         self.assertNotIn(IMAGE_B, result.stdout)
 
-    def run_launcher(self, *args, missing_helper=False):
+    def run_launcher(self, *args, missing_helper=False, cwd=None):
         runner = self.root / 'runner'
         runner.mkdir(exist_ok=True)
         for source in REPO.iterdir():
@@ -314,7 +357,7 @@ class ImageTests(unittest.TestCase):
         (self.root / 'state').write_text(json.dumps(self.state))
         (self.root / 'calls').write_text('')
         result = subprocess.run(['bash', str(runner / 'claude-container'), *args],
-                                cwd=self.root, env=self.env, capture_output=True, text=True)
+                                cwd=cwd or self.root, env=self.env, capture_output=True, text=True)
         self.calls = [json.loads(line) for line in (self.root / 'calls').read_text().splitlines()]
         self.state = json.loads((self.root / 'state').read_text())
         return result
@@ -346,6 +389,20 @@ class ImageTests(unittest.TestCase):
         result = self.run_launcher('--check', '--clean-missing', './旧 project/')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state['images'], [])
+
+    def test_launcher_relative_scope_preserves_trailing_newlines(self):
+        for suffix, arg in (('\n', '.'), ('\n\n', '.'), ('\n', '..')):
+            with self.subTest(suffix=suffix, arg=arg):
+                self.state['images'] = [self.item(self.missing)]
+                live = Path(self.missing + suffix)
+                live.mkdir(exist_ok=True)
+                cwd = live
+                if arg == '..':
+                    cwd = live / 'child'
+                    cwd.mkdir()
+                result = self.run_launcher('--check', '--clean-missing', arg, cwd=cwd)
+                self.assert_kept(result)
+                self.assertEqual((self.ledger.read_bytes(), self.ledger.stat().st_mode), self.before)
 
     def test_launcher_cdpath_does_not_corrupt_resolved_path(self):
         self.env['CDPATH'] = str(self.root)

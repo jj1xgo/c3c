@@ -1487,8 +1487,10 @@ run_check_mode() (
     for d in "$@"; do
       normalized="$d"
       if [[ -n "$d" && "$d" != *$'\n'* && "$d" != //* ]]; then
-        if normalized=$(cd -- "$d" >/dev/null 2>&1 && pwd -L); then
-          :
+        # 終端を付けてコマンド置換によるパス末尾の改行消失を防ぐ。
+        # cd 後の論理絶対パスをそのまま渡し、改行はヘルパーで拒否する。
+        if normalized=$(cd -- "$d" >/dev/null 2>&1 && printf '%s.' "$PWD"); then
+          normalized=${normalized%.}
         elif [[ "$d" == /* ]]; then
           normalized=$(realpath -ms -- "$d") || return 1
         elif [[ -n ${PWD:-} && "$PWD" != *$'\n'* ]]; then

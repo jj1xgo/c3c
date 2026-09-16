@@ -174,8 +174,10 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 
 | スロット | 置き場所 | export | 想定用途・推奨スコープ |
 |---|---|---|---|
-| メイン PAT | `SECRETS_DIR` 直下（例 `GITHUB_MAIN_PAT`） | されない | push・PR レビュー・Release 作成等。`Contents: write` を含む広い権限を許容する場合はここに置く。コンテナ内では値が環境変数に現れず、`GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh ...` のように都度明示的に読む |
-| MCP／issues 用 PAT | `SECRETS_DIR/export/`（例 `GITHUB_MCP_PAT`） | される | GitHub 公式 MCP サーバー・issue 系の自動確認 hook 用。**Issues 限定などスコープを絞ったトークンを推奨**（後述リスク参照） |
+| メイン PAT | `SECRETS_DIR` 直下（例 `GITHUB_MAIN_PAT`） | されない | push・PR レビュー・Release 作成等。`Contents: write` を含む広い権限を許容する場合はここに置く。gh には後述の明示読み手順で渡す |
+| MCP／issues 用 PAT | gh の明示読みだけなら直下（例 `GITHUB_ISSUES_PAT`）。環境変数を必要とする MCP・hook がある場合だけ `export/`（例 `GITHUB_MCP_PAT`） | `export/` 配下のみされる | issue 操作・GitHub 公式 MCP サーバー等。**Issues 限定などスコープを絞ったトークンを推奨**（後述リスク参照） |
+
+2 本目の配置は実際の消費者に合わせて選び、同じトークンを直下と `export/` の両方へ置かない。Issues 用でも常時 export は必須ではない。実装は PAT のパーミッションを検査しないため、「Issues 限定」はファイル名や配置で保証される性質ではなく、GitHub 側で設定・確認する制限である。
 
 **重要**: 「`.claude-container.d/env` を置く場所」と「PATの `Repository access` で選ぶリポジトリ」は別物である。前者はトークンを**使う側**のプロジェクト（例: myproject）、後者は書き込み先リポジトリ（例: claude-container）を指す。myproject から claude-container の Issue に書き込みたい場合、`.claude-container.d/env` は myproject 側に置き、PATの `Repository access` には `claude-container` を選択する — 自分自身（使う側）のリポジトリを登録するわけではない。
 
@@ -185,8 +187,8 @@ fine-grained PAT はトークン単位で、選択した全リポジトリに同
    - Repository access: `Only select repositories` → 書き込み先リポジトリのみ選択（複数選択すると、以下のパーミッションが選択した全リポジトリに一律適用される点に注意）
    - Repository permissions: 必要最小限のみ付与する。MCP／issues 用トークンなら `Issues: Read and write` のみを推奨。メイン PAT に `Pull requests: Read and write` を足すと自リポジトリの PR レビューまで、`Contents: write` を足すと push・PR マージ・Release 作成までコンテナ内から実行可能になる（`Contents: write` を付与しない限り push・マージ・Release作成はホスト側限定のまま維持される）
    - Expiration: 90日以下を推奨
-2. ホストにディレクトリを作り（例: `~/.config/claude-container/secrets.d/<project>`）、`chmod 700` する。中に置く各ファイルの**ファイル名がそのままコンテナ内の環境変数名（`export/` 配下のみ）になる**（`^[A-Za-z_][A-Za-z0-9_]*$` に合致しない名前は起動時に WARNING を出してスキップされる）。各ファイルは `chmod 600` し、中身はトークン文字列1行のみ（改行は自動で除去されるが、複数行の値は連結されてしまうため非対応）。各ファイルは実体（通常ファイル）として置くこと — コンテナにはこのディレクトリ単体がマウントされるため、ディレクトリ外を指すシンボリックリンクはコンテナ内でリンク先を解決できず、**警告なしにスキップされる**（既存のトークンファイルを流用したい場合はシンボリックリンクでなく値をコピーする）
-3. メイン PAT は `SECRETS_DIR` 直下に置く（例 `SECRETS_DIR/GITHUB_MAIN_PAT`）。MCP／issues 用 PAT は `SECRETS_DIR/export/` 配下に置く（`export/` ディレクトリ自体も `chmod 700`）
+2. ホストにディレクトリを作り（例: `~/.config/claude-container/secrets.d/<project>`）、`chmod 700` する。中に置く各ファイルの**ファイル名がそのままコンテナ内の環境変数名（`export/` 配下のみ）になる**（`^[A-Za-z_][A-Za-z0-9_]*$` に合致しない名前は起動時に WARNING を出してスキップされる）。各ファイルは `chmod 600` し、中身はトークン文字列1行のみ（`export/` では CR・LF が除去されるが、複数行の値は連結されるため非対応。後述の gh 明示読みでは末尾の LF だけが除去されるので、CR や余分な空白を含めない）。各ファイルは実体（通常ファイル）として置くこと — コンテナにはこのディレクトリ単体がマウントされるため、ディレクトリ外を指すシンボリックリンクはコンテナ内でリンク先を解決できず、**警告なしにスキップされる**（既存のトークンファイルを流用したい場合はシンボリックリンクでなく値をコピーする）
+3. メイン PAT は `SECRETS_DIR` 直下に置く（例 `SECRETS_DIR/GITHUB_MAIN_PAT`）。Issues 用を gh の明示読みだけで使う場合も直下に置く（例 `SECRETS_DIR/GITHUB_ISSUES_PAT`）。MCP・hook 等が環境変数を必要とする場合だけ `SECRETS_DIR/export/` 配下に置く（例 `export/GITHUB_MCP_PAT`。`export/` ディレクトリ自体も `chmod 700`）
 4. ターゲットプロジェクトの `.claude-container.d/env` に `SECRETS_DIR=~/.config/claude-container/secrets.d/<project>` のようにパスを書く。`.claude-container.d/env` はホスト固有のパスを含みうるため gitignore 対象であり、そもそもコミットされない
 5. ディレクトリが存在しない場合は起動時にエラーで停止する（fail-closed）。ディレクトリが `700` でない、または中のファイルが `600` でない場合は警告が出る
 
@@ -194,7 +196,22 @@ fine-grained PAT はトークン単位で、選択した全リポジトリに同
 
 これは汎用の環境変数注入機構であり、GitHub トークンに限らず任意のシークレットを持ち込める。持ち込んだ変数はコンテナ内の全プロセス（Claude 本体・hooks・任意の npm スクリプト等）から読めるため、1コンテナに持ち込むのはそのプロジェクトで実際に使う最小本数に留めること。**`export/` に `GH_TOKEN`/`GITHUB_TOKEN` という名前のファイルを置くと `gh` CLI の ambient 認証が復活する**（本設計の意図に反するため非推奨。明示的な opt-in と理解した上でのみ行うこと。同様の理由でコンテナ内での `gh auth login` の実行も推奨しない）。
 
-**設定済みスコープの確認**: **現時点で fine-grained PAT の対象リポジトリ一覧を機械的に取得する手段は存在しない**。GitHub側にも対象リポジトリを一覧で返すAPIは無く（個人アカウント所有リポジトリ向けの同等APIは存在しない。組織所有リポジトリ限定の `GET /orgs/{org}/personal-access-tokens/{pat_id}/repositories` はGitHub App専用でPATでは使えない）、本プロジェクトもPAT設定変更への追従コストを避けるため対象リポジトリ自体を保持しない。したがって個別リポジトリ単位で疎通確認するしかない: `GH_TOKEN=$(cat <トークンファイル>) gh api /repos/<owner>/<repo>` を実行し、**private リポジトリに対してのみ** 200/404 がスコープ判定として機能する（200＝アクセス範囲内、404＝範囲外）。**public リポジトリはこの方法で判定できない**: GitHub は public リポジトリのメタデータ（`GET /repos/{owner}/{repo}` とその `permissions` フィールド）をトークンの `Repository access` 設定に関わらず常に200で返すため、公開リポジトリでは到達可否も `permissions` の値もスコープの証拠にならない（実機検証済み。詳細: `jj1xgo/claude-container#13`）。public リポジトリの実効スコープを確認したい場合は、実際に書き込み操作（`gh issue create` 等）を試すか、PAT設定画面（Web UI）の `Repository access` 一覧を直接確認すること。対象範囲の正本は常にPATの `Repository access` 設定側にある。
+**PAT を gh CLI に明示的に渡す**: 次はコンテナ内で、直下の `GITHUB_ISSUES_PAT` を使う例。`OWNER/REPO` は対象リポジトリへ置き換える。ホストの `SECRETS_DIR` はコンテナ内では `/home/node/.config/claude-container/secrets` にマウントされる。
+
+```bash
+(
+  set +x
+  github_pat=$(cat /home/node/.config/claude-container/secrets/GITHUB_ISSUES_PAT) || exit 1
+  [ -n "$github_pat" ] || { echo "ERROR: PAT ファイルが空です" >&2; exit 1; }
+  GH_TOKEN="$github_pat" gh issue list --repo OWNER/REPO
+)
+```
+
+メイン PAT を使う場合は `cat` の引数を `"$GITHUB_MAIN_PAT_FILE"` に、最後の gh コマンドを目的の操作に置き換える。ファイルを読めない場合や値が空の場合は gh を実行しない。サブシェル内でトレースを無効にし、値は対象の gh プロセスとその子プロセスに `GH_TOKEN` として渡す。これは不要な環境継承を減らす手順であり、ファイルを直接読めるプロセスからのアクセス制御ではない。この括弧内で値を表示する `echo`・`env` や `set -x` の再有効化を行わない。
+
+**常時 export をやめる場合**: 移動前に `.mcp.json` の `${GITHUB_MCP_PAT}` と hook 等の参照を確認する。MCP を使い続けるなら export 配置を維持する。MCP をやめるなら対応する MCP 設定を外し、hook は明示読みに変更してから、ファイルを直下へ移す。直下でも `GITHUB_MCP_PAT` という名前のままなら用途確認の WARNING が出るため、gh 専用には `GITHUB_ISSUES_PAT` 等の名前を使う。移動だけでは既存プロセスに継承済みの値は消えないので、対象コンテナを終了して起動し直す。配置変更自体にリビルドは不要。非 export 化は漏洩済みトークンの失効・再発行の代わりにはならない。
+
+**設定済みスコープの確認**: **現時点で fine-grained PAT の対象リポジトリ一覧を機械的に取得する手段は存在しない**。GitHub側にも対象リポジトリを一覧で返すAPIは無く（個人アカウント所有リポジトリ向けの同等APIは存在しない。組織所有リポジトリ限定の `GET /orgs/{org}/personal-access-tokens/{pat_id}/repositories` はGitHub App専用でPATでは使えない）、本プロジェクトもPAT設定変更への追従コストを避けるため対象リポジトリ自体を保持しない。したがって個別リポジトリ単位で疎通確認するしかない: 上記の明示読み手順で確認対象のトークンを渡し、`gh api /repos/<owner>/<repo>` を実行し、**private リポジトリに対してのみ** 200/404 がスコープ判定として機能する（200＝アクセス範囲内、404＝範囲外）。**public リポジトリはこの方法で判定できない**: GitHub は public リポジトリのメタデータ（`GET /repos/{owner}/{repo}` とその `permissions` フィールド）をトークンの `Repository access` 設定に関わらず常に200で返すため、公開リポジトリでは到達可否も `permissions` の値もスコープの証拠にならない（実機検証済み。詳細: `jj1xgo/claude-container#13`）。public リポジトリの実効スコープを確認したい場合は、実際に書き込み操作（`gh issue create` 等）を試すか、PAT設定画面（Web UI）の `Repository access` 一覧を直接確認すること。対象範囲の正本は常にPATの `Repository access` 設定側にある。
 
 **トークンの更新**: 期限が近づいたら GitHub 側でトークンを再生成し、対応するファイルの中身を新しい文字列で上書きするだけでよい。ビルド時に焼き込まれる設定ではなくランタイムマウントなので、リビルド（`-b`）は不要 — 次回起動時に読み直される。
 
@@ -242,7 +259,7 @@ GitHub 公式リモート MCP サーバーの既定の認証は OAuth（ブラ�
 | 旧 | 新 |
 |---|---|
 | `GH_TOKEN_FILE` | `SECRETS_DIR` 直下（例 `GITHUB_MAIN_PAT`） |
-| `GH_TOKEN_SECONDARY_FILE` | `SECRETS_DIR/export/`（例 `GITHUB_MCP_PAT`） |
+| `GH_TOKEN_SECONDARY_FILE` | gh の明示読みだけなら `SECRETS_DIR` 直下（例 `GITHUB_ISSUES_PAT`）。MCP・hook 等が環境変数を必要とする場合は `export/`（例 `GITHUB_MCP_PAT`） |
 | `SECRETS_DIR/noexport/GIT_PUSH_TOKEN` | `SECRETS_DIR/GITHUB_MAIN_PAT`（push・PR用トークンに統合） |
 
 legacy 変数が設定されたまま起動すると fail-closed で停止し、上記の移行手順が起動ログに表示される。実体ファイルを削除・移動する前に、他プロジェクトから同じファイルを参照していないか必ず確認すること（削除は本移行のスコープ外 — 参照確認が済むまで残す）。
@@ -256,7 +273,7 @@ legacy 変数が設定されたまま起動すると fail-closed で停止し、
 
 起動すると `entrypoint.sh` が `SECRETS_DIR/GITHUB_MAIN_PAT` の存在を検知し `GIT_ASKPASS` を自動設定する（トークンの値自体は export されない。パスのみ `GITHUB_MAIN_PAT_FILE` として export される）。以降、対象リポジトリへの `git push`（**HTTPS リモート限定** — SSH リモートには効かない）は、`git-askpass.sh` がトークンをファイルから都度読んで応答するため、追加の手動操作なしに通る。`git-askpass.sh` は github.com 宛の Username/Password プロンプトにのみ応答する fail-closed 設計で、他ホスト・想定外のプロンプトには応答しない。
 
-このトークンは private リポジトリの fetch/pull にも有効になる（`Contents: Read` 相当を含むため）副作用がある点に注意。また `Contents: write` を持つ同じトークンは `GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh pr merge ...` のように gh CLI からも使えてしまうため、push だけでなく PR マージも「できるが、黙ってはできない」（明示読みという一手間を要する）状態になる点を理解した上で運用すること。
+このトークンは private リポジトリの fetch/pull にも有効になる（`Contents: Read` 相当を含むため）副作用がある点に注意。また `Contents: write` を持つ同じトークンは前述の明示読み手順で `gh pr merge ...` のような gh CLI の操作にも使えてしまうため、push だけでなく PR マージも「できるが、黙ってはできない」（明示読みという一手間を要する）状態になる点を理解した上で運用すること。
 
 `GITHUB_MAIN_PAT` を検知すると、`entrypoint.sh` は `GIT_CONFIG_*` 環境変数で `credential.helper` を空にリセットする。これは、`GITCONFIG_FILE`（後述）でマウントしたホストの gitconfig に `credential.helper = store` 等の設定が含まれていても、`git-askpass.sh` が都度読んだトークンを `~/.git-credentials` へ平文で永続化させないための対策（マウントされる `~/.gitconfig` は read-only のため `git config --global` での上書きはできず、全 config ファイルより後に適用される `GIT_CONFIG_*` 環境変数がこの目的で使える唯一の手段）。
 
@@ -380,7 +397,7 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 ## 何ができて何ができないか（git / gh / PAT / hook 早見表）
 
-コンテナ内の `git` と `gh` CLI は認証系統が完全に独立している。`git push` が失敗するのは権限不足ではなく credential helper を意図的に配線していないためであり、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）。どちらも `SECRETS_DIR` 配下のトークンファイルを（メイン PAT は明示読みで、MCP／issues 用 PAT は export された値で）使って初めて認証される。
+コンテナ内の `git` と `gh` CLI は認証系統が完全に独立している。`git push` が失敗するのは権限不足ではなく credential helper を意図的に配線していないためであり、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）。どちらも `SECRETS_DIR` 配下のトークンファイルを（直下の PAT は明示読みで、`export/` 配下の PAT は export された値で）使って初めて認証される。
 
 **操作系統別の認証経路と可否**
 
@@ -389,18 +406,18 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 | git ローカル操作（`commit` / `log` / `diff` / `branch` / `merge` 等） | 認証不要（`commit` のみ `GITCONFIG_FILE` で `user.name`/`user.email` が必要。前述） | 可 |
 | git リモート操作（`push` / `pull` / `fetch`） | git credential helper（既定で**未配線**。`SECRETS_DIR/GITHUB_MAIN_PAT` 設定時のみ `GIT_ASKPASS` 経由で配線される） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる |
 | `gh` CLI（素） | 認証なし | **既定で未認証・失敗する**（v4〜の正常な既定状態） |
-| `gh` CLI（メイン PAT 明示読み） | `GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh ...` | メイン PAT のパーミッション・対象リポジトリの範囲内で可 |
-| `gh` CLI（MCP／issues 用 PAT） | `GH_TOKEN="$GITHUB_MCP_PAT" gh ...`（ambient export された値を明示前置） | MCP／issues 用 PAT のパーミッション範囲内で可（通常 Issues のみ） |
+| `gh` CLI（直下の PAT 明示読み） | 「PAT を gh CLI に明示的に渡す」の手順（メイン PAT または `GITHUB_ISSUES_PAT`） | 渡した PAT のパーミッション・対象リポジトリの範囲内で可 |
+| `gh` CLI（export 済みの MCP／issues 用 PAT） | `[ -n "${GITHUB_MCP_PAT:-}" ] && GH_TOKEN="$GITHUB_MCP_PAT" gh ...`（空・未設定なら実行しない） | MCP／issues 用 PAT のパーミッション範囲内で可（通常 Issues のみ） |
 | MCP（GitHub 公式サーバー） | `${GITHUB_MCP_PAT}`（`.mcp.json` の Authorization ヘッダ、export 経由） | 同上 |
 
 **メイン PAT / MCP・issues 用 PAT 対応表**
 
-| 項目 | メイン PAT（`SECRETS_DIR` 直下） | MCP／issues 用 PAT（`SECRETS_DIR/export/`） |
+| 項目 | メイン PAT | MCP／issues 用 PAT |
 |---|---|---|
 | 想定用途 | push・PR レビュー・Release 作成等、主対象リポジトリへの広い操作 | issue 連絡・MCP 経由の操作（クロスリポジトリ含む） |
-| export | されない（パスのみ `GITHUB_MAIN_PAT_FILE` として export） | される（ファイル名＝環境変数名で値ごと export） |
+| 配置・export | `SECRETS_DIR` 直下。値は export されず、パスのみ `GITHUB_MAIN_PAT_FILE` として export | gh の明示読みだけなら直下（非 export）。環境変数を必要とする MCP・hook 等がある場合だけ `export/`（値ごと export） |
 | 一般的に許可してよいパーミッション | 用途に応じて `Issues`/`Pull requests`/`Contents` を組み合わせる（`Contents: write` を含めると push・PR承認・マージが明示読みで可能になる点を理解した上で） | `Issues: Read and write` のみ |
-| 持たせるべきでないパーミッション | — （非 export のため明示読みという一手間が構造的な壁になる） | `Pull requests: write`・`Contents: write`（MCP のツール面に push・マージ等が現れ、スコープを絞らないと実効化するため） |
+| 持たせるべきでないパーミッション | 用途に不要な権限（非 export でも直接読み取りは可能） | `Pull requests: write`・`Contents: write`（MCP のツール面に push・マージ等が現れ、スコープを絞らないと実効化するため） |
 | 設定手順・スコープ確認 | 「GitHub トークンの配線」節参照 | 同左 |
 
 **ホストの Claude Code 設定（`~/.claude`）の読み書き**
@@ -450,11 +467,11 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 **ホストの Claude Code 設定の読み取り専用保護**: ホストの `~/.claude`（`CLAUDE_CONFIG_DIR` 基点）はコンテナへ rw で bind mount される（認証情報・transcript の共有に必要）が、そのうちホスト側で実行・読込される user scope の設定 11 項目（前述「何ができて何ができないか」節の表）は、`compose.yml` が rw マウントの内側に `:ro` の bind mount を重ねることで、**この mount 経由では**コンテナ内から書き換えられない。侵害されたセッションがここへ hook・skill・plugin 等を書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file watcher で稼働中セッションにも反映される）ため。マウント先がホストに無いと podman がサブ uid 所有の実体を作って残骸になるので、`claude-container` が起動直前（全ガードと MCP 承認の後）に欠けている項目をユーザー権限で空のまま作り、その旨を `INFO:` で表示する（`--check` は作らず `[WARN]` で報告する）。11 項目のいずれかが symlink または型の違う実体（ディレクトリ予定位置にファイル等）だと起動を中止する。symlink を拒否するのは、`:ro` の子マウントはリンク先に付く一方でリンク自体は rw の親マウント内に残り、コンテナ内で削除して作り直せば書き込み可能な実体に置き換えられる（保護の迂回）ため。**限界**: (1) 保護はこの mount 経由に限る。`/workspace`（作業ディレクトリ）・`EXTRA_MOUNT`・`SHARED_MOUNT` が `~/.claude` を含む、または保護対象そのものを指す場合は別経路から書けるため、起動時に `WARNING` を出す（検出はパスの包含関係のみで、別マウント内部のリンク等は検出しない）。(2) project scope の設定（`/workspace/.claude/` 配下と `.mcp.json`）は対象外で、ホストでそのフォルダを trust 済みならホストの Claude Code がそれらを読み込む。(3) `~/.claude.json`（trust フラグ・user scope の MCP 登録）、auto memory（`projects/<p>/memory/`）、`agent-memory/`、`shell-snapshots/`、`session-env/` は対象外（Claude Code が実行時に書くため）。前 3 者はホスト側セッションへの指示の再注入経路になりうる。(4) 保護された参照元（`settings.json`・`CLAUDE.md` の import・hook や plugin が読む依存ファイル）が `~/.claude` の外や対象外領域を指していれば、その先は保護されない。(5) `.claude-container.d/env` の `HOME`・`PATH` 等でホスト側の実行や基点をずらす経路は、受け付けるキーを許可リストに限定したことで閉じた（`#44`）。許可キーのうち `CLAUDE_CONFIG_DIR` は基点そのものを指定するキーなので、`guard_env_boundary_keys()` の一覧表示の対象にしている。(6) ホスト側で 11 項目のファイルを rename で置換した場合、稼働中のコンテナは旧実体を見続ける（再起動で反映）。(7) plugin の別名マウント（`compose.plugins-alias.yml`、[`#98`](https://github.com/jj1xgo/claude-container/issues/98)）は `plugins/` と同じ source を同じ `:ro` でホストと同じ絶対パスにも重ねるもので、保護対象を増やしも減らしもしない。destination はホストの `$HOME` 配下の綴りに限り、コンテナ内の固定マウント先（`/workspace`・`/data`・`/shared`・`/home/node`）と一致または配下になる場合は付けない（対象プロジェクトや他マウントの内容を隠さないため。判定の正本は `claude-container` の `plugins_alias_target()`）。destination の親ディレクトリ（例 `/home/<host user>`）は podman がコンテナ作成時に root 所有で作るため、コンテナ内の非特権プロセスからは書けない。
 
-`SECRETS_DIR`（前述「GitHub トークンの配線」節）を設定した場合、上記「許可済みサービス自体への送信」というリスクが受動的なものから能動的なものに変わる: プロンプトインジェクションや悪意あるパッケージがコンテナ内からトークンを読み取り（メイン PAT はファイルとして、MCP／issues 用 PAT は export された環境変数として）、そのスコープ内で GitHub 等に書き込める。緩和策は各 fine-grained PAT のスコープ最小化（対象リポジトリ限定・短期限）で、被害を該当リポジトリでの操作に構造的に限定すること。設計上、export されるのは issues 限定等スコープを絞ったトークンのみに留め、広い権限は非 export（明示読みという一手間の壁の向こう）に置くことでこのリスクの既定値を下げている（「GitHub トークンの配線」節の設計原則参照）。`SECRETS_DIR` は汎用機構であるため、この能動的リスクは GitHub トークンに限らず持ち込んだ全シークレットに及ぶ（1コンテナに持ち込むのは実際に使う最小本数に留めること — 前述）。
+`SECRETS_DIR`（前述「GitHub トークンの配線」節）を設定した場合、上記「許可済みサービス自体への送信」というリスクが受動的なものから能動的なものに変わる: プロンプトインジェクションや悪意あるパッケージがコンテナ内からトークンを読み取り（直下の PAT はファイルとして、`export/` 配下の PAT は環境変数としても）、そのスコープ内で GitHub 等に書き込める。緩和策は各 fine-grained PAT のスコープ最小化（対象リポジトリ限定・短期限）で、被害を該当リポジトリでの操作に構造的に限定すること。利用者は export するトークンを実際に環境変数を必要とする用途に絞り、権限も最小にする。実装は権限を検査しないため、Issues 限定等の制限は GitHub 側で設定・確認する（「GitHub トークンの配線」節の設計原則参照）。`SECRETS_DIR` は汎用機構であるため、この能動的リスクは GitHub トークンに限らず持ち込んだ全シークレットに及ぶ（1コンテナに持ち込むのは実際に使う最小本数に留めること — 前述）。
 
 `CODEX_DIR`（前述「Codex CLI をセカンドオピニオンとして使う」節）を設定した場合、コンテナ内のコードは Codex の認証情報（`auth.json`、ChatGPT アカウントのアクセストークン）を読める。`SECRETS_DIR` と異なり rw マウントのため、コンテナ側から書き込みも可能 — 専用ディレクトリ（実 `~/.codex` でない）を指定する設計により、汚染がホスト側の Codex 実行環境（`config.toml` の `notify` フック等）へ波及する経路を遮断している。Codex は `codex exec` としてセッション中に Claude が判断して実行する通常のコマンドであり、`.mcp.json` には登録しないため、前述の MCP 監査ゲート（TOFU）の対象外である。同ゲートが対象とするのは「セッション開始と同時に人間・モデルどちらの判断も挟まず実行される」経路であり、`codex exec` はそれに当たらない。
 
-`SECRETS_DIR/GITHUB_MAIN_PAT`（前述「git push を使う場合」）に `Contents: write` を付与した場合、能動的リスクは push・PRマージにも及ぶ: プロンプトインジェクションや悪意あるパッケージが、明示読み（`GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") ...`）を介して対象リポジトリへの意図しないコミット・push・マージを引き起こしうる。非 export であることは「黙ってはできない」という一手間の壁ではあるが、コンテナ内の任意のプロセスがそのファイルパスを読める以上、確実な壁ではない。緩和策は他のトークン同様スコープ最小化（対象リポジトリ限定）に加え、GitHub 側の branch protection（force-push 禁止・レビュー必須化）を組み合わせること。
+`SECRETS_DIR/GITHUB_MAIN_PAT`（前述「git push を使う場合」）に `Contents: write` を付与した場合、能動的リスクは push・PRマージにも及ぶ: プロンプトインジェクションや悪意あるパッケージが、明示読み（前述の gh CLI への明示読み手順等）を介して対象リポジトリへの意図しないコミット・push・マージを引き起こしうる。非 export であることは「黙ってはできない」という一手間の壁ではあるが、コンテナ内の任意のプロセスがそのファイルパスを読める以上、確実な壁ではない。緩和策は他のトークン同様スコープ最小化（対象リポジトリ限定）に加え、GitHub 側の branch protection（force-push 禁止・レビュー必須化）を組み合わせること。
 
 自リポジトリ向けのメイン PAT に `Pull requests: Read and write` を付与した場合の追加リスク:
 

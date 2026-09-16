@@ -11,6 +11,9 @@ services:
         CODEX_CACHEBUST: ${CODEX_CACHEBUST:-pinned}
         ASSET_HASH: ${ASSET_HASH:-unknown}
         BASE_IMAGE: ${BASE_IMAGE:-debian:stable}
+        CC_PROJECT_METADATA: ${CC_PROJECT_METADATA:-}
+        CC_PROJECT_PATH: ${CC_PROJECT_PATH:-}
+        CC_PROJECT_NAME: ${CC_PROJECT_NAME:-}
     stdin_open: true
     tty: true
     userns_mode: keep-id

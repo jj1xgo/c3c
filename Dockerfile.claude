@@ -275,3 +275,12 @@ LABEL claude-container.base-image="${BASE_IMAGE}"
 # （とそれが exec する claude プロセス）はその子として動く。
 ENTRYPOINT ["/usr/bin/setpriv", "--ambient-caps=-all", "--inh-caps=-all", "/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/entrypoint.sh"]
+
+# 由来情報は全命令の最後にまとめ、中間イメージへ部分的に記録しない。
+# 直接ビルド時は空。launcher だけが検証済みの論理パスを渡す（#118）。
+ARG CC_PROJECT_METADATA=
+ARG CC_PROJECT_PATH=
+ARG CC_PROJECT_NAME=
+LABEL claude-container.project-metadata="${CC_PROJECT_METADATA}" \
+      claude-container.project-path="${CC_PROJECT_PATH}" \
+      claude-container.project-name="${CC_PROJECT_NAME}"

@@ -32,6 +32,8 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 
 - [Podman](https://podman.io/) および `podman-compose`
 - ホストの取得処理に `curl`、`jq`、GNU coreutils の `timeout`
+- 残存イメージの診断・清掃にホストの Python 3.9 以上とローカル Podman（`rmi --no-prune` / `ps --external` 対応版）
+  - 実機検証は Podman 5.8.6。非対応オプションや未知の JSON 形式は清掃を失敗として報告し、強制削除へ切り替えない。
 - ホストに `~/.claude.json`（Claude 認証情報）が存在すること
 
 ## 使い方
@@ -52,6 +54,10 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 # 起動せず設定を診断（引数なしなら起動台帳の全プロジェクトを一括診断）
 ./claude-container --check
 ./claude-container --check /path/to/project
+
+# 削除済みパスに対応する、確認済みのイメージだけを清掃する（台帳は保持）
+./claude-container --check --clean-missing
+./claude-container --check --clean-missing /path/to/deleted-project
 ```
 
 スクリプトはシンボリックリンク経由でも動作する（`readlink` で自身のパスを解決する）。異なるターゲットプロジェクトを交互に起動・リビルドしても互いのイメージ・ビルドコンテキストを上書きしない（後述「アーキテクチャ」参照）。同時に別々のプロジェクトを起動することもできる。
@@ -71,6 +77,28 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 # 個別のディレクトリを診断（複数指定可）
 ./claude-container --check /path/to/project-a /path/to/project-b
 ```
+
+通常の `--check` は台帳が空でも残存イメージを調べ、台帳外のイメージ、欠落パスの候補、由来不明の候補を報告する。明示したパスがある場合は、そのパスに対応すると確認できるイメージだけを報告する。Python または Podman がない場合はこの追加診断をスキップする。利用可能でも一覧取得・JSON 解析・台帳検査などに失敗した場合は、プロジェクトの設定診断が成功していても終了コードは非 0 になる。通常診断ではイメージを削除しない。
+
+### 欠落パスのイメージ清掃（`--check --clean-missing`）
+
+明示した場合だけ、元の論理絶対パスが欠落し、由来と名前が一致し、稼働中・停止中・ビルド用コンテナから参照されていないイメージを削除する。引数なしなら台帳とイメージの由来ラベルを調べるため、台帳を移動先へ更新した後も、ラベルが残る旧イメージを見つけられる。権限拒否、通常ファイルへの置換、壊れた symlink、検査エラーは欠落として扱わない。旧 symlink 自体を削除した場合は、元の綴りを指定する。
+
+現在の名前が `localhost/<project>_claude-auth-workspace:latest` だけのイメージが対象。別名・別タグ付き、名前なし、由来不明・不整合のものは保持する。旧イメージは、台帳の完全一致パスから現在の名前を一意に確認できる場合に限り対象となる。名前なし候補は、由来ラベルから欠落パスを確認できたものだけを個別表示し、それ以外は件数を表示する。詳細は `podman images --all --no-trunc` と `podman image inspect <id>` で確認する。
+
+削除前に対象を表示し、対象ごとに名前・ラベル・パス・参照を再検査する。強制削除や全体 prune は使わず、`rmi --no-prune` で親イメージも保持する。中間イメージ・キャッシュが残るため、ディスク使用量の回収が小さい場合がある。結果には削除成功・対象なし・保留理由・失敗を分けて表示する。**台帳、ネットワーク、MCP 承認記録、ビルドコンテキストは変更しない。** 台帳を保持するので、後から従来の `--clean <path>` も使える（この旧コマンドは全体の dangling prune を伴う）。清掃後も通常の `--check` は欠落台帳パスを FAIL として報告する。清掃モードで対象イメージが既にない場合は正常終了する。
+
+新しいビルドには `claude-container.project-metadata` / `project-path` / `project-name` ラベルを記録する。**ホストの絶対パスはイメージを共有・export した場合にも含まれる。** 既存イメージへの後付けはせず、次回 `-b` または暗黙ビルドから付く。Dockerfile の変更による既存のドリフト診断は、従来どおり再ビルドを案内する。改行や先頭 `//` を含むパスは清掃用の由来情報を付けない。
+
+清掃はこのホストのローカル Podman を対象とし、`--remote=false` で接続先の切り替えを防ぐ。未マウントの媒体・切断中の共有上のプロジェクトも欠落と判定されうるため、媒体を接続した状態で実行する。検査と削除は全体として原子的ではないので、同時にビルド・タグ変更・起動・移動を行わない。各 Podman 操作は30秒を上限とし、タイムアウトも失敗として報告する。
+
+| 終了コード | 清掃モードの結果 |
+| --- | --- |
+| `0` | 対象の清掃成功または対象なし。名前なし・由来不明の候補報告だけでは失敗にしない |
+| `1` | 診断・削除・消失確認の失敗、必要な依存の不在、対象の参照・別名・由来矛盾・パス検査不能 |
+| `2` | `--clean-missing` 単独、`--clean` と `--check` / `--clean-missing` の併用 |
+
+### 通常診断の契約
 
 - **起動台帳**: 通常起動（`--clean`/`--check` を除く）のたびに、対象ディレクトリのホスト絶対パスが `~/.local/state/claude-container/projects` へ自動記録される（手動メンテ不要）。`--check` を引数なしで実行すると、この台帳に記録された全プロジェクトを一括診断する。`--clean <directory>` はそのプロジェクトを台帳からも削除し、`--clean`（引数なし）は台帳自体を削除する。シンボリックリンク経由と実体パスで起動すると別エントリとして記録される点に注意（`compute_project_name()` のプロジェクト識別基準と同じ）。
 - **検査項目**: legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無（`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
@@ -504,6 +532,8 @@ GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push �
 `compose.yml` の `:ro` 重ねマウント、または `claude-container` の `prepare_claude_config_ro()` を編集した場合は、ビルド済みのテストイメージ `localhost/claude-test`（`./test-build.sh` の全実行で作られる）がある状態で `./test-build.sh --config-ro-only` を実行する。実物の `compose.yml` とイメージで 11 項目への書き込みが拒否されること、実物のランチャーが placeholder 作成・型検査・`--check` の無書き込み・compose への `CLAUDE_CONFIG_DIR` 受け渡しを正しく行うことを、それぞれ別のテストで確認する（両者を通した対話起動は手動で行う）。
 
 `claude-container` のガード関数（`guard_*`・`prepare_claude_config_ro()`）を編集した場合は `./test-build.sh --launcher-only` を実行する。podman をダミーに置き換えた隔離環境（一時 `HOME`・空の環境変数）で実物のランチャーを起動し、各ガードの通常起動と `--check` の挙動、compose へ渡る環境変数を検証する。実 podman が不要なので、コンテナ内の開発セッションや CI からも回せる。通常の `./test-build.sh` にも含まれる。
+
+`project-images.py` と `--clean-missing` の変更も `--launcher-only` に含む。単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_project_images.py` を使う。参照保護・親保持と JSON 形式は、利用中のストレージから隔離した Podman でも確認する。ラベルの配線を変えた場合は、明示 build と run の暗黙ビルドへの受け渡し、実ビルドでのラベル値も確認する。
 
 IPv6 の変更時は `./test-build.sh --launcher-only` に含む Python テストと設定テストを実行する。`lint.sh` は通常と IPv6 override の両方の Compose 設定を検証する。実 IPv6 の確認は pasta を使うコンテナで別途行う。
 

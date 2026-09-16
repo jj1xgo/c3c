@@ -6,6 +6,7 @@ trap 'exit 1' INT
 BUILD=0
 CLEAN=0
 CHECK=0
+CLEAN_MISSING=0
 
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
@@ -60,7 +61,12 @@ usage() {
                         起動台帳（~/.local/state/claude-container/projects）の
                         全プロジェクトについて報告する。非対話で、書き込みはしない。
                         FAIL のプロジェクトが 1 つでもあれば終了コードは非 0。
+                        イメージ一覧や台帳の検査に失敗した場合も非 0。
                         --check と併用した -b は無視される。
+  --check --clean-missing [<ディレクトリ>...]
+                        元パスの欠落・由来・未使用を確認したイメージだけを削除する。
+                        台帳・ネットワーク・ビルドコンテキスト・親イメージは保持する。
+                        名前なし・由来不明の候補は報告のみ。--clean との併用は不可。
   -h, --help            このヘルプを表示して終了する
 EOF
 }
@@ -81,6 +87,10 @@ while [[ $# -gt 0 ]]; do
       CHECK=1
       shift
       ;;
+    --clean-missing)
+      CLEAN_MISSING=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -94,6 +104,14 @@ done
 # -b の有無は引数解析で確定する。env からの上書き（BUILD=0）で利用者の -b が
 # 黙って無効化されるのを防ぐ（claude-container#39）
 readonly BUILD
+readonly CLEAN_MISSING
+
+# 曖昧な併用を clean_all の判定より先に拒否する（#118）。
+if [[ $CLEAN -eq 1 && ( $CHECK -eq 1 || $CLEAN_MISSING -eq 1 ) ]] \
+    || [[ $CLEAN_MISSING -eq 1 && $CHECK -ne 1 ]]; then
+  echo "ERROR: --clean-missing は --check と併用してください。--clean とは併用できません。" >&2
+  exit 2
+fi
 
 RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
 # readonly は代入と別文にする（readonly VAR="$( ... )" はコマンド置換の失敗を握り潰し、
@@ -259,6 +277,19 @@ freeze_project_paths() {
   # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
   # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
   export BUILD_CONTEXT_DIR
+
+  # ホストの論理パスを最終イメージに記録する。設定ファイルによる上書きは不可。
+  # 台帳形式に載らないパスでは由来情報を付けず、清掃を推測で行わせない。
+  CC_PROJECT_METADATA=""
+  CC_PROJECT_PATH=""
+  CC_PROJECT_NAME=""
+  if [[ "$WORKING_DIR" != *$'\n'* && "$WORKING_DIR" != //* ]]; then
+    CC_PROJECT_METADATA=1
+    CC_PROJECT_PATH="$WORKING_DIR"
+    CC_PROJECT_NAME="$PROJECT_NAME"
+  fi
+  export CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
+  readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
 }
 
 # 起動台帳への記録（内部運用issue参照）。--clean/--check では記録しない。
@@ -1293,10 +1324,10 @@ check_one_project() {
   readonly CHECK_MODE
   local dir="$1" from_ledger="$2"
 
-  if ! WORKING_DIR=$(cd "$dir" 2>/dev/null && pwd); then
-    echo "[FAIL] ディレクトリが存在しません: $dir"
+  if ! WORKING_DIR=$(cd -- "$dir" >/dev/null 2>&1 && pwd -L); then
+    echo "[FAIL] ディレクトリを開けません: $dir"
     if [[ "$from_ledger" -eq 1 ]]; then
-      echo "  (起動台帳に記録がありますが実体が見つかりません。不要なら --clean にこの絶対パスを指定すると台帳ごと清掃できます: $dir)"
+      echo "  (起動台帳に記録があります。存在・種別・アクセス権を確認してください。欠落パスのイメージは --check --clean-missing で検査して清掃できます。台帳は保持します: $dir)"
     fi
     return 20
   fi
@@ -1420,7 +1451,9 @@ check_one_project() {
 # --check のドライバ。引数があれば各ディレクトリを、なければ起動台帳
 # （$CC_LEDGER_FILE）の全プロジェクトを診断する。非対話。対象リポジトリと
 # `.build-context/` は変更しない（`/tmp` の一時ファイルは除く）。
-run_check_mode() {
+run_check_mode() (
+  # 一時ファイルと後始末の trap をこの診断プロセスだけに閉じる。
+  umask 077
   local -a targets=()
   local -a from_ledger_flags=()
   if [[ $# -gt 0 ]]; then
@@ -1432,14 +1465,68 @@ run_check_mode() {
   else
     if [[ ! -s "$CC_LEDGER_FILE" ]]; then
       echo "起動台帳が空です（$CC_LEDGER_FILE）。まだ通常起動が記録されていません。--check <directory> で個別指定できます。"
-      return 0
+    else
+      local line
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        targets+=("$line")
+        from_ledger_flags+=(1)
+      done < "$CC_LEDGER_FILE"
     fi
-    local line
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -n "$line" ]] || continue
-      targets+=("$line")
-      from_ledger_flags+=(1)
-    done < "$CC_LEDGER_FILE"
+  fi
+
+  local image_rc=0 image_check_tmp d normalized
+  local -a image_args=(--ledger "$CC_LEDGER_FILE")
+  if command -v python3 >/dev/null 2>&1 && [[ -f "$RUN_DIR/project-images.py" ]]; then
+    image_check_tmp=$(mktemp -d /tmp/cc-project-images.XXXXXX) || return 1
+    trap 'rm -rf -- "$image_check_tmp"' EXIT
+    if [[ $CLEAN_MISSING -eq 1 ]]; then
+      image_args+=(--clean-missing --result-file "$image_check_tmp/result.json")
+    fi
+    # 明示した引数だけをヘルパーへ渡す。引数なしは台帳外の由来ラベルも探索する。
+    for d in "$@"; do
+      normalized="$d"
+      if [[ -n "$d" && "$d" != *$'\n'* && "$d" != //* ]]; then
+        if normalized=$(cd -- "$d" >/dev/null 2>&1 && pwd -L); then
+          :
+        elif [[ "$d" == /* ]]; then
+          normalized=$(realpath -ms -- "$d") || return 1
+        elif [[ -n ${PWD:-} && "$PWD" != *$'\n'* ]]; then
+          normalized=$(realpath -ms -- "$PWD/$d") || return 1
+        fi
+      fi
+      image_args+=("--project=$normalized")
+    done
+    python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}" || image_rc=1
+    if [[ $CLEAN_MISSING -eq 1 ]]; then
+      # process substitution で Python の失敗を失わないよう、先にファイルへ確定する。
+      if [[ -f "$image_check_tmp/result.json" ]] && python3 -I -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    data = json.load(source)
+for row in data["paths"]:
+    path, state = row["path"], row["state"]
+    if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
+        raise ValueError("不正な診断パス")
+    if state not in ("directory", "missing", "unverifiable"):
+        raise ValueError("不正な診断結果")
+    if state == "directory":
+        sys.stdout.buffer.write(path.encode(sys.getfilesystemencoding(), "surrogateescape") + b"\0")
+' "$image_check_tmp/result.json" > "$image_check_tmp/directories"; then
+        mapfile -d '' -t targets < "$image_check_tmp/directories"
+        from_ledger_flags=()
+        for d in "${targets[@]}"; do from_ledger_flags+=(0); done
+      else
+        echo "[FAIL] 清掃診断の結果を読み取れません。"
+        image_rc=1
+      fi
+    fi
+  else
+    echo "[INFO] Python 3 または project-images.py がないためイメージ診断をスキップします。"
+    if [[ $CLEAN_MISSING -eq 1 ]]; then
+      echo "[FAIL] 清掃に必要なヘルパーを実行できません。"
+      image_rc=1
+    fi
   fi
 
   local pass=0 warn=0 fail=0
@@ -1465,6 +1552,7 @@ run_check_mode() {
   echo "==== サマリ ===="
   echo "検査対象: ${#targets[@]} プロジェクト（起動台帳: $CC_LEDGER_FILE）"
   echo "PASS: $pass   WARN: $warn   FAIL: $fail"
+  [[ $image_rc -eq 0 ]] || echo "イメージ診断・清掃: FAIL"
   if [[ ${#fail_names[@]} -gt 0 ]]; then
     echo "リビルド前に対応が必要:"
     local n
@@ -1473,8 +1561,8 @@ run_check_mode() {
     done
     return 1
   fi
-  return 0
-}
+  return "$image_rc"
+)
 
 # ============================================================
 # dispatch（トップレベル実行文。相対順序は関数化前と同一に保つ）

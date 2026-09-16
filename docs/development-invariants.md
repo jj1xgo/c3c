@@ -30,11 +30,17 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - plugin 別名マウント（`claude-container#98`）: 適用条件の正本は副作用なしの `plugins_alias_target()`（`test-build.sh` が `sed` で関数定義だけを抽出して単独実行するため、開始行 `plugins_alias_target() {` と終了行 `}` の形を変えず、他の関数を呼ばない）。destination はホストの `$HOME` 配下の綴りに限り、`/workspace`・`/data`・`/shared`・`/home/node` と一致または配下なら付けない。`guard_plugins_alias()` は起動を止めない（`guard_warn` のみ）。基点の綴りは `prepare_claude_config_ro()` が `CLAUDE_CONFIG_HOST_BASE` に残す「`~` 展開済み・実体未解決」の値を使う（`pwd -P` 解決値を使うと symlink 経由の `HOME` でメタデータの綴りと食い違う）。
   - `SHARED_MOUNT` の別名マウントと `AGENTS_DIR`（`claude-container#99`）: `SHARED_MOUNT_HOME_ALIAS=1` の別名（`compose.shared-home.yml`・`compose.shared-host.yml`）は `:ro` だが境界ではない（同じ実体が `/shared` に rw で見える）。`guard_shared_home_alias()` は冒頭で `CLAUDE_SHARED_HOME_PATH`・`CLAUDE_SHARED_HOST_PATH` を `unset` してから算出値を `export` する構成を崩さない（環境からの注入で任意の destination にマウントさせない。`AGENTS_DIR` も検証後の実体を `export` で上書きする）。destination の綴りは symlink 未解決、source（`SHARED_MOUNT`・`AGENTS_DIR`）は `pwd -P` の実体。opt-in の不正値・HOME 外・予約領域との重なりは `guard_fail`、`AGENTS_DIR` と他の rw マウントの重なり検査は `guard_warn` に留める（`EXTRA_MOUNT=$HOME` 等で必ず重なり、利用者が意図している可能性が高いため）。
   - ベースイメージ設定（`base-image.txt`）: `BASE_IMAGE` は `guard_base_image()` 冒頭で env 由来の値を無視し既定値から開始する構成を崩さない（env 由来の値を信用しないという点で MCP承認記録・起動台帳のパス freeze と同じ流儀。ただし `BASE_IMAGE` は `readonly` でなく毎回既定値から再導出する別機構）。`ASSET_HASH` と同じ理由で `build`・`run` 両方の env プレフィックスへ渡す。
+- **`project-images.py`**（ホスト専用）
+  - 通常 `--check` はイメージも台帳も変更しない。`--check --clean-missing` でも台帳は保持する（削除済みパスを旧 `--clean` で指定する根拠を失わせない）。
+  - `ENOENT` だけを欠落の根拠とし、壊れた symlink、種別違い、権限・検査エラーを削除へ落とさない。名前と由来の整合を検証し、不完全な由来ラベルを台帳による旧形式照合へフォールバックしない。
+  - ローカル Podman を `--remote=false` で固定する。参照検査は停止中・外部コンテナも含む。削除直前の再検査、非強制の `rmi --no-prune`、削除後の消失確認を維持する。名前なし・別名付きは削除しない。Podman の失敗や JSON 破損を空の成功結果に変えない。
+  - launcher からは固定パスを `python3 -I` で呼ぶ。戻り値は既存診断の結果と論理和で集約し、結果 JSON を shell として評価しない。ヘルパーはビルドコンテキストへ COPY しない。
 - **`compose.yml`**
   - 既定の IPv6 無効モードでは、`sysctls` による無効化と `init-firewall.sh` の `ip6tables` DROP は両方必要（片方だけでは glibc の Happy Eyeballs 経由の間欠停止を防げない、2026-07-02）。既存の IPv6 opt-in は `compose.ipv6.yml` と IPv6 専用ファイアウォールで成立する別モードであり、README.md「IPv6 を任意で有効にする」節に従う。
   - `userns_mode: keep-id`・`NET_ADMIN`/`NET_RAW` capability は維持する。ただし単独では非root プロセスへ継承されるため、`Dockerfile.claude` の `ENTRYPOINT` の `setpriv` 剥奪とセットで維持する（`Dockerfile.claude` 項目参照）。
   - MCP承認記録マウント（`${MCP_APPROVAL_FILE:-/dev/null}:/etc/claude-container/mcp-approved-hash`）は `:ro` 必須（コンテナ内からの改竄で次回起動の自動承認を偽装できてしまうため。`claude-container#28`）。
   - `build.args` の `ASSET_HASH`・`BASE_IMAGE` はデフォルト参照のみを持つ（両経路へ渡す責務は `claude-container` 側。上記項目参照）。ベースイメージ既定値は `Dockerfile.claude` の `ARG`・`compose.yml`・`guard_base_image()` の3箇所に重複するため同時に更新する。
+  - 由来ラベル用の `CC_PROJECT_METADATA` / `CC_PROJECT_PATH` / `CC_PROJECT_NAME` は launcher が `load_env_file()` より前に確定・freeze・export し、build と run の両方へ渡す。Compose と Dockerfile の既定値は空とし、Dockerfile は全命令の最後の単一 LABEL で三つを記録する。
   - plugin 別名マウント（`claude-container#98`）は launcher が選ぶ override `compose.plugins-alias.yml` でのみ付け、`compose.yml` 本体に固定 destination で書かない（destination はホストごとに変わり、ホストの `plugins/` が既に `/home/node/.claude/plugins` の場合は既存の `:ro` 行と重複する。未設定時の既定 destination も重複か幽霊マウントのどちらかになる）。override の source は保護マウントの `plugins/` 行と同一、`:ro` を外さない。destination の `${CLAUDE_PLUGINS_HOST_PATH:?}` は保険で、保護の本体は launcher の無条件 export（compose provider によっては `:?` が空文字を通す）。
   - `${CODEX_DIR:-/dev/null}:/home/node/.codex` は rw 必須（codex が書き戻すため。`GITCONFIG_FILE` の `:ro` とは逆）。`CODEX_DIR` にホストの実 `~/.codex` を指させない前提を崩さない — コンテナ側から `config.toml` の notify フックを書けばホスト側で任意コード実行になる。
 - **`Dockerfile.claude`**

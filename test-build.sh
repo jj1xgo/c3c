@@ -556,7 +556,9 @@ launcher_sandbox_init() {
   # run で export や override が片方だけ漏れていないかを見分けるため。#98）。
   cat > "$bin/podman" <<DUMMY
 #!/bin/bash
+if [[ "\${1:-}" == --remote=false ]]; then shift; fi
 case "\$1 \$2" in
+  "images --all") printf '%s\\n' '[]'; exit 0 ;;
   "image exists") exit 0 ;;
   "image inspect")
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
@@ -630,6 +632,7 @@ run_launcher_tests() {
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
+  check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
@@ -792,7 +795,8 @@ SHIM
   done
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check "$missing" 2>&1) && rc=0 || rc=$?
   check "単一引数の check は既存の FAIL 表示を維持して書き込まない" \
-    bash -c '[ "$1" != 0 ] && [[ "$2" == *"[FAIL]"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ] && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"[FAIL]"* && "$2" != *": cd:"* ]] && ! grep -Eq "^(rmi|rm|prune|compose|network)$" "$3/podman-args" && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
+  rm -f "$home/podman-args"
 
   for kind in absolute relative symlink logical_cwd logical_parent; do
     mkdir -p "$root/parent/$kind project"
@@ -1280,7 +1284,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return

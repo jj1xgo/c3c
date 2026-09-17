@@ -861,7 +861,7 @@ SHIM
   check "cwd 末尾の改行を落として台帳の別エントリを清掃しない" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nl"
   printf '%s\n' "$out" >> "$LOG_FILE"
-  # cwd が削除済みで環境にも PWD が無いと bash は PWD を初期化しない（#110）。相対引数を
+  # cwd が削除済みで環境にも PWD が無いと bash は PWD を初期化しない（空なら空のまま。#110）。相対引数を
   # "/<引数>" に組み立てて台帳の別エントリ（/victim）へ一致させず、素の unbound variable でもなく ERROR で止める。
   mkdir -p "$root/gone"
   printf '%s\n' "/victim" >> "$ledger"

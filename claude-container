@@ -215,6 +215,8 @@ clean_project() {
 # symlink 経由で起動したプロジェクトとは別のハッシュになるため、realpath -ms を使う。
 # 相対引数は論理 cwd に連結してから正規化する（realpath に直接渡すと物理 cwd になる）。
 # 連結には $(pwd -L) でなく $PWD を使う — コマンド置換は末尾の改行を落とし、改行拒否をすり抜ける（#108）。
+# cwd が削除済みで環境にも PWD が無いと bash は PWD を初期化しない。空の PWD で相対引数を
+# "/<引数>" に組み立てると台帳の別エントリに一致しうるため、候補を作らず止める（#110）。
 resolve_project_directory() {
   local input="$1" candidate
   if [[ -z "$input" ]]; then
@@ -225,7 +227,13 @@ resolve_project_directory() {
   fi
   if [[ $CLEAN -eq 1 && ! -e "$input" ]]; then
     candidate="$input"
-    [[ "$candidate" == /* ]] || candidate="$PWD/$candidate"
+    if [[ "$candidate" != /* ]]; then
+      if [[ -z "${PWD:-}" ]]; then
+        guard_fail "ERROR: 現在のディレクトリを特定できないため、相対パスでは起動台帳を照合できません: $input" \
+          "起動時と同じ絶対パスを指定してください（台帳: $CC_LEDGER_FILE）。"
+      fi
+      candidate="$PWD/$candidate"
+    fi
     # 台帳は1行1パス。改行を grep の複数パターンとして解釈させない。
     if [[ "$candidate" != *$'\n'* ]] && candidate=$(realpath -ms -- "$candidate" 2>/dev/null) \
         && [[ -f "$CC_LEDGER_FILE" ]] && grep -xF -- "$candidate" "$CC_LEDGER_FILE" >/dev/null; then

@@ -16,9 +16,10 @@ fi
 
 # コンテナ内は LANG・LC_ALL とも未設定で、shellcheck が日本語を含む行を出力しようとすると
 # "commitBuffer: invalid argument" で途中で切れる（claude-container#123）。ロケールが
-# 未指定のときだけ UTF-8 を補う（利用者の設定は上書きしない）。
-if [ -z "${LC_ALL:-}" ] && [ -z "${LANG:-}" ]; then
-  export LC_ALL=C.UTF-8
+# 未指定のときだけ UTF-8 を補う。LC_ALL は LC_CTYPE を含む全カテゴリを上書きしてしまうため
+# 使わず、文字コードだけに効く LC_CTYPE を補う（利用者の LC_CTYPE 個別指定を上書きしない）。
+if [ -z "${LC_ALL:-}" ] && [ -z "${LC_CTYPE:-}" ] && [ -z "${LANG:-}" ]; then
+  export LC_CTYPE=C.UTF-8
 fi
 
 # 検査ツールの版を表示し、CI（.github/workflows/ci.yml）の固定版と違えば WARNING を出す。

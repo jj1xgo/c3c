@@ -861,6 +861,17 @@ SHIM
   check "cwd 末尾の改行を落として台帳の別エントリを清掃しない" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nl"
   printf '%s\n' "$out" >> "$LOG_FILE"
+  # cwd が削除済みで環境にも PWD が無いと bash は PWD を初期化しない（空なら空のまま。#110）。相対引数を
+  # "/<引数>" に組み立てて台帳の別エントリ（/victim）へ一致させず、素の unbound variable でもなく ERROR で止める。
+  mkdir -p "$root/gone"
+  printf '%s\n' "/victim" >> "$ledger"
+  cp "$ledger" "$root/ledger-before-nopwd"
+  rm -f "$home/podman-args"
+  out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" \
+    "${SCRIPT_DIR}/claude-container" --clean victim 2>&1) && rc=0 || rc=$?
+  check "cwd 削除済みで PWD が無い相対引数は台帳照合せず ERROR で止める" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *"unbound variable"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nopwd"
+  printf '%s\n' "$out" >> "$LOG_FILE"
   proj="$original_proj"
   launcher_sandbox_cleanup
 }

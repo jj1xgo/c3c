@@ -30,7 +30,7 @@ clean_env=(env -i "HOME=$HOME" "PATH=$PATH" "TMPDIR=/tmp"
   "PODMAN_COMPOSE_PROVIDER=${PODMAN_COMPOSE_PROVIDER:-podman-compose}")
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then clean_env+=("XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"); fi
 
-# shellcheck disable=SC2329 # EXIT trap から間接的に呼び出す。
+# shellcheck disable=SC2317,SC2329 # EXIT trap から間接的に呼び出す（0.10.0 は SC2317、0.11.0 は SC2329 を出す）。
 finish() {
   local rc=$? cleanup_rc=0 ids network
   trap - EXIT

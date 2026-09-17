@@ -14,6 +14,24 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   exit 1
 fi
 
+# コンテナ内は LANG・LC_ALL とも未設定で、shellcheck が日本語を含む行を出力しようとすると
+# "commitBuffer: invalid argument" で途中で切れる（claude-container#123）。ロケールが
+# 未指定のときだけ UTF-8 を補う（利用者の設定は上書きしない）。
+if [ -z "${LC_ALL:-}" ] && [ -z "${LANG:-}" ]; then
+  export LC_ALL=C.UTF-8
+fi
+
+# 検査ツールの版を表示し、CI（.github/workflows/ci.yml）の固定版と違えば WARNING を出す。
+# 版差で指摘の有無が変わる（0.10.0 の SC2317 と 0.11.0 の SC2329 等）ため、NG の原因の
+# 切り分けを早くする目的で、失敗にはしない（claude-container#123）。
+shellcheck_version=$(shellcheck --version | awk '/^version:/ { print $2 }')
+ci_shellcheck_version=$(sed -nE 's/^[[:space:]]*SHELLCHECK_VERSION:[[:space:]]*"([^"]+)".*/\1/p' \
+  .github/workflows/ci.yml 2>/dev/null | head -n 1)
+echo "shellcheck ${shellcheck_version:-不明}"
+if [ -n "$ci_shellcheck_version" ] && [ "$shellcheck_version" != "$ci_shellcheck_version" ]; then
+  echo "WARNING: shellcheck の版（${shellcheck_version:-不明}）が CI の固定版（$ci_shellcheck_version）と異なります。版差で指摘が増減することがあります（claude-container#123）。" >&2
+fi
+
 status=0
 
 bash_scripts=()

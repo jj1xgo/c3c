@@ -218,12 +218,18 @@ clean_project() {
 # cwd が削除済みで環境にも PWD が無いと bash は PWD を初期化しない（空の PWD は空のまま保持する）。
 # PWD が無いか空のときに相対引数を
 # "/<引数>" に組み立てると台帳の別エントリに一致しうるため、候補を作らず止める（#110）。
+# cwd が削除済みだと bash は cd . / .. を成功させ、pwd -L が「.」「..」をそのまま返す。絶対パス
+# でない解決結果は幽霊名（「.」の sha256 由来）で清掃・台帳記録が走るため、進めずに止める（#122）。
 resolve_project_directory() {
   local input="$1" candidate
   if [[ -z "$input" ]]; then
     guard_fail "ERROR: ディレクトリに空文字は指定できません。対象のパスを指定してください。"
   fi
   if WORKING_DIR=$(cd -- "$input" >/dev/null 2>&1 && pwd -L); then
+    if [[ "$WORKING_DIR" != /* ]]; then
+      guard_fail "ERROR: 現在のディレクトリを特定できないため、相対パスでは対象を解決できません: $input" \
+        "対象のディレクトリを絶対パスで指定してください。"
+    fi
     return 0
   fi
   if [[ $CLEAN -eq 1 && ! -e "$input" ]]; then
@@ -1338,6 +1344,12 @@ check_one_project() {
     if [[ "$from_ledger" -eq 1 ]]; then
       echo "  (起動台帳に記録があります。存在・種別・アクセス権を確認してください。欠落パスのイメージは --check --clean-missing で検査して清掃できます。台帳は保持します: $dir)"
     fi
+    return 20
+  fi
+  # cwd が削除済みだと cd . / .. が成功し pwd -L が「.」「..」を返す（#122）。幽霊名で診断しない。
+  if [[ "$WORKING_DIR" != /* ]]; then
+    echo "[FAIL] 現在のディレクトリを特定できないため、相対パスでは対象を解決できません: $dir"
+    echo "  (対象のディレクトリを絶対パスで指定してください)"
     return 20
   fi
   readonly WORKING_DIR

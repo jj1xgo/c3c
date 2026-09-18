@@ -872,6 +872,28 @@ SHIM
   check "cwd 削除済みで PWD が無い相対引数は台帳照合せず ERROR で止める" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *"unbound variable"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nopwd"
   printf '%s\n' "$out" >> "$LOG_FILE"
+  # cwd が削除済みだと bash は cd . / .. を成功させ、pwd -L が引数「.」「..」をそのまま返す（#122）。
+  # 幽霊名（「.」の sha256 由来 project-cdb4ee2a 等）で清掃・台帳記録・診断を始めず、PWD の有無に
+  # 関わらず絶対パスの指定を求めて止める。
+  printf '%s\n' "/victim" > "$ledger"
+  cp "$ledger" "$root/ledger-before-dot"
+  for input in "--clean ." "--clean .." "." "--check ."; do
+    for pwd_env in none stale; do
+      read -ra args <<<"$input"
+      mkdir -p "$root/gone"
+      rm -f "$home/podman-args"
+      if [[ "$pwd_env" == stale ]]; then
+        out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$root/gone" \
+          "${SCRIPT_DIR}/claude-container" "${args[@]}" 2>&1) && rc=0 || rc=$?
+      else
+        out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" \
+          "${SCRIPT_DIR}/claude-container" "${args[@]}" 2>&1) && rc=0 || rc=$?
+      fi
+      check "cwd 削除済み（PWD $pwd_env）の '$input' は幽霊名で進めず止める" \
+        bash -c '[ "$1" != 0 ] && [[ "$2" == *"現在のディレクトリを特定できない"* && "$2" != *"project-cdb4ee2a"* && "$2" != *"project-5ec1f7e7"* ]] && ! grep -Eq "^(rmi|rm|prune|compose|network)$" "$3/podman-args" 2>/dev/null && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-dot"
+      printf '%s\n' "$out" >> "$LOG_FILE"
+    done
+  done
   proj="$original_proj"
   launcher_sandbox_cleanup
 }

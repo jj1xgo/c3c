@@ -63,6 +63,10 @@ services:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/workflows:/home/node/.claude/workflows:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/rules:/home/node/.claude/rules:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/output-styles:/home/node/.claude/output-styles:ro
+      # ~/.claude 自体を git リポジトリにしているホスト向け（claude-container#129）。.git/hooks と
+      # .git/config（core.hooksPath 等）はホストで git を打った時点でホスト権限で実行・参照される。
+      # リポジトリでないホストでも空で作って重ね、コンテナが .git を植え付ける経路を閉じる。
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/.git:/home/node/.claude/.git:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/settings.json:/home/node/.claude/settings.json:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/CLAUDE.md:/home/node/.claude/CLAUDE.md:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/statusline.sh:/home/node/.claude/statusline.sh:ro

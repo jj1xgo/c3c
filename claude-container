@@ -587,15 +587,17 @@ guard_codex_dir() {
 }
 
 # ホスト ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、compose.yml が
-# rw マウントの内側に :ro で重ねる 11 項目（compose.yml の volumes と test-build.sh の
+# rw マウントの内側に :ro で重ねる 12 項目（compose.yml の volumes と test-build.sh の
 # CONFIG_RO_DIRS/FILES と同期すること）。侵害されたセッションがここへ hook/skill/plugin 等を
 # 書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file
 # watcher で稼働中セッションにも反映）ため、この経路をマウント層で閉じる。
 # 認証（.credentials.json）・transcript・memory 等の状態は対象外（rw のまま）。
-CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles)
+# .git は ~/.claude 自体を git リポジトリにしているホスト向け（claude-container#129）。.git/hooks と
+# .git/config はホストで git を打った時点でホスト権限で実行・参照されるため、hook と同じ扱いにする。
+CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
 CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 
-# 上記 11 項目のマウント先をホスト側に用意する。マウント先が無いと podman がサブ uid
+# 上記 12 項目のマウント先をホスト側に用意する。マウント先が無いと podman がサブ uid
 # 所有・0700 の実体をホストの ~/.claude 内に作り、ユーザー権限で消せない残骸になるため、
 # ランチャーがユーザー権限で明示的に空で作る（空ディレクトリ・空ファイル・`{}` は
 # Claude Code にとって不活性）。基点は compose.yml の親マウントと同じ ${CLAUDE_CONFIG_DIR:-~}。
@@ -614,7 +616,7 @@ prepare_claude_config_ro() {
     base="${base/#\~\//$HOME/}"
     host_base="$base"
     # 相対パスは拒否する。compose は相対 bind source を compose.yml のディレクトリ基準で
-    # 解決し、ランチャーの解釈と食い違って親マウントと 11 項目が別実体を指しうるため。
+    # 解決し、ランチャーの解釈と食い違って親マウントと 12 項目が別実体を指しうるため。
     if [[ "$base" != /* ]]; then
       guard_fail "ERROR: CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1
     fi
@@ -644,7 +646,7 @@ prepare_claude_config_ro() {
       guard_fail "ERROR: $cfg がディレクトリではありません。起動を中止します。" || return 1
     fi
     if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
-      guard_warn "[WARN] $cfg が無い（通常起動時に空で作成。11 項目もその際に作成）"
+      guard_warn "[WARN] $cfg が無い（通常起動時に空で作成。12 項目もその際に作成）"
       return 0
     fi
     mkdir -p "$cfg" || { guard_fail "ERROR: $cfg を作成できません。起動を中止します。" || return 1; }
@@ -873,7 +875,7 @@ guard_shared_home_alias() {
 
 # エージェント共通のスキル置き場（AGENTS_DIR、通常 ~/.agents）を /home/node/.agents に :ro で
 # 付ける opt-in（claude-container#99）。~/.claude/agents/（Claude Code の subagent 定義、
-# :ro 保護 11 項目の一つ）とは別物。
+# :ro 保護 12 項目の一つ）とは別物。
 guard_agents_dir() {
   [[ -n "${AGENTS_DIR:-}" ]] || return 0
   local agents_path other other_real

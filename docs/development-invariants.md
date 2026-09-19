@@ -43,6 +43,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - 由来ラベル用の `CC_PROJECT_METADATA` / `CC_PROJECT_PATH` / `CC_PROJECT_NAME` は launcher が `load_env_file()` より前に確定・freeze・export し、build と run の両方へ渡す。Compose と Dockerfile の既定値は空とし、Dockerfile は全命令の最後の単一 LABEL で三つを記録する。
   - plugin 別名マウント（`claude-container#98`）は launcher が選ぶ override `compose.plugins-alias.yml` でのみ付け、`compose.yml` 本体に固定 destination で書かない（destination はホストごとに変わり、ホストの `plugins/` が既に `/home/node/.claude/plugins` の場合は既存の `:ro` 行と重複する。未設定時の既定 destination も重複か幽霊マウントのどちらかになる）。override の source は保護マウントの `plugins/` 行と同一、`:ro` を外さない。destination の `${CLAUDE_PLUGINS_HOST_PATH:?}` は保険で、保護の本体は launcher の無条件 export（compose provider によっては `:?` が空文字を通す）。
   - `${CODEX_DIR:-/dev/null}:/home/node/.codex` は rw 必須（codex が書き戻すため。`GITCONFIG_FILE` の `:ro` とは逆）。`CODEX_DIR` にホストの実 `~/.codex` を指させない前提を崩さない — コンテナ側から `config.toml` の notify フックを書けばホスト側で任意コード実行になる。
+  - `~/.claude/.git` の `:ro` 重ね（`claude-container#129`）は `CLAUDE_CONFIG_RO_DIRS` の 12 項目目として扱い、`.git` だけ条件付き（存在時のみ）の override にしない — 親マウントが rw のため、`.git` が無いホストでもコンテナが `.git` を植え付けられ、ホストで後から `git init` すると既存の `.git`（hooks・config）が再利用される。空の `.git` は git の通常のリポジトリ探索では認識されない（実測）。`.git` の存在だけで判定する他のツールへの影響は保証しない。
 - **`Dockerfile.claude`**
   - `ca-certificates` の HTTP→HTTPS 2段階インストール順序を変えない（debian:stable 未同梱のため。削除しないこと）。
   - `tini` を PID1 に据える構成、および `packages.txt` でなく固定 apt-get レイヤーに置く配置を変えない（プロジェクト側上書きでの消失防止。関連インシデント: 2026-07-02、`podman stop` でコンテナを回収できなくなる障害。詳細は README.md「アーキテクチャ」節の `Dockerfile.claude` 説明を参照）。

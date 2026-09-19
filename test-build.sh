@@ -370,12 +370,12 @@ run_validator_layer1_and_contract() {
 }
 
 # --- ホスト ~/.claude 設定の読み取り専用保護（compose.yml の :ro 重ねマウント） ---
-# ホスト側で実行・読込される user scope の設定 11 項目を、コンテナ内から書き換え
+# ホスト側で実行・読込される user scope の設定 12 項目を、コンテナ内から書き換え
 # られないことを検証する。検証するストリームと実際に使うストリームを分岐させない
 # ため、実物の compose.yml・実物のイメージ・userns keep-id をそのまま使い、
 # `podman compose run --entrypoint bash` で書き込みを試みる（volumes を抜き出して
 # 別コマンドに組み直すと、検証した構成と起動する構成が別物になる）。
-CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles)
+CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
 CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 
 # コンテナ内で実行する検査スクリプト。各項目について「新規作成」「既存への追記」
@@ -492,13 +492,13 @@ run_config_ro_tests() {
     check "compose run (テストイメージ $IMAGE が無い)" false
     rm -rf "$root"; return
   fi
-  check "11項目へ書けず projects/ へは書ける" env \
+  check "12項目へ書けず projects/ へは書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
   # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
   # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
-  check "別名 override 込みでも 11項目へ書けず projects/ へは書ける" env \
+  check "別名 override 込みでも 12項目へ書けず projects/ へは書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
     podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
@@ -1334,16 +1334,16 @@ run_config_ro_launcher_tests() {
   check "C0: --check は未作成の台帳・承認記録などを作らない" cmp "$root/check-before" "$root/check-after"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # A: 空の ~/.claude → 11 項目が空で作られ、作成が 11 行ログされ、すべてユーザー所有
+  # A: 空の ~/.claude → 12 項目が空で作られ、作成が 12 行ログされ、すべてユーザー所有
   run_launcher
   local ok=1
   for d in "${CONFIG_RO_DIRS[@]}"; do [[ -d "$home/.claude/$d" ]] || ok=0; done
   for f in "${CONFIG_RO_FILES[@]}"; do [[ -f "$home/.claude/$f" ]] || ok=0; done
   [[ "$(cat "$home/.claude/settings.json")" == "{}" ]] || ok=0
   [[ ! -s "$home/.claude/CLAUDE.md" && ! -s "$home/.claude/statusline.sh" ]] || ok=0
-  check "A: 欠けている 11 項目を空で作成する（rc=$rc）" [ "$ok" -eq 1 -a "$rc" -eq 0 ]
-  check "A: 作成を 11 行ログする" \
-    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 11 ]
+  check "A: 欠けている 12 項目を空で作成する（rc=$rc）" [ "$ok" -eq 1 -a "$rc" -eq 0 ]
+  check "A: 作成を 12 行ログする" \
+    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 12 ]
   check "A: 作成物がすべて実行ユーザー所有" \
     bash -c "out=\$(find '$home/.claude' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   printf '%s\n' "$out" >> "$LOG_FILE"

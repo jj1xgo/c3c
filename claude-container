@@ -2100,8 +2100,9 @@ else
   export MCP_APPROVAL_FILE
 fi
 
-# 全 guard と MCP 承認を通った後にだけホスト ~/.claude へ placeholder を作る
-# （起動を拒否する経路ではホストに何も書かない）。
+# Claude 経路では MCP 承認後にホストの Claude 設定へ placeholder を作る。
+# Codex 経路では同じ mount を使う検査のため、placeholder・必要な build が承認より先行する。
+# Codex 承認を拒否しても、これらや native CLI による専用 home への書込みは残りうる。
 prepare_claude_config_ro
 guard_plugins_alias
 

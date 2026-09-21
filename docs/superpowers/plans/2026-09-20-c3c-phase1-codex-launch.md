@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-**状態:** 計画レビュー確定。Tasks 1–3 の実装と回帰検証は完了（未コミット）。Task 4 の実機受入と Task 5 の文書・最終レビューを進行中。実装に対する過去の Fable レビューは利用上限で未完了。現在の受入状況と PR 前レビューの手順は[結果記録](2026-09-20-c3c-phase1-results.md)を参照。
+**状態:** 計画レビュー確定。Tasks 1–3 の実装と回帰検証、指定範囲の実機受入、PR 前 Opus レビューを実施（実装 commit `1f98226`、Critical/Important 0）。未実測・残る Minor・日常利用受入は[結果記録](2026-09-20-c3c-phase1-results.md)を参照。
 
 **Goal:** 既存Claude起動を維持し、明示的にCodexを選んで同じ外側境界の中で標準CLIを使えるようにする。c3cの起動時MCP承認をCLIのnative trustと分ける。
 
@@ -68,7 +68,7 @@ helperのinterfaceは `snapshot`（native一覧取得→strict normalize→versi
 - **検査用の非TTY経路:** 固定 `compose.codex-preflight.yml` で同じserviceの `tty: false` / `stdin_open: false` のみを上書きする。preflightの `podman compose run` にも `-T` を渡し、host側stdinは `/dev/null`。通常起動のTTYは維持する。overrideをstaging/asset hash/Compose検証の対象へ加える。実物でstdoutとstderrの分離、stdoutがprotocol 1文書だけであることを受入条件にする。`podman-compose run --help`で `-T` の存在は確認済みだが、実コンテナでの分離は実装後の検証である。
 - **trustの範囲:** 固定trust overrideはrepo側 `.codex/config.toml` と適用対象のhooks・exec policy・sandbox設定等も有効化する。MCP以外の定義をc3cが承認した意味にはせず、hooksはnativeの個別確認へ委ねる。固定CLI引数で指定するsandbox/approvalは維持し、追加のworkspace-write書込み先等はnative設定の影響を受けることをREADME/SECURITY-CLAIMSへ記載する。壊れたproject設定は起動失敗となり、設定を無視して進めない。
 - **Claude設定共有の残余:** 第1段階では共通Composeの `.claude.json` / `.claude` のrw共有と内側の既存ro保護を維持する。CodexセッションにもClaude認証・履歴等のrw状態が見えるため、CLIごとの認証隔離を達成したとは扱わない。Codex専用homeという説明はCodexのhost homeを共有しない意味であり、Claude状態まで隔離する意味ではない。README/SECURITY-CLAIMSへ明記し、全面分離はG4で扱う。受入試験は専用のClaude fixtureを用い、持ち主の実Claude設定/認証を検証に露出させない。
-- **承認保存先と清掃:** `MCP_APPROVAL_STORE/codex/$PROJECT_NAME/0.155.1.json` に固定する。agentは固定subdirectory、版は対応版だけを採用し、projectは現行launcher算出値を使う。保存先はproject env読込前にfreezeする。既存Claude記録は変更しない。`--clean <dir>` はそのprojectのClaude記録とCodex subdirectory全体（過去版を含む）を削除し、他projectは残す。`--clean-all` は既存store全体の削除で双方を消す。`--check --agent codex` は記録の存在・形式だけを静的診断し、実効定義の一致/承認済みとは表示しない。
+- **承認保存先と清掃:** `MCP_APPROVAL_STORE/codex/$PROJECT_NAME/0.155.1.json` に固定する。agentは固定subdirectory、版は対応版だけを採用し、projectは現行launcher算出値を使う。保存先はproject env読込前にfreezeする。既存Claude記録は変更しない。`--clean <dir>` はそのprojectのClaude記録とCodex subdirectory全体（過去版を含む）を削除し、他projectは残す。`--clean`（引数なし） は既存store全体の削除で双方を消す。`--check --agent codex` は記録の存在・形式だけを静的診断し、実効定義の一致/承認済みとは表示しない。
 - **hash対象:** 正規化文書を `{protocol_version: 1, codex_version: "0.155.1", servers: [...]}` とし、serversはenabled stdioのみ、各要素はnameとtransportのtype/command/args/env/env_vars/cwdを含める。enabled=falseの全serverと、helper無しenabled HTTPは一覧schemaを検証した後にhashから除く。HTTPのURL変更は外側の通信制限の対象で、ローカルcommandの再承認対象ではない。helper有りHTTPはhash計算前に拒否する。auth_status/disabled_reason/timeout/HTTP header値はhashに含めない。name重複・JSONの重複key・未知のtransportフィールドは判定不能として拒否する。
 - **版の取得:** 同じ固定絶対パスの `codex --version` を期限5秒で実行し、単一行 `codex-cli 0.155.1`（末尾改行だけ除去）と厳密比較する。非0・空・未知形式/版は拒否する。listの60秒期限とは別に管理する。60秒で全環境を保証するとはせず、期限超過時は停止する。認証あり受入でcold/warm両方の経過時間を記録する。
 - **preflightの副作用:** native CLIによるcloud config cache更新、auth refresh、OAuth discovery等の通信・専用homeへの書込みがあり得る。agent/MCP commandを起動しないことと、副作用ゼロは区別する。通常起動までにfirewall/DNS初期化が2回走ることと所要時間もREADMEへ記載する。
@@ -85,7 +85,7 @@ helperのinterfaceは `snapshot`（native一覧取得→strict normalize→versi
 
 - [ ] option parser、未知/重複/欠落、clean併用、envによる選択・台帳差替え、初回/同一/変更/拒否/TTY無しを実物launcherの隔離fixtureで赤にする。
 - [ ] `--agent`/`--read-only` を追加。CodexでCODEX_DIR未指定を診断。既存Claudeと同じproject/image単位を使い、第2/3段階の識別子整理を混ぜない。
-- [ ] support-label guard→preflight→host承認→本起動を組む。旧image/label欠落/未知値ならcontainer runゼロ。image不在/存在と`-b`有無の4組を検証し、必要な明示build後に対応imageが確認できた場合だけ通す。preflight失敗なら本起動を呼ばない。引数のshell再解釈はせず配列を使う。`--clean`/`--clean-all`/`--check`と既存清掃fixtureを拡張し、両agent・複数版の対象project記録だけを清掃することを確認する。
+- [ ] support-label guard→preflight→host承認→本起動を組む。旧image/label欠落/未知値ならcontainer runゼロ。image不在/存在と`-b`有無の4組を検証し、必要な明示build後に対応imageが確認できた場合だけ通す。preflight失敗なら本起動を呼ばない。引数のshell再解釈はせず配列を使う。`--clean`/`--clean`（引数なし）/`--check`と既存清掃fixtureを拡張し、両agent・複数版の対象project記録だけを清掃することを確認する。
 - [ ] `TMPDIR=/tmp ./test-build.sh --launcher-only`。Expected 既存と新規全成功、default Claude不変、`--check`で起動・書込みなし。
 
 ### Task 3: entrypoint・Compose・image配線

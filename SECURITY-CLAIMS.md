@@ -88,7 +88,7 @@ command、args、cwd、env、env_vars を正規化して hash 化し、初回・
 - 一覧取得は MCP command を起動しないが、native CLI による cloud config 取得・OAuth discovery・
   認証更新や専用 home への書込みが起きうる。秘密 export 後に実行するため、その環境も参照できる。
 - env の値と HTTP header は表示しないが、command/args に秘密を埋め込めば確認表示に出る。
-  制御文字除去は内容の秘匿ではない。永続化する承認記録は版・protocol・hash のみである。
+  除去するのは ASCII 制御文字であり、Unicode の bidi 制御等は対象外。内容の秘匿ではない。永続化する承認記録は版・protocol・hash のみである。
 - 固定 repo trust は `.codex/config.toml`、適用対象の hooks・exec policy・sandbox 設定も有効化する。
   MCP 承認はこれらの承認を兼ねず、hooks の信頼確認は Codex の native 機能に委ねる。
   CLI の sandbox/approval 指定は固定するが、追加の書込み先などは native 設定の影響を受ける。

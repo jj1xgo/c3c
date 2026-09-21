@@ -1,8 +1,8 @@
 # c3c 第1段階の実装・検証記録
 
-2026-09-21 更新。第1段階は進行中。Task 4 の残りの受入と最終レビューを完了条件として残す。
+2026-09-21 更新。第1段階の実装と指定範囲の受入、PR 前の静的レビューを実施。未実測と日常利用受入は以下のとおり残す。
 
-対象は `93211ed80ad3e4b4231f40ba5096df6924e76f34` を基点とする `c3c/phase1-codex-launch` worktree の未コミット差分。基点 commit 自体が新機能を含むという意味ではない。
+対象は `93211ed80ad3e4b4231f40ba5096df6924e76f34` を基点とする `c3c/phase1-codex-launch` worktree の差分。実装 commit は `1f98226`。基点 commit 自体が新機能を含むという意味ではない。
 
 ## 実装と回帰検証
 
@@ -83,12 +83,24 @@ README の受入状況と本記録を指定証跡へ照合する Codex の確認
 
 Fable による実装レビューは利用上限で未完了（not run として扱い、合格判定に数えない）。計画への Fable レビューが成功済みであることと、製品差分のレビューは別である。2026-09-21 の運用に従い、残る受入を整理した後、PR 前に claude-review による Opus レビューを 1 回行い、必要な確認限定巡は同じ session を resume する。途中の Task 単位では再起動しない。
 
+2026-09-21 の PR 前レビューは実効モデル `claude-opus-5`、対象 `93211ed..1f98226`、Critical 0 / Important 0 / Minor 8、判定 Yes。コマンド実行を許さない静的レビューであり、テスト・実機受入を再実行した結果ではない。Critical/Important がないため resume による確認巡は行っていない。
+
+Minor 1（承認前の副作用のコメント）、2（全削除の引数表記）、3（Claude 時の空の内部 mode の説明）、6（ASCII 制御文字だけを除去する限界）は文書・コメントを修正した。Minor 8 の SemVer 案は `v9.7.0`（既定 Claude 起動と設定形式を維持する CLI 機能追加）。タグは未作成。
+
+未対応 Minor は 3 件:
+
+- 4: image 内の helper 単体 smoke を既存 build suite に追加する提案。実 launcher の受入で helper 起動は確認済みだが、継続的な検出範囲の追加は後続に残す。
+- 5: Claude/Codex 両承認記録の書込み拒否を runtime suite に組み込む提案。Codex の実 mount は今回個別確認済み。既存 suite の拡張は後続に残す。
+- 7: preflight 一時ファイル作成失敗時の専用エラーメッセージ。非0終了と清掃は維持されるため、診断文の改善を後続に残す。
+
+レビューが直接確認していない範囲は、実測全般、native 一覧の副作用/plugin 包含の再検証、CI 上での ComposeContractTests の実行有無、差分外の runtime suite・firewall・project-images・Codex 導入レイヤー本文。PR 後レビューでは指摘反映とこれらの範囲、CI/実測結果を確認する。
+
 以下は本記録時点で未完了:
 
 - Claude の認証後の対話。専用 fixture で既定/明示起動の未認証画面までは確認済み。2026-09-21 の利用者指定により、認証後は日常利用受入に残す。
 - 空 cache の cold preflight は not run。2026-09-21 に利用者が、既存キャッシュを消さず、制約を明記して最終レビューへ進むことを選択した。使用済み認証 home の計測を cold の代用にはしない。cloud config 取得・HTTP discovery 成功の個別観測も not run であり、成功や所要時間の保証はしない。
 - CLI ごとの自動 memory の同等性。今回は既存 Markdown を読む経路を検証した。
-- 最終レビューと日常利用受入。
+- PR 後のレビュー・必須 CI と日常利用受入。
 
 日常利用は最終レビュー後、2 project × 各 5 session を候補とする。各 project で Claude 起動、Codex 起動、Codex 再開、Codex read-only、別 CLI への戻しを行い、指示・MCP・共有ノート・履歴が意図どおりか確認する。実施には利用者の実環境を使うため、本 fixture 成功で日常利用まで完了したとは扱わない。認証状態の共通 mount という残余も上記 README/SECURITY-CLAIMS のまま残る。
 

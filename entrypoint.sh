@@ -209,7 +209,12 @@ if [ -f "$SECRETS_MOUNT/GITHUB_MAIN_PAT" ]; then
 fi
 
 if [ "$CC_AGENT" = claude ]; then
-  exec claude --dangerously-skip-permissions
+  # Claude 経路の起動引数は固定（Claude Code の auto mode）。引数を受理しない版ではそのまま非ゼロで
+  # 終了し、auto が利用できないセッションでは Claude Code 本体が Manual に戻す（公式 permission-modes
+  # 文書）。いずれの場合も旧既定の --dangerously-skip-permissions で再試行しない（env による切替も
+  # 設けない）。auto / Manual の判定は Claude Code 本体の機能で、この container の境界には数えない
+  # （README「セキュリティモデル」節）。
+  exec claude --permission-mode auto
 fi
 
 # Codex 経路（c3c 第1段階）。同一の secret export を終えた環境で、固定 home・固定 CLI 実体・

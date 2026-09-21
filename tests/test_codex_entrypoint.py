@@ -142,7 +142,7 @@ class ClaudePathTests(EntrypointCase):
                 result = self.run_entrypoint(agent)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual([r.split()[0] for r in self.records], ['sudo', 'refresh', 'claude', 'claude-env'])
-                self.assertEqual(self.records[2], 'claude --dangerously-skip-permissions')
+                self.assertEqual(self.records[2], 'claude --permission-mode auto')
                 self.assertIn('MCP_TOKEN=tok', self.records[3])
                 self.assertEqual(self.codex_calls, [])
                 self.assertNotIn('Codex', result.stderr)

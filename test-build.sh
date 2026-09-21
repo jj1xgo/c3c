@@ -633,6 +633,10 @@ run_launcher_tests() {
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
+  check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
+  check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
+  check "entrypoint の agent 分岐（enum・preflight 分離・固定 home/CLI・verify→exec・Claude 順序）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_entrypoint.py"
+  check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
   run_env_file_launcher_tests
@@ -1079,9 +1083,10 @@ run_env_file_launcher_tests() {
   check "D1: compose に --env-file /dev/null が渡る（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && tr '\n' ' ' < '$root/compose-args' | grep -q -- '--env-file /dev/null '"
   printf '%s\n' "$out" >> "$LOG_FILE"
-  # D2: build 側・run 側の両方に付いている（静的確認。run_launcher は -b を渡せないため本体を数える）
-  check "D2: build と run の両呼び出しに --env-file /dev/null がある" \
-    bash -c "[ \"\$(grep -c 'podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/claude-container')\" -eq 2 ]"
+  # D2: build 側・run 側・Codex preflight 側の全呼び出しに付いている（静的確認。run_launcher は -b を
+  # 渡せないため本体を数える。compose 呼び出しの行数と --env-file /dev/null 付きの行数が一致すること）
+  check "D2: podman compose の全呼び出しに --env-file /dev/null がある" \
+    bash -c "total=\$(grep -c '^ *podman compose ' '${SCRIPT_DIR}/claude-container'); with=\$(grep -c '^ *podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/claude-container'); [ \"\$total\" -ge 2 ] && [ \"\$total\" -eq \"\$with\" ]"
   rm -f "$proj/.env"
 
   # 許可リスト（claude-container#44）。偽 grep は実行痕跡を残してから本物へ委譲する
@@ -1317,7 +1322,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1704,6 +1709,7 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/init-firewall.sh" "$dest/init-firewall.sh"
   cp "${SCRIPT_DIR}/ipv6-firewall.py" "$dest/ipv6-firewall.py"
   cp "${SCRIPT_DIR}/firewall-refresh.py" "$dest/firewall-refresh.py"
+  cp "${SCRIPT_DIR}/codex-mcp-audit.py" "$dest/codex-mcp-audit.py"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"

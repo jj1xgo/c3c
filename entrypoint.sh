@@ -1,4 +1,43 @@
 #!/bin/bash
+# 起動する CLI の選択（c3c 第1段階）。launcher が CLI 引数から導出した値だけを Compose 経由で
+# 明示的に渡す（CC_AGENT=claude|codex）。未設定のときだけ Claude 既定、空文字を含む不正値は拒否
+# し、別 CLI へ fallback しない。Codex のときは CC_CODEX_START_MODE=run|preflight と
+# CC_CODEX_READ_ONLY=0|1 も enum として検証する（launcher と container の双方で検証する契約）。
+case "${CC_AGENT-claude}" in
+  claude) CC_AGENT=claude ;;
+  codex) ;;
+  *)
+    echo "ERROR: CC_AGENT が不正です（claude または codex）: '${CC_AGENT-}'。起動を中止します" >&2
+    exit 1
+    ;;
+esac
+readonly CC_AGENT
+CODEX_START_MODE=""
+CODEX_READ_ONLY=0
+if [ "$CC_AGENT" = codex ]; then
+  case "${CC_CODEX_START_MODE-}" in
+    run | preflight) CODEX_START_MODE="$CC_CODEX_START_MODE" ;;
+    *)
+      echo "ERROR: CC_CODEX_START_MODE が不正です（run または preflight）: '${CC_CODEX_START_MODE-}'。起動を中止します" >&2
+      exit 1
+      ;;
+  esac
+  case "${CC_CODEX_READ_ONLY-0}" in
+    0 | 1) CODEX_READ_ONLY="${CC_CODEX_READ_ONLY-0}" ;;
+    *)
+      echo "ERROR: CC_CODEX_READ_ONLY が不正です（0 または 1）: '${CC_CODEX_READ_ONLY-}'。起動を中止します" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$CODEX_START_MODE" = preflight ]; then
+    # 検査用コンテナでは stdout 全体を protocol の JSON 1 文書専用にする。初期化ログが出る前に
+    # 元の stdout を fd3 へ確保し、以後の通常 stdout（firewall 等のログ）は stderr へ向ける。
+    exec 3>&1
+    exec 1>&2
+  fi
+fi
+readonly CODEX_START_MODE CODEX_READ_ONLY
+
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
 # 無効化する場合は利用側プロジェクトの .claude-container.d/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
 firewall_args=()
@@ -43,8 +82,10 @@ fi
 # opt-out 変数を設ければそのプロジェクト自身の env に書くだけでゲートが無効化できて
 # しまう（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。env 自体は運用者が書く
 # 信頼入力として扱っており（README同節）、この判断は env 全般の信頼性を疑うものではない。
+# Claude 経路だけのゲート。Codex 経路は下の codex-mcp-audit.py による snapshot/verify を通し、
+# Claude 用ゲートを Codex の審査に代用しない（launcher 側の分岐と同じ）。
 MCP_CONFIG=/workspace/.mcp.json
-if [ -f "$MCP_CONFIG" ]; then
+if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
   if ! stdio_servers=$(jq -r '
     (.mcpServers // {}) | to_entries[] | select(.value.command != null) |
     "\(.key)\t\(.value.command)\t\((.value.args // []) | join(" "))"
@@ -107,6 +148,17 @@ fi
 # 残存を検出する）。GH_TOKEN の ambient export は撤廃済み — gh は既定で未認証になる。
 SECRETS_MOUNT=/home/node/.config/claude-container/secrets
 
+# Codex の固定 home と CLI 実体（c3c 第1段階）。firewall と capability 剥奪の後、秘密の export より前に
+# 確定する。下の export ループは「既に設定済みの名前」をスキップするため、secrets/export/CODEX_HOME・
+# HOME・PATH で差し替えることはできず、検査（preflight）・再照合（verify）・本起動が同じ home と
+# CLI 実体を使う。CODEX_HOME は compose.yml が CODEX_DIR を rw で載せる固定マウント先。CLI 実体は
+# Dockerfile.claude の `npm install -g @openai/codex` が置く npm global bin の固定絶対パス。
+if [ "$CC_AGENT" = codex ]; then
+  export CODEX_HOME=/home/node/.codex
+  CODEX_CLI=/usr/local/bin/codex
+  readonly CODEX_HOME CODEX_CLI
+fi
+
 # SECRETS_DIR/export/ 配下の各ファイルを「ファイル名＝環境変数名」として export する。
 # 未設定時は compose.yml の /dev/null フォールバックによりマウント先がキャラクタ
 # デバイスになるため、[ -d ] で確実に偽判定できる。
@@ -156,4 +208,42 @@ if [ -f "$SECRETS_MOUNT/GITHUB_MAIN_PAT" ]; then
   export GIT_CONFIG_VALUE_0=""
 fi
 
-exec claude --dangerously-skip-permissions
+if [ "$CC_AGENT" = claude ]; then
+  exec claude --dangerously-skip-permissions
+fi
+
+# Codex 経路（c3c 第1段階）。同一の secret export を終えた環境で、固定 home・固定 CLI 実体・
+# 作業基点 /workspace・固定の設定解決用 override のもとに起動時 MCP 審査を行う。
+#   preflight: snapshot の protocol 1 文書だけを fd3（元の stdout）へ出し、agent を起動せず終了する。
+#   run:       host が :ro で渡した承認記録と再計算した hash が一致した場合だけ Codex を exec する。
+# 未導入・版不一致・審査不能・不一致は停止し、Claude へ fallback しない。
+CODEX_AUDIT=/usr/local/bin/codex-mcp-audit.py
+CODEX_APPROVED=/etc/claude-container/codex-mcp-approved.json
+if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then
+  echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.claude-container.d/codex-version.txt に対応版を指定して -b で再ビルドしてください。起動を中止します" >&2
+  exit 1
+fi
+if ! cd -- /workspace; then
+  echo "ERROR: 作業基点 /workspace に入れません。起動を中止します" >&2
+  exit 1
+fi
+if [ "$CODEX_START_MODE" = preflight ]; then
+  echo "INFO: Codex 起動時 MCP 審査: 設定済み MCP の実行定義を取得します（agent は起動しません）" >&2
+  if ! python3 -I "$CODEX_AUDIT" --codex "$CODEX_CLI" snapshot >&3; then
+    echo "ERROR: Codex 起動時 MCP 審査の snapshot に失敗しました。起動を中止します" >&2
+    exit 1
+  fi
+  exec 3>&-
+  exit 0
+fi
+if ! python3 -I "$CODEX_AUDIT" --codex "$CODEX_CLI" verify "$CODEX_APPROVED"; then
+  echo "ERROR: Codex の MCP 実行定義がホスト側の承認記録と一致しないか検証できません。Codex を起動しません" >&2
+  exit 1
+fi
+# 固定 argv。sandbox は launcher の --read-only だけで切り替え、設定解決用 override は helper の
+# snapshot/verify（codex-mcp-audit.py の LIST_ARGS）と同じ値を渡す（検査と本起動の一致）。
+codex_sandbox=workspace-write
+if [ "$CODEX_READ_ONLY" = 1 ]; then
+  codex_sandbox=read-only
+fi
+exec "$CODEX_CLI" --sandbox "$codex_sandbox" --ask-for-approval on-request -c 'projects={"/workspace"={trust_level="trusted"}}'

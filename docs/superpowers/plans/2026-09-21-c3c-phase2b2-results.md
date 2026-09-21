@@ -1,8 +1,8 @@
 # c3c 第2b-2段階の実装・検証記録
 
-2026-09-21 作成。[第2段階計画](2026-09-21-c3c-phase2.md) の Task 4（2b-2: Node/Codex の既定ビルド入力）の実装、fake Podman による回帰検証、実ビルド・実 Podman・実認証での受入を記録する。独立レビューは完了（Critical 0 / Important 0 / Minor 1）。検証件数の文書誤記 1 件は修正済み。PR 後のレビュー・必須 CI は未実施。
+2026-09-21 作成。[第2段階計画](2026-09-21-c3c-phase2.md) の Task 4（2b-2: Node/Codex の既定ビルド入力）の実装、fake Podman による回帰検証、実ビルド・実 Podman・実認証での受入を記録する。独立レビューは完了（Critical 0 / Important 0 / Minor 1）。検証件数の文書誤記 1 件は修正済み。[PR #136](https://github.com/jj1xgo/c3c/pull/136) の二重レビュー・必須 CI 4 件を通過し、マージ済み。`v10.0.0` として公開済み。
 
-対象は `9c6b21df1867314a592119c01984150b97354ea1`（PR #135 マージ）を基点とする `c3c/phase2b2-defaults` worktree の差分。実装・検証はコミット前の差分に対して行った。公開時の対象 SHA は PR 本文に記録する。実装者は Opus 5（ユーザー指定。advisor・Fable・subagent は使っていない）。
+対象は `9c6b21df1867314a592119c01984150b97354ea1`（PR #135 マージ）を基点とする `c3c/phase2b2-defaults` worktree の差分。実装・検証はコミット前の差分に対して行った。実装 commit は `5a3191827f8af3aa24aefaaed56d026924d487e3`、マージ commit は `2c361f863a1116928b0539f3d7759c4955232f21`。実装者は Opus 5（ユーザー指定。advisor・Fable・subagent は使っていない）。
 
 実機検証・独立レビュー前の実装ファイルの sha256（先頭 16 桁。文書は含めない）:
 
@@ -99,10 +99,14 @@ GPT-6 Astra が Task 4 の全差分と新規 3 ファイルをレビューし、
 - 版の INFO は採用するビルド入力を表す。既存 image の状態は drift 診断と Codex の起動時 version gate が扱う。
 - 空ファイルは導入工程を省く指定で、ベースイメージに既設の Node/Codex を削除する指定ではない。
 
+## マージ・公開後の照合
+
+2026-09-21、PR #136 の Codex と Opus 5 による二重レビューで未対応の should-fix 以上はなく、必須 CI 4 件が成功してマージされた。同じマージ commit を指す annotated tag [v10.0.0](https://github.com/jj1xgo/c3c/releases/tag/v10.0.0) を公開した（draft=false、prerelease=false、公開時刻 2026-09-21 06:51:25 UTC）。既定で Node/Codex を導入する変更は、従来の未導入構成を維持するために空ファイルの追加が必要になるので MAJOR と判定した。
+
+GitHub 改名後も PR のマージ SHA、必須 CI 4 件の成功、タグの参照先と Release の公開状態を再取得して照合した。成功済みの実ビルド・runtime・対話受入は再実行していない。
+
 ## 未実施・not run
 
-- PR 後のレビュー・必須 CI（未公開）。
 - 実在利用側プロジェクトでの `-b` 再ビルド（同梱 default により Node 24 と Codex CLI が既定で入るため、全利用側で drift 診断→再ビルドが要る。README の手順は使い捨て project で実測。実運用のディレクトリは動かしていない）。
-- SemVer の番号提案（計画 §9: 既定 image 内容の変更と opt-out 維持を踏まえて別判定。commit・タグは未承認のため本記録では提案しない）。
 - Docker Compose provider での実起動、IPv6 モード、arm64 での Node tarball 取得。
 - 日常利用・認証 refresh・`/resume`・複数セッション同時起動・実モデルへの作業依頼（第2a段階からの対象外を維持）。

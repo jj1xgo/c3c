@@ -36,10 +36,10 @@ PR 用の `CI` とは独立し、必須チェックは追加しない。定期�
 Actions の「実コンテナ検証」→「Run workflow」でブランチを選ぶ。CLI では次のとおり。
 
 ```bash
-gh workflow run runtime.yml -R jj1xgo/claude-container --ref <対象ブランチ>
-gh run list -R jj1xgo/claude-container --workflow runtime.yml --limit 5
-gh run view -R jj1xgo/claude-container <run-id> --log
-gh run download -R jj1xgo/claude-container <run-id> --dir ./runtime-results
+gh workflow run runtime.yml -R jj1xgo/c3c --ref <対象ブランチ>
+gh run list -R jj1xgo/c3c --workflow runtime.yml --limit 5
+gh run view -R jj1xgo/c3c <run-id> --log
+gh run download -R jj1xgo/c3c <run-id> --dir ./runtime-results
 ```
 
 初回導入時の手動実行は workflow を既定ブランチへマージしてから可能になる。

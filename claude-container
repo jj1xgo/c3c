@@ -554,12 +554,14 @@ compute_project_name() {
   readonly PROJECT_NAME IMAGE_NAME
 }
 
-# プロジェクトごとの固定パス群（MCP承認記録・設定ディレクトリ・ビルドコンテキスト）を
-# freeze する。load_env_file() より前に呼んだうえで readonly にすることで、プロジェクト側の
-# .claude-container.d/env が同名キーを直接書いても readonly で拒否され、HOME 等は許可リスト外で
-# export されない（claude-container#39、#44）ため、これらのパスは一切影響を受けない。
+# プロジェクトごとの固定パス群（MCP承認記録・ビルドコンテキスト）を freeze する。
+# load_env_file() より前に呼んだうえで readonly にすることで、プロジェクト側の設定 env が
+# 同名キーを直接書いても readonly で拒否され、HOME 等は許可リスト外で export されない
+# （claude-container#39、#44）ため、これらのパスは一切影響を受けない。
 # --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化（readonly は
 # ( check_one_project ) サブシェル内に閉じるためプロジェクト間で衝突しない）。
+# 設定ディレクトリ（PROJECT_CONF_DIR）はここでは決めない — 清掃（--clean <dir>）が設定の状態に
+# 依らず既存対象を消せるよう、select_project_conf_dir() で cleanup 分岐より後に解決する。
 freeze_project_paths() {
   # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
   MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
@@ -568,13 +570,11 @@ freeze_project_paths() {
   # subdirectory と対応版だけを採用したキーへ hash を保存する。同じく env 読込前に freeze する。
   CODEX_APPROVAL_DIR="$MCP_APPROVAL_STORE/codex/$PROJECT_NAME"
   CODEX_APPROVAL_RECORD="$CODEX_APPROVAL_DIR/$CODEX_SUPPORTED_VERSION.json"
-  # プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
-  PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
   # ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
   # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
   # クリーンアップも不要にする。
   BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
-  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD PROJECT_CONF_DIR BUILD_CONTEXT_DIR
+  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD BUILD_CONTEXT_DIR
   # compose へはコマンド前置代入でなく export で渡す（readonly 変数への前置代入は
   # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
   # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
@@ -592,6 +592,60 @@ freeze_project_paths() {
   fi
   export CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
   readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
+}
+
+# プロジェクト設定ディレクトリの選択（c3c 第2b-1段階）。起動 checkout 直下の新名 .c3c と旧名
+# .claude-container.d を次の表で解決し、採用パスを PROJECT_CONF_DIR に返してから readonly にする。
+# 入口名（c3c / claude-container）では結果を変えない。
+#   .c3c   旧名   → なし/なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
+#                 → 片方だけ: それを採用（旧名だけなら移行推奨 WARNING、--check は WARN 集計）
+#                 → 両方: ERROR（内容や実体が同じでも混ぜない・勝手に移動しない）
+#   採用側が directory へ解決できない（file・リンク先の無い symlink・file への symlink）: ERROR
+# 存在判定は -e だけでなく -L でも行う（dangling link や同じ実体への 2 本の symlink も「配置あり」）。
+# directory への symlink は既存互換のため許容する（-d は追従する）。
+# 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後（清掃は設定の状態に
+# 依らず既存対象を消す。清掃に要るパスは freeze_project_paths() が担う）。--check では失敗時に呼び出し元が
+# return 20 し、env・resolver・hash・ガードへ進まない。readonly は結果を返した後に置く（claude-container#39）。
+PROJECT_CONF_NEW_NAME=.c3c
+PROJECT_CONF_LEGACY_NAME=.claude-container.d
+readonly PROJECT_CONF_NEW_NAME PROJECT_CONF_LEGACY_NAME
+select_project_conf_dir() {
+  local new_path="$WORKING_DIR/$PROJECT_CONF_NEW_NAME" legacy_path="$WORKING_DIR/$PROJECT_CONF_LEGACY_NAME"
+  local new_present=0 legacy_present=0 chosen kind warn_prefix=""
+  [[ -e "$new_path" || -L "$new_path" ]] && new_present=1
+  [[ -e "$legacy_path" || -L "$legacy_path" ]] && legacy_present=1
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
+  if [[ $new_present -eq 1 && $legacy_present -eq 1 ]]; then
+    guard_fail "ERROR: 設定ディレクトリが二重配置です: $new_path と $legacy_path の両方があります（内容や実体が同じでも混ぜません）。" \
+      "  移行済みなら旧名 $PROJECT_CONF_LEGACY_NAME を設定探索の対象外（プロジェクト外のバックアップ先等）へ移し、未移行なら $PROJECT_CONF_NEW_NAME 側を取り除いてください（README「利用側プロジェクトの設定」節）。起動を中止します。" || return 1
+  fi
+  if [[ $new_present -eq 1 ]]; then
+    chosen="$new_path"
+  elif [[ $legacy_present -eq 1 ]]; then
+    chosen="$legacy_path"
+  else
+    PROJECT_CONF_DIR="$new_path"
+    readonly PROJECT_CONF_DIR
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] 設定ディレクトリ: なし（$PROJECT_CONF_NEW_NAME を参照元にし、同梱の既定値を使います）"
+    return 0
+  fi
+  if [[ ! -d "$chosen" ]]; then
+    kind="ディレクトリではありません"
+    if [[ -L "$chosen" && ! -e "$chosen" ]]; then
+      kind="リンク先の無い symlink です"
+    elif [[ -L "$chosen" ]]; then
+      kind="ディレクトリ以外を指す symlink です"
+    fi
+    guard_fail "ERROR: 設定ディレクトリ $chosen は$kind。ディレクトリ（またはディレクトリへの symlink）に直すか取り除いてください。起動を中止します。" || return 1
+  fi
+  PROJECT_CONF_DIR="$chosen"
+  readonly PROJECT_CONF_DIR
+  if [[ "$chosen" == "$legacy_path" ]]; then
+    guard_warn "${warn_prefix}WARNING: $legacy_path は旧名です。起動していない状態で $PROJECT_CONF_NEW_NAME へ改名してください（mv $PROJECT_CONF_LEGACY_NAME $PROJECT_CONF_NEW_NAME。追跡対象なら git mv、ローカル設定の .gitignore も更新。両方を並べて置くと起動を拒否します。README「利用側プロジェクトの設定」節）。"
+  elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+    echo "[OK]   設定ディレクトリ: $PROJECT_CONF_DIR"
+  fi
+  return 0
 }
 
 # 起動台帳への記録（内部運用issue参照）。--clean/--check では記録しない。
@@ -735,7 +789,7 @@ write_agent_preference() {
 # --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
 # カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（claude-container#60）。
 # リポジトリ同梱の .env が CODEX_DIR・EXTRA_MOUNT・CLAUDE_CONTAINER_NO_FIREWALL 等を
-# 全ガード素通りで設定できていた。ランタイム設定の入口は .claude-container.d/env だけにする。
+# 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env、旧 .claude-container.d/env）だけにする。
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 run_main_compose() {
@@ -1504,7 +1558,7 @@ plugins_alias_target() {
 guard_plugins_alias() {
   local target rc=0
   # 「別名を付けないなら未 export」を保つ。シェル環境から注入された値は override が選ばれない
-  # 限り不活性だが、compose の環境に残さない（.claude-container.d/env は許可リスト外なので
+  # 限り不活性だが、compose の環境に残さない（プロジェクト設定の env は許可リスト外なので
   # 元々通らない）。適用分岐では算出値で上書きする。
   unset CLAUDE_PLUGINS_HOST_PATH
   # 基点の検証に失敗した経路（CLAUDE_CONFIG_HOST_BASE が空）では判定しない。
@@ -1633,7 +1687,7 @@ guard_agents_dir() {
   return 0
 }
 
-# .claude-container.d/env は運用者が書く信頼入力として扱う（`claude-container#29`）。
+# プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`claude-container#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
 # （ホスト固有パスを含みうる）は出力せず、キー名のみ列挙する。
@@ -1660,12 +1714,12 @@ guard_env_boundary_keys() {
 # （claude-container#44）が、シェル環境から渡された値も信用しないよう、ここで無条件に
 # 既定値から開始する（MCP_APPROVAL_FILE を全分岐末尾で
 # 無条件 export しているのと同じ流儀）。正しい指定先は
-# .claude-container.d/base-image.txt のみ。
+# プロジェクト設定ディレクトリ（$PROJECT_CONF_DIR）の base-image.txt のみ。
 #
 # 許容範囲は docker.io の debian 公式イメージのみ（タグは自由、digest pin 可）。
 # 後続のビルドレイヤー（apt/dpkg・PEP 668・uid 1000 の node ユーザー作成）が
 # すべて Debian 前提のため。この制限は「セキュリティ境界」ではなく「サポート範囲の
-# 宣言・互換性ガード」と位置づける — .claude-container.d/ を書き換えられる攻撃者は
+# 宣言・互換性ガード」と位置づける — プロジェクト設定ディレクトリを書き換えられる攻撃者は
 # packages.txt 経由で apt の maintainer script を既にビルド時 root で実行でき、
 # requirements.txt 経由の任意 PyPI 名指定でも sdist の setup.py がビルド時 root で
 # 実行される経路が原理的に残る（PyPI は open publishing のため）。いずれもベース
@@ -1679,7 +1733,7 @@ guard_base_image() {
 
   if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]] \
      && grep -qE '^[[:space:]]*BASE_IMAGE=' "$ENV_FILE"; then
-    guard_warn "WARNING: $ENV_FILE の BASE_IMAGE=... は無視されます。正しい指定先は .claude-container.d/base-image.txt です。"
+    guard_warn "WARNING: $ENV_FILE の BASE_IMAGE=... は無視されます。正しい指定先は $PROJECT_CONF_DIR/base-image.txt です。"
   fi
 
   resolve_asset_source base-image.txt
@@ -1931,10 +1985,10 @@ compute_asset_hash() {
 # packages.txt / requirements.txt / allowed-domains.txt（overridable）・
 # node-version.txt / codex-version.txt / allowed-ports.txt（optional）を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
-# プロジェクト側の .claude-container.d/ にあればそちらを、
+# プロジェクト側の設定ディレクトリ（$PROJECT_CONF_DIR）にあればそちらを、
 # なければ claude-container 同梱のデフォルト（空のフォールバック）を使う。
 # node-version.txt・codex-version.txt・allowed-ports.txt は無ければ静かに空ファイルを生成する。
-# 注意: .claude-container.d/env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
+# 注意: 設定ディレクトリの env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
 # 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
 stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
@@ -1948,13 +2002,13 @@ stage_build_context() {
   for name in packages.txt requirements.txt allowed-domains.txt; do
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "default" ]]; then
-      # .claude-container.d/ 側の設定が無いプロジェクトは汎用の空フォールバックに
+      # プロジェクト側の設定が無いプロジェクトは汎用の空フォールバックに
       # 静かに切り替わる。かつて claude-container 本体の packages.txt に直接
       # 書かれていたプロジェクト固有パッケージ（gcc/python3等）が、汎用化リファクタ
-      # リング（2026-07-01）後に .claude-container.d/ へ移行されないまま消失した
+      # リング（2026-07-01）後にプロジェクト側の設定へ移行されないまま消失した
       # 実障害（python3-missing インシデント、2026-07-02）があるため、フォール
       # バック使用時は必ず気づけるよう警告を出す。
-      echo "WARNING: $PROJECT_CONF_DIR/$name がありません。claude-container 同梱の空のフォールバック（$name）を使います。このプロジェクトでパッケージやドメインが必要なら .claude-container.d/$name を作成してください。" >&2
+      echo "WARNING: $PROJECT_CONF_DIR/$name がありません。claude-container 同梱の空のフォールバック（$name）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$name を作成してください。" >&2
     fi
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -2097,6 +2151,14 @@ check_one_project() {
   echo "  PROJECT_NAME: $PROJECT_NAME"
   freeze_project_paths
 
+  # 設定ディレクトリの選択に失敗した対象は、env・ガード・resolver・hash の診断へ進まず FAIL で終える
+  # （不正な配置から部分的に読んだ結果で診断しない）。ドライバは次の対象へ進む。
+  if ! select_project_conf_dir; then
+    echo "[FAIL] 設定ディレクトリを解決できないため、env・ガード・ビルド入力の診断は行いません"
+    echo "→ 結果: FAIL"
+    return 20
+  fi
+
   ENV_FILE=""
   if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
     ENV_FILE="$PROJECT_CONF_DIR/env"
@@ -2104,10 +2166,10 @@ check_one_project() {
     # この経路は load_env_file が if ブロックの内側にあるため、ブロックの外へ出すと load の後になり
     # --check だけ env の上書きを素通しする。else 分岐は load を呼ばないため露出しない。
     readonly ENV_FILE
-    echo "[OK]   .claude-container.d/env あり"
+    echo "[OK]   ${PROJECT_CONF_DIR##*/}/env あり"
     load_env_file "$ENV_FILE"
   else
-    echo "[INFO] .claude-container.d/env なし（ランタイム設定なしで起動されます）"
+    echo "[INFO] ${PROJECT_CONF_DIR##*/}/env なし（ランタイム設定なしで起動されます）"
   fi
 
   guard_env_gh_token || true
@@ -2132,7 +2194,7 @@ check_one_project() {
       echo "[OK]   $file: プロジェクト側設定あり"
     else
       CHECK_HAS_WARN=1
-      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file がありません。claude-container 同梱の空のフォールバック（$file）を使います。このプロジェクトでパッケージやドメインが必要なら .claude-container.d/$file を作成してください。"
+      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file がありません。claude-container 同梱の空のフォールバック（$file）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$file を作成してください。"
     fi
 
     # packages.txt/requirements.txt の内容診断（validate-build-input.sh を
@@ -2421,6 +2483,10 @@ cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開�
 
 record_project_in_ledger
 
+# 設定ディレクトリ（.c3c / 旧 .claude-container.d）の選択。--clean の分岐より後・env 読込より前。
+# 二重配置・型不正はここで fail-closed に止まる（ビルドや env 読込へ進まない）。
+select_project_conf_dir
+
 ENV_FILE=""
 if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
   ENV_FILE="$PROJECT_CONF_DIR/env"
@@ -2483,7 +2549,7 @@ if ! compute_asset_hash; then
   exit 1
 fi
 
-# ホストのタイムゾーンを自動検出（.claude-container.d/env またはシェル環境で TZ が設定済みでなければ）
+# ホストのタイムゾーンを自動検出（プロジェクト設定の env またはシェル環境で TZ が設定済みでなければ）
 if [[ -z "${TZ:-}" ]]; then
   if [[ -f /etc/timezone ]]; then
     TZ=$(cat /etc/timezone)

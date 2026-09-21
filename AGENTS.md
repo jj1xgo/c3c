@@ -4,7 +4,7 @@
 
 ## プロジェクト概要
 
-[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークした Claude Code サンドボックス環境。apt/pip パッケージや Node.js バージョン等の設定は `.claude-container.d/` で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
+[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークした Claude Code サンドボックス環境。apt/pip パッケージや Node.js バージョン等の設定は `.c3c/`（旧名 `.claude-container.d/` も移行期間中は読める）で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
 
 claude-container は標準的な技術（Podman・iptables・fine-grained PAT 等）を取り入れつつ、使い易くて堅牢なコンテナ環境を目指す。新規の境界機構は標準技術の組み合わせを優先し、独自実装の追加は監査対象の拡大として避ける。
 
@@ -23,7 +23,7 @@ claude-container は標準的な技術（Podman・iptables・fine-grained PAT �
 
 ## バージョン管理（SemVer タグ）
 
-利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら、SemVer 判定に基づく番号案と根拠を添えてタグ付与を提案する（ユーザー承認後に作成、自動作成しない。内部品質・docs・hook 調整のみでは提案しない）。判定基準は README.md「バージョニング」節を参照する。利用側に移行作業が必要な変更は、タグ提案前に `--check` が当該変更を検出できることを実機確認する。
+利用者から見えるインターフェース（CLI 引数・`.c3c/`（旧 `.claude-container.d/`）の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら、SemVer 判定に基づく番号案と根拠を添えてタグ付与を提案する（ユーザー承認後に作成、自動作成しない。内部品質・docs・hook 調整のみでは提案しない）。判定基準は README.md「バージョニング」節を参照する。利用側に移行作業が必要な変更は、タグ提案前に `--check` が当該変更を検出できることを実機確認する。
 
 ## 個人運用の補足
 

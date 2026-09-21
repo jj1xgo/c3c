@@ -45,7 +45,7 @@ except OSError:
 record = {'args': args, 'stdin': stdin,
           'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
                                                   'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
-                                                  'CONTEXT', 'CLAUDE_CONTAINER_DIR')}}
+                                                  'CONTEXT', 'CLAUDE_CONTAINER_DIR', 'ASSET_HASH', 'BASE_IMAGE')}}
 with open(os.path.join(root, 'calls'), 'a') as out:
     out.write(json.dumps(record) + '\\n')
 def save():

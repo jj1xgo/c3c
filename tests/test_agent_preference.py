@@ -172,6 +172,34 @@ class KeyIdentityTests(HelperCase):
         self.assertRegex(self.key_of(plain), KEY_RE)
         self.assertNotEqual(self.key_of(plain), outer_key)
 
+    def test_incomplete_git_directory_with_head_never_falls_back_to_outer_repo(self):
+        # PR #134 レビュー Important: HEAD が残っていても objects/refs 欠落・HEAD 不正の .git は Git が repository と
+        # 認めず親へ探索を続ける。helper は最寄りの非空 .git を候補として Git に明示検証させ、外側 repo へ倒さない。
+        outer = self.make_repo('outer')
+        outer_key = self.key_of(outer)
+        cases = {
+            'objects missing': lambda g: (g / 'objects').rename(g / 'objects.saved'),
+            'refs missing': lambda g: (g / 'refs').rename(g / 'refs.saved'),
+            'HEAD garbage': lambda g: (g / 'HEAD').write_text('garbage\n'),
+            'HEAD empty': lambda g: (g / 'HEAD').write_text(''),
+        }
+        for label, breaker in cases.items():
+            with self.subTest(case=label):
+                inner = outer / ('inner-' + label.replace(' ', '-'))
+                inner.mkdir()
+                git('init', '-q', '-b', 'main', cwd=inner)
+                self.assertNotEqual(self.key_of(inner), outer_key, '正常な nested repo は別キー')
+                breaker(inner / '.git')
+                result = run_helper('key', inner)
+                self.assertEqual(result.returncode, 4, label + ': ' + result.stdout + result.stderr)
+                self.assertEqual(result.stdout, '', label)
+                # サブディレクトリから見ても同じく外側へ倒さない。
+                sub = inner / 'src'
+                sub.mkdir()
+                result = run_helper('key', sub)
+                self.assertEqual(result.returncode, 4, label + ' (subdir): ' + result.stdout + result.stderr)
+                self.assertEqual(result.stdout, '', label)
+
     def test_dangling_or_non_directory_git_entry_is_undiagnosable(self):
         outer = self.make_repo('outer')
         for label, make in (('dangling symlink', lambda p: p.symlink_to(self.root / 'nowhere' / '.git')),

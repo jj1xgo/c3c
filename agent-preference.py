@@ -11,9 +11,9 @@ launcher（`c3c` 入口）だけが `python3 -I` で呼ぶ。秘密を読まず�
 
 識別文字列は Git の場合 `git\\0<realpath(common-dir)>`、非 Git は `path\\0<realpath(directory)>`。
 同じ repo の linked worktree・symlink 別名・サブディレクトリは同じキー、別 clone は別キーになる。
-Git 子プロセスには継承した `GIT_*` を渡さず、system/global 設定を無効にして対象ディレクトリから解決する。
-祖先に `.git` があるのに解決できない（壊れた gitfile・権限不足・古い Git 等）場合は path 単位へ落とさず
-診断不能（rc 4）にする。
+Git 子プロセスには継承した `GIT_*` を渡さず、system/global 設定を無効にし、最寄りの非空 `.git` を `GIT_DIR` に
+明示して解決する（Git の通常探索は使わない）。候補を Git が repository として解決できない（不完全な `.git`・
+壊れた gitfile・権限不足・古い Git 等）場合は外側の repo や path 単位へ落とさず診断不能（rc 4）にする。
 """
 
 import hashlib
@@ -49,14 +49,18 @@ def fs_bytes(text):
 
 # ---- key ----------------------------------------------------------------
 
-def has_git_ancestor(directory):
-    """対象から祖先へ `.git` の有無を調べる。True=あり、False=なし、None=診断不能。
+class Undiagnosable(Exception):
+    """祖先の `.git` を調べられない（EACCES 等）。別 repo や path 単位へ倒さず rc4 にする。"""
 
-    `.git` が gitfile（通常ファイル）か `HEAD` を持つディレクトリなら「あり」（解決は git に任せ、壊れていれば
-    git が失敗して診断不能になる）。空の `.git` ディレクトリだけは Git と同じく無視して親へ進む。
-    それ以外の異常 — dangling symlink、非空なのに `HEAD` の無いディレクトリ、FIFO 等の非ディレクトリ、
-    中を調べられない（EACCES 等）— は None を返す。Git 自身はこれらを無視して外側の repo へ辿り着けるが、
-    helper はそこで別 repo（または path 単位）の記憶を採用しない。
+
+def find_git_candidate(directory):
+    """対象から祖先へ辿り、最寄りの `.git` 候補（bytes のパス）を返す。無ければ None。
+
+    候補の妥当性は helper で判定せず、`GIT_DIR` に明示して Git 自身に検証させる（`resolve_git_common_dir()`）。
+    Git の通常の探索は不完全な `.git`（objects/refs 欠落・HEAD 不正等）を無視して親へ進み外側の repo に
+    辿り着くが、候補を明示すれば探索は起きず、壊れていれば Git が失敗して診断不能（rc4）になる。
+    例外は空の `.git` ディレクトリだけで、Git と同じく無視して親へ進む（既知の判断）。
+    それ以外（gitfile・非空ディレクトリ・symlink・FIFO 等）はすべて候補として Git に渡す。
     """
     current = directory
     while True:
@@ -65,36 +69,25 @@ def has_git_ancestor(directory):
             st = os.lstat(candidate)
         except FileNotFoundError:
             st = None
-        except OSError:
-            return None
+        except OSError as error:
+            raise Undiagnosable(str(error))
         if st is not None:
-            if stat.S_ISLNK(st.st_mode):
-                # リンク先を辿る。dangling・辿れないリンクは診断不能。
+            is_empty_dir = False
+            if stat.S_ISDIR(st.st_mode):
                 try:
-                    st = os.stat(candidate)
-                except OSError:
-                    return None
-            if stat.S_ISREG(st.st_mode):
-                return True
-            if not stat.S_ISDIR(st.st_mode):
-                return None
-            try:
-                entries = os.listdir(candidate)
-            except OSError:
-                return None
-            if not entries:
-                pass
-            elif b'HEAD' in entries:
-                return True
-            else:
-                return None
+                    is_empty_dir = not os.listdir(candidate)
+                except OSError as error:
+                    raise Undiagnosable(str(error))
+            if not is_empty_dir:
+                return candidate
         parent = os.path.dirname(current)
         if parent == current:
-            return False
+            return None
         current = parent
 
 
-def git_environment():
+def git_environment(git_dir):
+    """継承した `GIT_*` をすべて落とし、system/global 設定を無効化し、検証対象の `.git` を `GIT_DIR` で明示する。"""
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
     env.update({
         'GIT_CONFIG_GLOBAL': '/dev/null',
@@ -104,15 +97,18 @@ def git_environment():
         'GIT_OPTIONAL_LOCKS': '0',
         'LC_ALL': 'C',
     })
+    env['GIT_DIR'] = os.fsdecode(git_dir)
     return env
 
 
-def resolve_git_common_dir(directory):
-    """`git rev-parse --path-format=absolute --git-common-dir` の実体パス。失敗は None。"""
+def resolve_git_common_dir(directory, git_dir):
+    """候補 `git_dir` を `GIT_DIR` に明示して `git rev-parse --path-format=absolute --git-common-dir` を実行し、
+    実体パスを返す。失敗（候補が repository として不完全・壊れた gitfile・古い Git 等）は None。
+    `GIT_DIR` を明示すると Git は探索を行わないため、外側の repo へ辿り着くことはない。"""
     try:
         result = subprocess.run(
             ['git', '-C', directory, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-            env=git_environment(), stdin=subprocess.DEVNULL, capture_output=True,
+            env=git_environment(git_dir), stdin=subprocess.DEVNULL, capture_output=True,
             timeout=GIT_TIMEOUT_SECONDS)
     except (OSError, subprocess.SubprocessError) as error:
         log('git を実行できません: %s' % error)
@@ -143,14 +139,16 @@ def command_key(argv):
     if not os.path.isdir(real_dir):
         log('ディレクトリを解決できません、またはディレクトリではありません')
         return RC_UNDIAGNOSABLE
-    ancestor = has_git_ancestor(real_dir)
-    if ancestor is None:
-        log('祖先に不完全・辿れない・調べられない .git があるため、CLI 選択の記憶は使いません（別 repo や path 単位へは倒しません）')
+    try:
+        candidate = find_git_candidate(real_dir)
+    except Undiagnosable as error:
+        log('祖先の .git を調べられないため、CLI 選択の記憶は使いません（別 repo や path 単位へは倒しません）: %s' % error)
         return RC_UNDIAGNOSABLE
-    if ancestor:
-        common = resolve_git_common_dir(real_dir)
+    if candidate is not None:
+        common = resolve_git_common_dir(real_dir, candidate)
         if common is None:
-            log('祖先に .git があるのに Git として解決できないため、CLI 選択の記憶は使いません')
+            log('最寄りの .git（%s）を Git が repository として解決できないため、CLI 選択の記憶は使いません'
+                '（外側の repo や path 単位へは倒しません）' % os.fsdecode(candidate))
             return RC_UNDIAGNOSABLE
         identity = b'git\0' + common
     else:

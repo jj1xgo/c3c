@@ -17,7 +17,7 @@
 
 | コマンド | 結果 |
 |---|---|
-| `python3 -m unittest discover -s tests -p test_agent_preference.py -v` | 29/29 成功（helper 不在で失敗することを先に確認。レビュー対応の 3 件は元実装で失敗することを先に確認） |
+| `python3 -m unittest discover -s tests -p test_agent_preference.py -v` | 30/30 成功（helper 不在で失敗することを先に確認。レビュー対応の 3 件と PR #134 対応の 1 件は元実装で失敗することを先に確認） |
 | `python3 -m unittest discover -s tests -p test_c3c_launch.py -v` | 38/38 成功（`c3c` 不在で 37 件中 failures=61 errors=1 を先に確認。旧 RUN_DIR 解決の相対 symlink ケースも単独で失敗を確認） |
 | `python3 -m unittest discover -s tests -p test_codex_launch.py`（旧 suite、無変更） | 32/32 成功 |
 | `TMPDIR=/tmp ./test-build.sh --launcher-only` | PASS 252 / FAIL 0（新 2 suite を含む。親による基点のホスト再実行は 250/0、実装・修正後の 252/0 は Opus 実装セッションで確認） |
@@ -41,9 +41,17 @@ Codex（GPT-6 Astra、製品ファイルの変更なし）による独立レビ�
 | Minor 3 | read の state directory がアクセス不能なとき rc4 でなく traceback/rc1 | 保留 | launcher は非 0 を同じ WARNING → 初回選択の分岐へ送るため実利用の差は診断文言のみ。スコープを広げず記録保留 |
 | Minor 4 | state 自体が symlink のとき read は採用・write は拒否で非対称 | 保留 | 保存先の付け替え拒否は pref directory とファイルで担保しており、更新時に WARNING が出る。記録保留 |
 
-修正後、同じ Codex レビュアーが元の指摘2件に限定して再確認した。破損 Git は rc4・stdout 空、短い書込みは rc1・旧文書維持・一時ファイルなしを再現確認し、should-fix の残件は0。
+修正後、同じ Codex レビュアーが元の指摘2件に限定して再確認した。破損 Git は rc4・stdout 空、短い書込みは rc1・旧文書維持・一時ファイルなしを再現確認し、PR 作成前の範囲では should-fix の残件は 0（この判定は PR 前の差分に対するもので、下記 PR #134 レビューの Important は含まない）。
 
 自己レビューの既知 Minor 3 件（再選択案内のパス未 quote、`bash c3c` のスラッシュ無し名、`~/.local/state` 不在時の write rc1）も記録保留のまま。
+
+### PR #134 の独立レビュー（Codex、対象 51edec3bd04f671ea62f9d032b57bd231404392c）
+
+判定は Critical 0 / Important 1 / Minor 0。Important: 外側の正常 repo 内の nested repo で内側 `.git/HEAD` が残ったまま `.git/objects` が欠損していると、`has_git_ancestor()` は `HEAD` の存在だけで「あり」と判定し、続く `git rev-parse` が通常探索で内側を無視して外側 repo の common directory を返す（Git 2.53.0 `setup.c` との静的照合。レビュアー側の実ファイル再現は読み取り専用制約で not run）。親セッションが正常 outer/inner の別キーを確認後に `inner/.git/objects` を `objects.saved` へ rename し、helper `key` が rc0 で外側と同じキーを返すことを実測して再現を確定した。
+
+対応（実装者、PR 前の「HEAD 欠落」修正を置き換える方式）: 個別の存在条件（`HEAD`/`objects`/`refs`）を helper で足し続けるのではなく、`find_git_candidate()` で最寄りの非空 `.git`（gitfile・ディレクトリ・symlink・非ディレクトリを問わず。空ディレクトリだけは Git と同じく無視）を候補にし、`GIT_DIR` に明示して `git rev-parse --git-common-dir` を実行する。`GIT_DIR` 明示では Git は探索を行わないため、候補が repository として不完全なら Git が失敗して rc4 になり、外側 repo や path 単位へ倒れない。repository の完全性判定は Git 標準に委ね、helper 独自の検査は増やさない。継承 `GIT_*` の除去・system/global 設定の無効化・正常 nested・linked worktree・gitfile・`.git` symlink・非 Git・空 `.git` 例外の契約は維持。
+
+回帰: `test_incomplete_git_directory_with_head_never_falls_back_to_outer_repo`（objects 欠落・refs 欠落・`HEAD` が `garbage`・`HEAD` 空の 4 ケース。修正前は 4 ケースとも外側 repo と同じキーで rc0、修正後は rc4・stdout 空。サブディレクトリからも同じ）。既存の nested/linked/symlink/dangling/FIFO/空 `.git`/`GIT_*` 継承のテストは無変更で成功。親と同じ最小再現（`objects` → `objects.saved`）でも rc4 を確認。
 
 ## 実 Podman・実認証での対話受入（2026-09-21）
 
@@ -70,7 +78,7 @@ Codex（GPT-6 Astra、製品ファイルの変更なし）による独立レビ�
 
 ## 判断の記録（計画からの差分）
 
-- 祖先 `.git` の判定は「gitfile か `HEAD` を持つディレクトリ」を「あり」、空の `.git` ディレクトリだけを無視（実装ホストの `/tmp/.git`（空）で全 fixture が診断不能になる事象から発見）。レビュー対応で、それ以外の異常（dangling・非空で `HEAD` 欠落・非ディレクトリ・権限不足）は Git が外側へ辿る前に診断不能にする。
+- 祖先 `.git` の判定は、最寄りの非空 `.git` を候補として `GIT_DIR` に明示し Git に検証させる（PR #134 レビュー対応で確定）。空の `.git` ディレクトリだけは Git と同じく無視する（実装ホストの `/tmp/.git`（空）で全 fixture が診断不能になる事象から発見した既知判断）。それ以前の「`HEAD` の有無で判定」は objects 欠落で外側 repo へ倒れたため置き換えた。
 - helper はディレクトリの mode を新規作成時だけ 0700 にし、既存の mode は変えない（毎回 chmod すると「書込不能で旧文書維持」の契約を自分で壊す）。
 - helper の `write` は `SIGXFSZ` を無視して `EFBIG` を失敗として扱う（強制終了では一時ファイルの除去と rc1 の報告ができない）。
 - c3c の `--clean <dir>` も dir 2 件以上は exit 2（計画は通常起動だけを明記。旧入口は 2 件目以降を無視する）。

@@ -1056,9 +1056,55 @@ guard_codex_dir() {
   fi
 }
 
-# --agent codex の静的前提（c3c 第1段階）。専用 home（CODEX_DIR）と Codex の opt-in 導入
-# （codex-version.txt）を、通常起動と --check の両方で診断する。イメージ内の実際の版は
-# 起動時に codex-mcp-audit.py が `codex --version` で厳密に照合するため、ここは静的診断に留める。
+# Node.js / Codex のビルド入力（node-version.txt・codex-version.txt）の採用元を、通常起動と --check の
+# 両方で表示する（c3c 第2b-2段階）。採用元は resolve_asset_source() の結果（project / 同梱 default）と
+# 内容（空 = 明示 opt-out）から決め、ここで別の解決規則を持たない。Node が opt-out で Codex が有効な
+# 組合せは、ベースイメージや packages.txt で npm が入るかをホスト側では判定できない（断定しない）ため
+# ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。値の妥当性（書式・対応版）は
+# Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。
+guard_build_input_defaults() {
+  local name label value origin_text
+  local node_value="" codex_value="" info_prefix="INFO: "
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && info_prefix="[INFO] "
+  for name in node-version.txt codex-version.txt; do
+    resolve_asset_source "$name"
+    value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
+      guard_fail "ERROR: $ASSET_PATH を読めません。起動を中止します。" || return 1
+    }
+    label="Node.js"
+    [[ "$name" == codex-version.txt ]] && label="Codex"
+    if [[ "$ASSET_ORIGIN" == "project" ]]; then
+      if [[ -z "$value" ]]; then
+        origin_text="なし（$ASSET_PATH が空 = opt-out、$label を導入しません）"
+      else
+        origin_text="$value（採用元: project $ASSET_PATH）"
+      fi
+    else
+      origin_text="$value（採用元: 同梱 default）"
+    fi
+    if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+      echo "${info_prefix}$label 版: $origin_text"
+    else
+      echo "${info_prefix}$label 版: $origin_text" >&2
+    fi
+    if [[ "$name" == node-version.txt ]]; then
+      node_value="$value"
+    else
+      codex_value="$value"
+    fi
+  done
+  if [[ -z "$node_value" && -n "$codex_value" ]]; then
+    local warn_prefix=""
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
+    guard_warn "${warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに codex-version.txt は有効（$codex_value）です。Codex CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Codex を使わないなら $PROJECT_CONF_DIR/codex-version.txt も空にして無効化できます。"
+  fi
+  return 0
+}
+
+# --agent codex の静的前提（c3c 第1段階）。専用 home（CODEX_DIR）と Codex の版指定
+# （codex-version.txt。c3c 第2b-2段階から同梱 default が対応版で、project 側の空ファイルは opt-out）を、
+# 通常起動と --check の両方で診断する。イメージ内の実際の版は起動時に codex-mcp-audit.py が
+# `codex --version` で厳密に照合するため、ここは静的診断に留める。
 # 記憶した CLI が使えない場合は既存の理由に加えて明示再選択の案内（AGENT_RESELECT_HINT、memory 由来の
 # ときだけ非空）を添える。自動 fallback はしない。
 guard_codex_agent() {
@@ -1067,25 +1113,23 @@ guard_codex_agent() {
     guard_fail "ERROR: --agent codex には Codex 専用の認証ディレクトリ CODEX_DIR が必要です。$PROJECT_CONF_DIR/env に CODEX_DIR=~/.codex-container のように設定してください（ホストの実 ~/.codex は指定できません。README「Codex CLI を対話で使う」節）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
   fi
   resolve_asset_source codex-version.txt
-  if [[ "$ASSET_ORIGIN" == "missing" ]]; then
-    guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt がありません。Codex は opt-in 導入のため、対応版 $CODEX_SUPPORTED_VERSION を書いて -b で再ビルドしてください（node-version.txt も必要）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
-  fi
-  local value
+  local value origin_text="同梱 default"
+  [[ "$ASSET_ORIGIN" == "project" ]] && origin_text="project"
   value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
-    guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt を読めません。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+    guard_fail "ERROR: $ASSET_PATH を読めません。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
   }
   case "$value" in
     "")
-      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です。対応版 $CODEX_SUPPORTED_VERSION を書いて -b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です（Codex の opt-out。このイメージには Codex CLI を導入しません）。Codex を使うには対応版 $CODEX_SUPPORTED_VERSION を書くか、ファイルを削除して同梱 default（$CODEX_SUPPORTED_VERSION）を使い、-b で再ビルドしてください（npm が必要なため node-version.txt も空にしないでください）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
       ;;
     "$CODEX_SUPPORTED_VERSION")
-      [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（対応版）"
+      [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（対応版、採用元: $origin_text）"
       ;;
     latest)
-      guard_warn "WARNING: $PROJECT_CONF_DIR/codex-version.txt が latest です。起動時 MCP 審査の対応版は $CODEX_SUPPORTED_VERSION で、イメージ内の版が異なると検査で拒否されます。固定版の指定を推奨します。"
+      guard_warn "WARNING: $ASSET_PATH が latest です。起動時 MCP 審査の対応版は $CODEX_SUPPORTED_VERSION で、イメージ内の版が異なると検査で拒否されます。固定版の指定を推奨します。"
       ;;
     *)
-      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt の $value は起動時 MCP 審査の対応版（$CODEX_SUPPORTED_VERSION）ではありません。未知版を同じ審査方式として扱わないため起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      guard_fail "ERROR: $ASSET_PATH の $value は起動時 MCP 審査の対応版（$CODEX_SUPPORTED_VERSION）ではありません。未知版を同じ審査方式として扱わないため起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
       ;;
   esac
   return 0
@@ -1892,9 +1936,12 @@ check_mcp_approval() {
 #                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
 #                    codex-mcp-audit.py・固定 Compose override 群）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
-#                  （packages.txt・requirements.txt・allowed-domains.txt）
+#                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
+#                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
+#                  同梱 default（24.18.0 / 対応版 Codex）を持ち、project 側の空ファイルは
+#                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
-#                  （node-version.txt・codex-version.txt・allowed-ports.txt）
+#                  （allowed-ports.txt・base-image.txt）
 # stage_build_context() と compute_asset_hash() の双方がこの関数を通すことで、
 # 2箇所が別々に解決規則を持ってドリフトするのを防ぐ。副作用は持たない（WARNING等の出力は
 # 呼び出し側が ASSET_ORIGIN を見て行う）。
@@ -1907,7 +1954,7 @@ resolve_asset_source() {
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
-    packages.txt | requirements.txt | allowed-domains.txt)
+    packages.txt | requirements.txt | allowed-domains.txt | node-version.txt | codex-version.txt)
       if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
         ASSET_PATH="$PROJECT_CONF_DIR/$name"
         ASSET_ORIGIN="project"
@@ -1916,7 +1963,7 @@ resolve_asset_source() {
         ASSET_ORIGIN="default"
       fi
       ;;
-    node-version.txt | codex-version.txt | allowed-ports.txt | base-image.txt)
+    allowed-ports.txt | base-image.txt)
       if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
         ASSET_PATH="$PROJECT_CONF_DIR/$name"
         ASSET_ORIGIN="project"
@@ -1982,12 +2029,13 @@ compute_asset_hash() {
 }
 
 # entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh（fixed）・
-# packages.txt / requirements.txt / allowed-domains.txt（overridable）・
-# node-version.txt / codex-version.txt / allowed-ports.txt（optional）を
-# ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
-# プロジェクト側の設定ディレクトリ（$PROJECT_CONF_DIR）にあればそちらを、
-# なければ claude-container 同梱のデフォルト（空のフォールバック）を使う。
-# node-version.txt・codex-version.txt・allowed-ports.txt は無ければ静かに空ファイルを生成する。
+# packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt
+# （overridable）・allowed-ports.txt（optional）をビルドコンテキストへ集約する。
+# packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
+# （$PROJECT_CONF_DIR）にあればそちらを、なければ claude-container 同梱のデフォルト
+# （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
+# 同梱 default は空ではなく固定版（c3c 第2b-2段階）で、project 側の空ファイルは明示 opt-out
+# としてそのまま（空のまま）ステージする。allowed-ports.txt は無ければ静かに空ファイルを生成する。
 # 注意: 設定ディレクトリの env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
 # 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
 stage_build_context() {
@@ -2013,12 +2061,12 @@ stage_build_context() {
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
 
-  # node-version.txt / codex-version.txt / allowed-ports.txt は上記3ファイルとは
-  # 別扱い: いずれも新設の任意機能であり、移行元が存在しない（= 無いのが正常な
-  # 大多数のプロジェクト向けに WARNING を出すとノイズになるだけ）ため、無ければ
-  # 静かに空ファイルを生成する。既存3ファイルの WARNING 設計自体を見直すかどうかは
-  # 別 issue で扱う。allowed-ports.txt の空の意味（既定値 443,22 の適用）は
-  # init-firewall.sh 自身が解釈する（`claude-container#31`）。
+  # node-version.txt / codex-version.txt は同梱 default が固定版のため WARNING を出さない
+  # （採用元の表示は guard_build_input_defaults() が両モードで行う）。project 側の空ファイルは
+  # 明示 opt-out で、default で埋めずに空のままステージする（計画 §8-5: 空を missing と同一視して
+  # Codex を勝手に導入しない）。allowed-ports.txt は任意機能で移行元が無く、無ければ静かに
+  # 空ファイルを生成する。空の意味（既定値 443,22 の適用）は init-firewall.sh 自身が解釈する
+  # （`claude-container#31`）。
   for name in node-version.txt codex-version.txt allowed-ports.txt; do
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "missing" ]]; then
@@ -2177,6 +2225,7 @@ check_one_project() {
   guard_gitconfig_file || true
   guard_secrets_dir || true
   guard_codex_dir || true
+  guard_build_input_defaults || true
   guard_codex_agent || true
   guard_shared_mount || true
   guard_shared_home_alias || true
@@ -2502,6 +2551,7 @@ guard_legacy_vars
 guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir
+guard_build_input_defaults
 guard_codex_agent
 guard_shared_mount
 guard_shared_home_alias

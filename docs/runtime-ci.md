@@ -9,7 +9,9 @@ PR 用の `CI` とは独立し、必須チェックは追加しない。定期�
 1. **環境**: rootless Podman、Compose provider、必要なコマンドと対象 commit を記録する。
 2. **ビルド**: `test-build.sh --build-only` を再利用する。キャッシュを使わず
    `Dockerfile.claude` をビルドし、`claude --version`、`gh --version`、`jq --version` と
-   IPv6 helper の起動を確かめる。追加パッケージの上書き・不正入力ビルドの検査は、
+   IPv6 helper・Codex 審査 helper の起動、同梱 default の Node.js（`node --version`・
+   `npm --version`）と Codex CLI（`codex --version`）が固定版と一致することを確かめる。
+   追加パッケージの上書き・不正入力ビルド・Node/Codex の opt-out と pin の検査は、
    従来の `./test-build.sh` 全体実行で行う。
 3. **マウント**: `test-build.sh --config-ro-only` を再利用する。
    12 項目の設定保護、plugin・共有パス・スキルの別名の読み取り専用性、

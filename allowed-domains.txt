@@ -1,5 +1,5 @@
 # claude-container のデフォルト追加許可ドメイン一覧。
-# プロジェクト側の .claude-container.d/allowed-domains.txt が無い場合にのみ
+# プロジェクト側の .c3c/allowed-domains.txt が無い場合にのみ
 # フォールバックとして使用される。1行1ドメイン、# 始まりはコメント。
 #
 # ここに書いたドメインは init-firewall.sh がエグレス許可リストへ追加する
@@ -8,5 +8,5 @@
 #
 # claude-container は汎用ツールのため、ここにプロジェクト固有のドメインを
 # 書かないこと。プロジェクト固有のドメイン（例: pypi.org）は各プロジェクト側の
-# .claude-container.d/allowed-domains.txt に記載する。
+# .c3c/allowed-domains.txt に記載する。
 # 変更をイメージへ反映するには -b での再ビルドが必要。

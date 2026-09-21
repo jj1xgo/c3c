@@ -44,7 +44,7 @@ services:
       # mode と sysctls/network の不一致を避ける。IPv6用overrideが固定値1へ変える。
       CLAUDE_CONTAINER_IPV6: "0"
       # 起動する CLI（c3c 第1段階）。launcher が CLI 引数から導出して明示 export する値だけを渡す
-      # （.claude-container.d/env の許可リスト外）。entrypoint.sh が enum を再検証する。
+      # （.c3c/env の許可リスト外）。entrypoint.sh が enum を再検証する。
       # CC_CODEX_START_MODE の既定は run（検査用は compose.codex-preflight.yml を選んだ launcher が
       # preflight を明示する）。既定は「未設定のときだけ」（`${VAR-default}`）。`:-` だと明示した空文字が
       # 既定値に化け、entrypoint の空文字拒否に届かない（計画: 未設定のみ既定、空文字を含む不正値は拒否）。

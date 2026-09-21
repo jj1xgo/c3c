@@ -22,14 +22,23 @@ directory へ解決できる symlink は許容し、二重配置は `-e` だけ�
 import hashlib
 import os
 from pathlib import Path
+import re
 import unittest
 
-from test_c3c_launch import LaunchCase, SUPPORTED
+from test_c3c_launch import LaunchCase, REPO, SUPPORTED
 
 NEW = '.c3c'
 LEGACY = '.claude-container.d'
 # env が読まれたら必ず出る目印（legacy トークン変数は fail-closed の ERROR 文言に変数名が載る）。
 ENV_PROBE = 'GH_TOKEN_FILE'
+# 同梱 default（c3c 第2b-2段階、計画 §5「2b-2: 既定イメージ」の固定値）。latest へ追従させない。
+DEFAULT_NODE = '24.18.0'
+DEFAULT_CODEX = SUPPORTED
+EMPTY_SHA256 = hashlib.sha256(b'').hexdigest()
+
+
+def sha256_text(text):
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 class ConfigCase(LaunchCase):
@@ -453,7 +462,8 @@ class GuidanceTests(ConfigCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'{self.proj}/{NEW}/env', result.stderr)
         self.assertNotIn(LEGACY, result.stderr)
-        (self.new / 'codex-version.txt').unlink()
+        # 空ファイルは明示 opt-out（欠落は同梱 default に倒れるので、案内先の検証は空ファイルで行う）。
+        (self.new / 'codex-version.txt').write_text('')
         (self.new / 'env').write_text(f'CODEX_DIR={self.codex_dir}\n')
         result = self.run_c3c('codex', str(self.proj))
         self.assertEqual(result.returncode, 1)
@@ -472,6 +482,176 @@ class GuidanceTests(ConfigCase):
         self.assertIn(f'{NEW}/base-image.txt', result.stdout + result.stderr)
         self.assertIn(f'{NEW}/packages.txt', result.stdout, 'fallback 案内も採用名')
         self.assertNotIn(LEGACY, result.stdout + result.stderr)
+
+
+class BuildInputDefaultTests(ConfigCase):
+    """Node/Codex の既定ビルド入力（c3c 第2b-2段階 Task 4）。
+
+    `node-version.txt`・`codex-version.txt` は project 優先→同梱 default。project の空ファイルは明示 opt-out で、
+    missing と同一視して Codex を勝手に導入しない（計画 §8-5）。新旧 directory それぞれで absent/default・
+    project pin・project empty の 3 通りを通常起動（staging・hash・採用元の表示）と `--check` で検証する。
+    `allowed-ports.txt`・`base-image.txt` の missing 契約は変えない。
+    """
+
+    PIN_NODE = '22.14.0'
+
+    def layouts(self):
+        """legacy → new の順に、同じ入力を持つ設定ディレクトリを返す（fixture は旧名で始まる）。"""
+        yield 'legacy', self.legacy
+        self.use_new_layout()
+        yield 'new', self.new
+
+    def launch_claude(self, *extra):
+        self.state = {'image_exists': False, 'label': '1', 'preflight': {}}
+        result = self.run_c3c('claude', *extra, str(self.proj))
+        run = self.assert_single_run(result, 'claude')
+        return result, run, self.staged_files()
+
+    def test_bundled_defaults_are_the_contract_values_and_match_the_codex_helper(self):
+        self.assertEqual((REPO / 'node-version.txt').read_bytes(), (DEFAULT_NODE + '\n').encode())
+        self.assertEqual((REPO / 'codex-version.txt').read_bytes(), (DEFAULT_CODEX + '\n').encode())
+        launcher = (REPO / 'claude-container').read_text()
+        self.assertIn(f'CODEX_SUPPORTED_VERSION={DEFAULT_CODEX}\n', launcher)
+        helper = (REPO / 'codex-mcp-audit.py').read_text()
+        self.assertIn(f"SUPPORTED_VERSION = '{DEFAULT_CODEX}'", helper)
+
+    def test_absent_files_use_bundled_defaults_in_both_layouts(self):
+        hashes = {}
+        for label, conf in self.layouts():
+            with self.subTest(layout=label):
+                (conf / 'node-version.txt').unlink(missing_ok=True)
+                (conf / 'codex-version.txt').unlink(missing_ok=True)
+                result, run, staged = self.launch_claude()
+                self.assertEqual(staged['node-version.txt'], sha256_text(DEFAULT_NODE + '\n'))
+                self.assertEqual(staged['codex-version.txt'], sha256_text(DEFAULT_CODEX + '\n'))
+                self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(DEFAULT_NODE) + r'（採用元: 同梱 default）')
+                self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: 同梱 default）')
+                self.assertNotIn('opt-out', result.stderr)
+                hashes[label] = run['env']['ASSET_HASH']
+                for entry in ('c3c', 'legacy'):
+                    check = self.run_check(entry, self.proj)
+                    self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+                    self.assertRegex(check.stdout, r'\[INFO\] Node\.js 版: ' + re.escape(DEFAULT_NODE) + r'（採用元: 同梱 default）')
+                    self.assertRegex(check.stdout, r'\[INFO\] Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: 同梱 default）')
+                    self.assertNotIn('npm', check.stdout, 'Node default＋Codex default では npm の WARNING を出さない')
+        self.assertEqual(hashes['legacy'], hashes['new'])
+
+    def test_missing_config_dir_uses_bundled_defaults_without_creating_it(self):
+        self.use_no_layout()
+        result, _, staged = self.launch_claude()
+        self.assertEqual(staged['node-version.txt'], sha256_text(DEFAULT_NODE + '\n'))
+        self.assertEqual(staged['codex-version.txt'], sha256_text(DEFAULT_CODEX + '\n'))
+        # allowed-ports.txt は missing 契約のまま（空ファイルを都度生成、init-firewall.sh が既定値を適用）。
+        self.assertEqual(staged['allowed-ports.txt'], EMPTY_SHA256)
+        self.assertFalse(self.new.exists())
+        self.assertFalse(self.legacy.exists())
+        self.assertIn('採用元: 同梱 default', result.stderr)
+
+    def test_project_pin_overrides_the_default_in_both_layouts(self):
+        for label, conf in self.layouts():
+            with self.subTest(layout=label):
+                (conf / 'node-version.txt').write_text(self.PIN_NODE + '\n')
+                (conf / 'codex-version.txt').write_text(DEFAULT_CODEX + '\n')
+                result, _, staged = self.launch_claude()
+                self.assertEqual(staged['node-version.txt'], sha256_text(self.PIN_NODE + '\n'))
+                self.assertEqual(staged['codex-version.txt'], sha256_text(DEFAULT_CODEX + '\n'))
+                self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project '
+                                 + re.escape(str(conf / 'node-version.txt')) + r'）')
+                self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: project '
+                                 + re.escape(str(conf / 'codex-version.txt')) + r'）')
+                self.assertNotIn('同梱 default', result.stderr)
+                check = self.run_check('c3c', self.proj)
+                self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+                self.assertRegex(check.stdout, r'\[INFO\] Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project ')
+                self.assertRegex(check.stdout, r'\[INFO\] Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: project ')
+                self.assertNotIn('npm', check.stdout)
+
+    def test_pin_equal_to_default_yields_the_same_hash_as_absent(self):
+        (self.legacy / 'node-version.txt').write_text(DEFAULT_NODE + '\n')
+        (self.legacy / 'codex-version.txt').write_text(DEFAULT_CODEX + '\n')
+        _, pinned, pinned_staged = self.launch_claude()
+        (self.legacy / 'node-version.txt').unlink()
+        (self.legacy / 'codex-version.txt').unlink()
+        _, absent, absent_staged = self.launch_claude()
+        self.assertEqual(pinned_staged, absent_staged)
+        self.assertEqual(pinned['env']['ASSET_HASH'], absent['env']['ASSET_HASH'], '内容だけをハッシュする（採用元は含めない）')
+        (self.legacy / 'node-version.txt').write_text('')
+        _, empty, empty_staged = self.launch_claude()
+        self.assertNotEqual(empty['env']['ASSET_HASH'], absent['env']['ASSET_HASH'], '空 opt-out は default と別の image になる')
+        self.assertEqual(empty_staged['node-version.txt'], EMPTY_SHA256)
+
+    def test_empty_project_file_is_an_explicit_opt_out_not_missing(self):
+        """計画 §8-5: 空の project 設定を missing と同一視して Codex を勝手に導入しない。"""
+        self.approve_codex()
+        for label, conf in self.layouts():
+            with self.subTest(layout=label):
+                (conf / 'node-version.txt').write_text('')
+                (conf / 'codex-version.txt').write_text('\n')
+                result, _, staged = self.launch_claude()
+                self.assertEqual(staged['node-version.txt'], EMPTY_SHA256, '空のまま COPY する（default で埋めない）')
+                self.assertEqual(staged['codex-version.txt'], sha256_text('\n'), 'project の内容をそのまま使う')
+                self.assertRegex(result.stderr, r'INFO: Node\.js 版: なし（' + re.escape(str(conf / 'node-version.txt')) + r' が空 = opt-out')
+                self.assertRegex(result.stderr, r'INFO: Codex 版: なし（' + re.escape(str(conf / 'codex-version.txt')) + r' が空 = opt-out')
+                self.assertNotIn('同梱 default', result.stderr)
+                self.assertNotIn('npm', result.stderr, '両方 opt-out なら npm の WARNING は出ない')
+                # Codex を起動しようとすると opt-out を理由に止まり、container を起動しない。
+                for entry, runner, args in (('c3c', self.run_c3c, ['codex', str(self.proj)]),
+                                            ('legacy', self.run_legacy, ['--agent', 'codex', str(self.proj)])):
+                    self.state = {'image_exists': True, 'label': '1', 'preflight': {}}
+                    result = runner(*args)
+                    self.assertEqual(result.returncode, 1, f'{entry}: ' + result.stdout + result.stderr)
+                    self.assertIn(f'{conf}/codex-version.txt', result.stderr)
+                    self.assertIn('opt-out', result.stderr)
+                    self.assertIn(DEFAULT_CODEX, result.stderr, '使うなら対応版を案内する')
+                    self.assert_no_containers()
+                check = self.run_c3c('codex', '--check', str(self.proj))
+                self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+                self.assertIn('→ 結果: FAIL', check.stdout)
+                self.assertIn('opt-out', check.stdout)
+                # Claude の check は opt-out を表示するだけで FAIL にしない。
+                check = self.run_check('legacy', self.proj)
+                self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+                self.assertRegex(check.stdout, r'\[INFO\] Node\.js 版: なし（.* が空 = opt-out')
+                self.assertRegex(check.stdout, r'\[INFO\] Codex 版: なし（.* が空 = opt-out')
+
+    def test_node_opt_out_with_codex_enabled_warns_before_build_and_proceeds(self):
+        """Node 空＋Codex 有効: base に npm があるかを断定せず WARNING。通常起動は進み、check は WARN 集計。"""
+        for label, conf in self.layouts():
+            for codex_source in ('default', 'pin'):
+                with self.subTest(layout=label, codex=codex_source):
+                    (conf / 'node-version.txt').write_text('')
+                    if codex_source == 'default':
+                        (conf / 'codex-version.txt').unlink(missing_ok=True)
+                    else:
+                        (conf / 'codex-version.txt').write_text(DEFAULT_CODEX + '\n')
+                    result, _, staged = self.launch_claude('-b')
+                    self.assertEqual(len(self.compose_calls('build')), 1)
+                    self.assertEqual(staged['node-version.txt'], EMPTY_SHA256)
+                    self.assertEqual(staged['codex-version.txt'], sha256_text(DEFAULT_CODEX + '\n'))
+                    warning = [line for line in result.stderr.splitlines() if line.startswith('WARNING:') and 'npm' in line]
+                    self.assertEqual(len(warning), 1, result.stderr)
+                    self.assertIn(f'{conf}/node-version.txt', warning[0])
+                    self.assertIn('codex-version.txt', warning[0])
+                    self.assertNotIn('ERROR', result.stderr)
+                    # build 前に出る: ステージング時の fallback WARNING（packages.txt 無し）より前に並ぶ。
+                    lines = result.stderr.splitlines()
+                    staging_index = next(i for i, line in enumerate(lines) if '同梱の空のフォールバック' in line)
+                    self.assertLess(lines.index(warning[0]), staging_index)
+                    for entry in ('c3c', 'legacy'):
+                        check = self.run_check(entry, self.proj)
+                        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+                        self.assertRegex(check.stdout, r'\[WARN\] WARNING: .*node-version\.txt が空.*npm')
+                        self.assertIn('→ 結果: WARN', check.stdout)
+                        self.assertNotIn('→ 結果: FAIL', check.stdout)
+                    (conf / 'node-version.txt').unlink()
+
+    def test_node_pinned_with_codex_enabled_does_not_warn(self):
+        (self.legacy / 'node-version.txt').write_text(self.PIN_NODE + '\n')
+        (self.legacy / 'codex-version.txt').unlink()
+        result, _, _ = self.launch_claude()
+        self.assertNotIn('npm', result.stderr)
+        self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project ')
+        self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: 同梱 default）')
 
 
 if __name__ == '__main__':

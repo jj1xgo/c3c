@@ -19,7 +19,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - `-b` 時の build と run は別ステップのまま（fail-closed）。
   - `stage_build_context()` の「`env` がステージング先に存在したら `exit 1`」防御的アサーションを削除しない（`env` はビルド時焼き込み禁止）。
   - GitHub meta 取得はここ1箇所のみで行う（詳細は「GitHub meta スナップショット」節を参照）。
-  - 境界アセットの正本は `resolve_asset_source()`・`ASSET_HASH_TARGETS`・`stage_build_context()`（本ファイルには列挙しない）。「この3箇所を同時に更新する」だけでは閉じておらず、本体外（テスト・Dockerfile・README）にも依存先がある（`claude-container#34` で判明）。**依存先を本ファイルに列挙せず、新設時は既存アセット名の全参照を `grep -rn` して数え直す**（性質の異なる複数で較正する — 固定スクリプトは `entrypoint.sh` と `git-askpass.sh` の両方を使う。前者は README 個別項目を持ち後者は持たないため、片方だけでは較正が偏る。名前を含まない依存〈`find`/glob 走査等〉はこの手段では検出できない）。ただし staging は「ビルドコンテキストへ COPY して初めて読めるファイル」に限る — compose が `RUN_DIR` から直接読む `Dockerfile.claude` と、`FROM` が `COPY` より先に評価される `base-image.txt` はステージせず、`resolve_asset_source()`・`ASSET_HASH_TARGETS` への登録のみ行う。
+  - 境界アセットの正本は `resolve_asset_source()`・`ASSET_HASH_TARGETS`・`stage_build_context()`（本ファイルには列挙しない）。同梱 default を持つファイルは `test-build.sh` の `stage_common_context()`・`run_config_ro_launcher_tests()` の runner コピーリストにも列挙されている（`node-version.txt`・`codex-version.txt` の追加時に 4 FAIL で判明）。「この3箇所を同時に更新する」だけでは閉じておらず、本体外（テスト・Dockerfile・README）にも依存先がある（`claude-container#34` で判明）。**依存先を本ファイルに列挙せず、新設時は既存アセット名の全参照を `grep -rn` して数え直す**（性質の異なる複数で較正する — 固定スクリプトは `entrypoint.sh` と `git-askpass.sh` の両方を使う。前者は README 個別項目を持ち後者は持たないため、片方だけでは較正が偏る。名前を含まない依存〈`find`/glob 走査等〉はこの手段では検出できない）。ただし staging は「ビルドコンテキストへ COPY して初めて読めるファイル」に限る — compose が `RUN_DIR` から直接読む `Dockerfile.claude` と、`FROM` が `COPY` より先に評価される `base-image.txt` はステージせず、`resolve_asset_source()`・`ASSET_HASH_TARGETS` への登録のみ行う。
   - MCP監査ゲートのTOFU承認記録パス（`MCP_APPROVAL_STORE`/`MCP_APPROVAL_RECORD`）は `load_env_file()` より前に `$HOME` から直接算出し freeze する構成を変えない — プロジェクト側 `env` 経由での `HOME` 等書き換えによるパス乗っ取りを防ぐため。`MCP_APPROVAL_FILE` は `check_mcp_approval()` の全分岐の末尾で無条件 export する構成を変えない（env 由来の値を信用しない設計。`claude-container#28`）。
   - **起動可否を判定するガード**は全て `guard_*` 関数（一覧の正本は `claude-container` の dispatch 直前の呼び出し列）として通常起動と `--check` モードで共用する構成を壊さない。新ガードは必ず `guard_fail`/`guard_warn` 経由で関数化し両モードを通す（片側だけに足すと診断結果と実際の起動挙動がドリフトする）。起動台帳（`~/.local/state/claude-container/projects`）のパスも `load_env_file()` より前に freeze する（MCP承認記録と同じ流儀）。
   - **`--check` 専用のビルド入力診断**（`packages.txt`/`requirements.txt` の内容診断、`claude-container#34`）は上記と定義上分離する。判定は `validate-build-input.sh` が行い、強制は `Dockerfile.claude` の `RUN` が行う。`guard_warn` は表示・集計のためだけに使う（「新ガードの例外」ではなく別区分）。
@@ -84,11 +84,12 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - 終了コード契約 0/1/2（0=適合／1=不適合・outfile 不変／2=診断不能・outfile 不変）と「`outfile` は成功時にのみ確定させる」を変えない。
   - `#!/bin/sh`・POSIX sh の範囲を維持する（ビルド時はコンテナ内の dash、`--check`・`test-build.sh` はホストの sh で走るため）。
   - `resolve_asset_source()` では `fixed` に置き、利用側の設定ディレクトリ（`.c3c/`・旧 `.claude-container.d/`）から差し替え可能にしない。
-- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト（フォールバック値）。後発のオプトイン設定ファイル（一覧は README「利用側プロジェクトの設定」節）は同梱デフォルトを持たず、未配置でも WARNING を出さない（上記3ファイルとの非対称は既知。経緯は `claude-container#7`）。
+- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト（フォールバック値）。`allowed-ports.txt`・`base-image.txt`（一覧は README「利用側プロジェクトの設定」節）は同梱デフォルトを持たず、未配置でも WARNING を出さない（上記3ファイルとの非対称は既知。経緯は `claude-container#7`）。
+- **`node-version.txt`** / **`codex-version.txt`**（c3c 第2b-2段階）— 同梱 default は固定版（`24.18.0` / 起動時 MCP 審査の対応版）で、`latest` にしない（`test-build.sh` が書式と、launcher の `CODEX_SUPPORTED_VERSION`・`codex-mcp-audit.py` の `SUPPORTED_VERSION` との一致を検査する。対応版を上げるときは 3 箇所を同時に変える）。`resolve_asset_source()` では `packages.txt` と同じ overridable（project 優先→`$RUN_DIR` の default）に置き、project 側の**空ファイルを missing と同一視しない**（空の内容がそのままステージ・ハッシュされる明示 opt-out。計画 §8-5: 空を default で埋めると Codex を勝手に導入する）。`stage_build_context()` で「`missing` なら空ファイル生成」の分岐に戻さない。採用元（project / 同梱 default / 空 opt-out）の表示と Node 空＋Codex 有効の WARNING は `guard_build_input_defaults()` が両モードで行い、ここで別の解決規則を持たない（resolver の結果だけを見る）。この WARNING は `guard_warn` に留める — ベースイメージや `packages.txt` で npm が入るかはホスト側では判定できず、fail-closed の判定は Dockerfile.claude の npm 検査が担う。同梱 default の変更は `ASSET_HASH` に入るため、pin していない全利用側でドリフト診断が出る（意図した挙動。旧イメージは自動削除しない）。
 
 ### Node.js 任意バージョン導入（`node-version.txt`）
 
-詳細は README.md「利用側プロジェクトの設定」節を参照。設計判断: 汎用スクリプト実行フックにせず宣言的ファイルにした（監査対象を無限定にしないため）。
+詳細は README.md「利用側プロジェクトの設定」節を参照。設計判断: 汎用スクリプト実行フックにせず宣言的ファイルにした（監査対象を無限定にしないため）。c3c 第2b-2段階から同梱 default を持つ（上記項目）。
 
 ### GitHub meta スナップショット
 

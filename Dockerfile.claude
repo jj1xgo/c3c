@@ -1,5 +1,5 @@
 # ベースイメージ。既定は debian:stable。プロジェクトは
-# .claude-container.d/base-image.txt で上書きできる（claude-container がホスト側で
+# .c3c/base-image.txt で上書きできる（claude-container がホスト側で
 # 値を検証し build arg として渡す。guard_base_image() を参照）。FROM は COPY より
 # 先に評価されるため、ここでファイルを直接読むことはできず、ARG が唯一の経路。
 # 既定値は compose.yml の build.args と guard_base_image() にも重複している
@@ -111,16 +111,17 @@ RUN set -e; \
     if [ -s /tmp/requirements.norm ]; then \
       command -v pip3 >/dev/null || { \
         echo "ERROR: requirements.txt にエントリがありますが pip3 が入っていません。" >&2; \
-        echo ".claude-container.d/packages.txt に python3-pip を追加してください。" >&2; \
+        echo ".c3c/packages.txt に python3-pip を追加してください。" >&2; \
         exit 1; }; \
       pip3 install -r /tmp/requirements.norm --break-system-packages; \
     fi
 
-# .claude-container.d/node-version.txt が指定する（例: "22.14.0"）場合、nodejs.org
-# 公式の tarball から特定バージョンの Node.js をインストールする。debian:stable の
-# apt には Node 22.x への経路がない（trixie は 20.x、testing は 22 を飛ばして
-# 24.x）ため、22.x が必要なプロジェクトは、汎用のビルドフックではなく、ここで
-# 素のバージョン番号だけを宣言する（設計の根拠は claude-container#3 を参照）。
+# node-version.txt が指定するバージョン（例: "24.18.0"）の Node.js を nodejs.org 公式の
+# tarball からインストールする。claude-container 同梱の default（c3c 第2b-2段階から固定版）を
+# プロジェクトの .c3c/node-version.txt で上書きでき、空ファイルは明示 opt-out（Node.js を
+# 導入しない）。debian:stable の apt には Node 22.x への経路がない（trixie は 20.x、testing は
+# 22 を飛ばして 24.x）ため、汎用のビルドフックではなく、ここで素のバージョン番号だけを
+# 宣言する（設計の根拠は claude-container#3 を参照）。
 # 展開前に nodejs.org 自身の SHASUMS256.txt と照合して検証する — 不一致や
 # ネットワーク障害があれば（黙ってではなく）ビルドを失敗させる。ビルドホストが
 # x86_64 か arm64 か（例: Apple Silicon 上の podman machine）は自動検出
@@ -129,7 +130,7 @@ COPY node-version.txt /tmp/node-version.txt
 RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
     if [ -n "$NODE_VERSION" ]; then \
       echo "$NODE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
-        echo "ERROR: .claude-container.d/node-version.txt には 22.14.0 のような素のバージョンだけを書いてください（実際の値: $NODE_VERSION）" >&2; exit 1; }; \
+        echo "ERROR: .c3c/node-version.txt には 24.18.0 のような素のバージョンだけを書いてください（実際の値: $NODE_VERSION）" >&2; exit 1; }; \
       case "$(uname -m)" in \
         x86_64) NODE_ARCH=x64 ;; \
         aarch64) NODE_ARCH=arm64 ;; \
@@ -145,25 +146,26 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
       rm -f "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt node.sha256; \
     fi
 
-# .claude-container.d/codex-version.txt がバージョン（例: "0.46.0"）か文字どおりの
-# "latest" を指定する場合、npm から Codex CLI をインストールする。任意機能で、
-# 上の node-version.txt と同じ設計思想（汎用のビルドフックではなく宣言的な
-# オプトインファイル。設計の根拠は内部運用 issue を参照）。npm が必要 —
-# オプトインするプロジェクトは node-version.txt も設定する（または packages.txt
-# 経由で nodejs/npm を追加する）必要がある。"latest" は、下の Claude Code 自身の
-# "latest" インストールと同様に、インストールのたびに npm 自身の dist-tag で
-# 解決される — CODEX_CACHEBUST（codex-version.txt が "latest" のときだけ
-# claude-container が更新する）がこのレイヤーのキャッシュだけを破棄するので、
-# `-b` の再ビルドのたびに実際に再インストールが起きる。
+# codex-version.txt が指定するバージョン（例: "0.155.1"）か文字どおりの "latest" の
+# Codex CLI を npm からインストールする。上の node-version.txt と同じ設計思想（汎用の
+# ビルドフックではなく宣言的なファイル。設計の根拠は内部運用 issue を参照）で、
+# claude-container 同梱の default（c3c 第2b-2段階から起動時 MCP 審査の対応版に固定）を
+# プロジェクトの .c3c/codex-version.txt で上書きでき、空ファイルは明示 opt-out（Codex CLI を
+# 導入しない）。npm が必要 — node-version.txt を空にして Node.js を導入しない場合は
+# packages.txt 経由で nodejs/npm を追加するか、codex-version.txt も空にする（npm が無ければ
+# ここでビルドを止める）。"latest" は、下の Claude Code 自身の "latest" インストールと
+# 同様に、インストールのたびに npm 自身の dist-tag で解決される — CODEX_CACHEBUST
+# （codex-version.txt が "latest" のときだけ claude-container が更新する）がこのレイヤーの
+# キャッシュだけを破棄するので、`-b` の再ビルドのたびに実際に再インストールが起きる。
 COPY codex-version.txt /tmp/codex-version.txt
 ARG CODEX_CACHEBUST=pinned
 RUN echo "codex-cachebust=${CODEX_CACHEBUST}" && \
     CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)" && \
     if [ -n "$CODEX_VERSION" ]; then \
       echo "$CODEX_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
-        echo "ERROR: .claude-container.d/codex-version.txt には 0.46.0 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $CODEX_VERSION）" >&2; exit 1; }; \
+        echo "ERROR: .c3c/codex-version.txt には 0.155.1 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $CODEX_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
-        echo "ERROR: codex-version.txt には npm が必要ですが入っていません。.claude-container.d/node-version.txt を設定するか、packages.txt に nodejs/npm を追加してください。" >&2; exit 1; }; \
+        echo "ERROR: codex-version.txt（$CODEX_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Codex を使わないなら .c3c/codex-version.txt も空にしてください。" >&2; exit 1; }; \
       npm install -g "@openai/codex@${CODEX_VERSION}"; \
     fi
 

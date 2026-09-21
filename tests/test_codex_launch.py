@@ -293,7 +293,8 @@ class CodexStaticGuardTests(LaunchCase):
 
     def test_codex_version_file_is_diagnosed_statically(self):
         self.approve()
-        for label, content, ok in (('missing', None, False), ('empty', '\n', False), ('other pin', '0.156.0\n', False),
+        # missing は c3c 第2b-2段階から同梱 default（対応版）に倒れて起動できる。空ファイルは明示 opt-out で止まる。
+        for label, content, ok in (('missing', None, True), ('empty', '\n', False), ('other pin', '0.156.0\n', False),
                                    ('latest', 'latest\n', True), ('supported', SUPPORTED + '\n', True)):
             with self.subTest(case=label):
                 path = self.conf / 'codex-version.txt'
@@ -308,6 +309,8 @@ class CodexStaticGuardTests(LaunchCase):
                     if label == 'latest':
                         self.assertIn(SUPPORTED, result.stderr)
                         self.assertIn('WARNING', result.stderr)
+                    if label == 'missing':
+                        self.assertIn(f'Codex 版: {SUPPORTED}（採用元: 同梱 default）', result.stderr)
                 else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('codex-version.txt', result.stderr)

@@ -20,7 +20,7 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 
 **限界・非対象**（2件）:
 1. capability の bounding set 自体は削除できない（削除には `CAP_SETPCAP` が必要で、これも与えていない）
-   ため、プロジェクトが `.claude-container.d/packages.txt` で file capabilities 付きバイナリ
+   ため、プロジェクトが `.c3c/packages.txt` で file capabilities 付きバイナリ
    （`iputils-ping`・`wireshark` 等）を追加導入すると、そのバイナリ固有の機能に限って capability が
    復活しうる（同梱デフォルトの `packages.txt` にはそのようなバイナリは含まれない）
 2. ホスト側から `podman exec` で入るプロセスは `Dockerfile.claude` の `ENTRYPOINT` を経由しないため、

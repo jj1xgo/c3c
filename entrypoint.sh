@@ -39,7 +39,7 @@ fi
 readonly CODEX_START_MODE CODEX_READ_ONLY
 
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
-# 無効化する場合は利用側プロジェクトの .claude-container.d/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
+# 無効化する場合は利用側プロジェクトの .c3c/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
 firewall_args=()
 case "${CLAUDE_CONTAINER_IPV6:-0}" in
   ''|0) ;;
@@ -75,7 +75,7 @@ fi
 # 既存の人間ゲートの対象外になる。セッション開始と同時に人間・モデルどちらの
 # 判断も挟まず実行され、export 済みトークン等を読めてしまうため、ここで TTY
 # 確認を挟む（http/sse 型は接続先をファイアウォールが審査するため対象外）。
-# 環境変数による opt-out は設けない。根拠は「.claude-container.d/env が信頼できない」
+# 環境変数による opt-out は設けない。根拠は「.c3c/env が信頼できない」
 # ではなく、このゲートが対象とする帰結（セッション開始と同時の任意コード実行）に
 # 対しては opt-out という迂回経路自体を作らない、という設計判断（README「セキュリティ
 # モデル」節、`claude-container#29`）。env は全キー無条件で export されるため、
@@ -220,7 +220,7 @@ fi
 CODEX_AUDIT=/usr/local/bin/codex-mcp-audit.py
 CODEX_APPROVED=/etc/claude-container/codex-mcp-approved.json
 if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then
-  echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.claude-container.d/codex-version.txt に対応版を指定して -b で再ビルドしてください。起動を中止します" >&2
+  echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.c3c/codex-version.txt が空（opt-out）のままビルドしたか、旧いイメージです。対応版を書くか空ファイルを削除して同梱 default を使い、-b で再ビルドしてください。起動を中止します" >&2
   exit 1
 fi
 if ! cd -- /workspace; then

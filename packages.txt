@@ -1,9 +1,9 @@
 # claude-container のデフォルト apt パッケージ一覧。
-# プロジェクト側の .claude-container.d/packages.txt が無い場合にのみ
+# プロジェクト側の .c3c/packages.txt が無い場合にのみ
 # フォールバックとして使用される。1行1パッケージ、行頭 # 始まりはコメント
 # （行内 # はコメントにならず拒否される）。素の Debian パッケージ名のみの
 # allowlist 検証（validate-build-input.sh）を経て apt-get install に渡される。
 #
 # claude-container は汎用ツールのため、ここにプロジェクト固有のパッケージを
 # 書かないこと。プロジェクト固有のパッケージは各プロジェクト側の
-# .claude-container.d/packages.txt に記載する。
+# .c3c/packages.txt に記載する。

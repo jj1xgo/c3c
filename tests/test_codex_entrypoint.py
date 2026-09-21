@@ -79,8 +79,9 @@ class EntrypointCase(unittest.TestCase):
         self.workspace.mkdir()
         self.codex_home = self.root / 'codex-home'
         self.codex_home.mkdir()
-        self.secrets = self.root / 'secrets'
-        (self.secrets / 'export').mkdir(parents=True)
+        # 秘密の値ではなく、試験用コピーへ埋め込む一時 mount 先のパス。
+        self.fixture_mount_dir = self.root / 'secrets'
+        (self.fixture_mount_dir / 'export').mkdir(parents=True)
         self.approved = self.root / 'codex-approved.json'
         self.claude_approved = self.root / 'claude-approved'
         self.state_path = self.root / 'state.json'
@@ -99,7 +100,7 @@ class EntrypointCase(unittest.TestCase):
         # 固定パスを試験用コピーへ置換する。trust override の "/workspace" は helper 側の固定値と一致させるため置換しない。
         source = (source.replace(FIXED_HELPER, str(HELPER)).replace(FIXED_CLI, str(self.codex))
                   .replace(FIXED_HOME, str(self.codex_home)).replace(FIXED_APPROVED, str(self.approved))
-                  .replace(CLAUDE_APPROVED, str(self.claude_approved)).replace(SECRETS_MOUNT, str(self.secrets))
+                  .replace(CLAUDE_APPROVED, str(self.claude_approved)).replace(SECRETS_MOUNT, str(self.fixture_mount_dir))
                   .replace('/usr/local/bin/firewall-refresh.py', str(self.bin / 'refresh'))
                   .replace('/workspace/.mcp.json', str(self.workspace / '.mcp.json'))
                   .replace('cd -- /workspace', 'cd -- ' + str(self.workspace)))
@@ -135,7 +136,7 @@ class EntrypointCase(unittest.TestCase):
 
 class ClaudePathTests(EntrypointCase):
     def test_default_and_explicit_claude_keep_existing_order_and_argv(self):
-        (self.secrets / 'export' / 'MCP_TOKEN').write_text('tok\n')
+        (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
         for agent in (None, 'claude'):
             with self.subTest(agent=agent):
                 result = self.run_entrypoint(agent)
@@ -189,7 +190,7 @@ class PreflightTests(EntrypointCase):
         self.assertNotIn('TTY', result.stderr)
 
     def test_preflight_after_firewall_and_secret_export(self):
-        (self.secrets / 'export' / 'MCP_TOKEN').write_text('tok\n')
+        (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
         result = self.run_entrypoint('codex', 'preflight')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.records[0].startswith('sudo'))
@@ -339,10 +340,10 @@ class SecretIsolationTests(EntrypointCase):
     def test_secrets_cannot_replace_fixed_home_cli_path_but_general_secrets_pass(self):
         other_home = self.root / 'other-home'
         other_home.mkdir()
-        (self.secrets / 'export' / 'CODEX_HOME').write_text(str(other_home) + '\n')
-        (self.secrets / 'export' / 'HOME').write_text('/tmp/evil-home\n')
-        (self.secrets / 'export' / 'PATH').write_text('/tmp/evil-bin\n')
-        (self.secrets / 'export' / 'MCP_TOKEN').write_text('tok\n')
+        (self.fixture_mount_dir / 'export' / 'CODEX_HOME').write_text(str(other_home) + '\n')
+        (self.fixture_mount_dir / 'export' / 'HOME').write_text('/tmp/evil-home\n')
+        (self.fixture_mount_dir / 'export' / 'PATH').write_text('/tmp/evil-bin\n')
+        (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
         self.approve_from_preflight()
         for mode in ('preflight', 'run'):
             with self.subTest(mode=mode):

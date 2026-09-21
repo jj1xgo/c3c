@@ -637,7 +637,7 @@ run_launcher_tests() {
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
   check "CLI 選択記憶 helper（Git 識別・strict JSON・無書込 read・原子的 write）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_agent_preference.py"
   check "c3c 入口（symlink 解決・新 parser・初回選択/記憶・本 run 終了コード保持・check/clean/legacy の無書込）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_launch.py"
-  check "設定ディレクトリの選択（.c3c/旧名/なし/二重配置/型不正・symlink、check の継続と無書込、clean の独立、新旧配置の hash 同一）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_config.py"
+  check "設定ディレクトリの選択（.c3c/旧名/なし/二重配置/型不正・symlink、check の継続と無書込、clean の独立、新旧配置の hash 同一）と Node/Codex の既定ビルド入力（同梱 default・project pin・空 opt-out・npm WARNING）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_config.py"
   check "entrypoint の agent 分岐（enum・preflight 分離・固定 home/CLI・verify→exec・Claude 順序）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_entrypoint.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
@@ -1325,7 +1325,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{claude-container,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1703,6 +1703,9 @@ log ""
 # allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・
 # github-meta.json を一時ディレクトリへ集約する（packages.txt/requirements.txt は
 # 呼び出し側で個別にコピーする — プロジェクト上書きテストではソースが変わるため）。
+# node-version.txt・codex-version.txt は同梱 default（c3c 第2b-2段階）をコピーする。
+# 通常のテストイメージは default 込み（Node 24 + Codex CLI）で、opt-out 専用のケース
+# だけ呼び出し側が空ファイルで上書きする（空 = 明示 opt-out、default で埋めない）。
 # リポジトリルート直下には github-meta.json が存在しないため、直接 $SCRIPT_DIR
 # をビルドコンテキストに渡すと COPY で失敗する（2026-07-02 の GitHub meta
 # スナップショット化以降の既存の不整合、Issue #1 対応の動作確認時に検出・修正）。
@@ -1716,8 +1719,8 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
-  : > "$dest/node-version.txt"
-  : > "$dest/codex-version.txt"
+  cp "${SCRIPT_DIR}/node-version.txt" "$dest/node-version.txt"
+  cp "${SCRIPT_DIR}/codex-version.txt" "$dest/codex-version.txt"
   : > "$dest/allowed-ports.txt"
 
   local sibling gh_meta fetch_rc
@@ -1780,9 +1783,40 @@ log ""
 log "## Claude Code ツール"
 check "定期更新 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/firewall-refresh.py --help
 check "IPv6 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/ipv6-firewall.py --help
+check "Codex 審査 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" python3 -I /usr/local/bin/codex-mcp-audit.py --help
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version
+log ""
+
+# 同梱 default（c3c 第2b-2段階）の実検査。イメージ内の Node.js / Codex CLI が同梱ファイルの固定値と
+# 一致することを必須にする（存在だけでは、ベースイメージ由来の別版や npm の latest 解決を見逃す）。
+# 起動時 MCP 審査の対応版（launcher の CODEX_SUPPORTED_VERSION・helper の SUPPORTED_VERSION）と
+# 同梱 default の不一致も失敗にする — 既定イメージの Codex が審査対象外の版になると、既定構成で
+# `--agent codex` が必ず起動時に拒否されるため。
+log "## 同梱 default（node-version.txt / codex-version.txt）の実検査"
+DEFAULT_NODE_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/node-version.txt")"
+DEFAULT_CODEX_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/codex-version.txt")"
+# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+check "同梱 node-version.txt が固定版（空・latest でない）" \
+  bash -c '[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$DEFAULT_NODE_VERSION"
+# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+check "同梱 codex-version.txt が固定版（空・latest でない）" \
+  bash -c '[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$DEFAULT_CODEX_VERSION"
+check "launcher の CODEX_SUPPORTED_VERSION が同梱 codex-version.txt と一致" \
+  grep -qxF "CODEX_SUPPORTED_VERSION=$DEFAULT_CODEX_VERSION" "${SCRIPT_DIR}/claude-container"
+check "codex-mcp-audit.py の SUPPORTED_VERSION が同梱 codex-version.txt と一致" \
+  grep -qxF "SUPPORTED_VERSION = '$DEFAULT_CODEX_VERSION'" "${SCRIPT_DIR}/codex-mcp-audit.py"
+# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+check "node --version が同梱 default（v$DEFAULT_NODE_VERSION）と一致" \
+  bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ]' _ "$IMAGE" "$DEFAULT_NODE_VERSION"
+check "npm --version" podman run --rm --network=none "$IMAGE" npm --version
+# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+check "codex --version が同梱 default（codex-cli $DEFAULT_CODEX_VERSION）と一致" \
+  bash -c 'actual=$(podman run --rm --network=none "$1" codex --version) && echo "$actual" && [ "$actual" = "codex-cli $2" ]' _ "$IMAGE" "$DEFAULT_CODEX_VERSION"
+# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+check "codex の実体が entrypoint.sh の固定パス /usr/local/bin/codex にある" \
+  bash -c 'podman run --rm --network=none "$1" sh -c "[ -x /usr/local/bin/codex ] && [ -x /usr/local/bin/node ] && [ -x /usr/local/bin/npm ]"' _ "$IMAGE"
 log ""
 
 # 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。
@@ -1900,6 +1934,79 @@ else
 fi
 podman rmi "$POS1_IMAGE" 2>/dev/null
 rm -rf "$POS1_PROJECT_DIR" "$POS1_CONTEXT_DIR"
+log ""
+
+# 同梱 default の opt-out と project pin（c3c 第2b-2段階）。stage_common_context() が置く default を
+# 呼び出し側で上書きして、Dockerfile.claude が「空 = 導入しない」「npm 不在 = 失敗」「pin 優先」を
+# 実際に守ることを実ビルドで確認する（--no-cache は付けない: 変更した COPY より前のレイヤーは
+# 上のビルドのキャッシュを流用し、変更したファイル以降だけ実走する）。check_fails() の定義より後に
+# 置く — 定義より前で呼ぶと command not found（rc 127）が check の集計に乗らず、検査が黙って抜ける
+# （初回の全体実行で実測）。
+log "## node-version.txt / codex-version.txt の opt-out と project pin（実ビルド）"
+# 陰性: codex-version.txt が空 → Codex CLI を導入しない（Node は default のまま入る）。
+OPTOUT_IMAGE="localhost/claude-test-codex-optout"
+OPTOUT_CONTEXT_DIR="$(mktemp -d)"
+if stage_common_context "$OPTOUT_CONTEXT_DIR"; then
+  cp "${SCRIPT_DIR}/packages.txt" "$OPTOUT_CONTEXT_DIR/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$OPTOUT_CONTEXT_DIR/requirements.txt"
+  : > "$OPTOUT_CONTEXT_DIR/codex-version.txt"
+  check "Codex opt-out: 空の codex-version.txt でビルド成功" podman build \
+    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OPTOUT_IMAGE" "$OPTOUT_CONTEXT_DIR"
+  check "Codex opt-out: codex が入っていない" \
+    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c '! command -v codex >/dev/null && [ ! -e /usr/local/bin/codex ]'
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "Codex opt-out: Node は同梱 default のまま入っている" \
+    bash -c '[ "$(podman run --rm --network=none "$1" node --version)" = "v$2" ]' _ "$OPTOUT_IMAGE" "$DEFAULT_NODE_VERSION"
+else
+  check "Codex opt-out: 空の codex-version.txt でビルド成功 (staging failed: see stderr above)" false
+  check "Codex opt-out: codex が入っていない" false
+  check "Codex opt-out: Node は同梱 default のまま入っている" false
+fi
+podman rmi "$OPTOUT_IMAGE" 2>/dev/null
+rm -rf "$OPTOUT_CONTEXT_DIR"
+
+# 陰性: node-version.txt が空で Codex が有効、ベース（debian:stable、packages.txt も空）に npm が無い
+# → 既存どおり npm 不在のエラーでビルド失敗（黙って Codex を落とさない）。
+NPMLESS_IMAGE="localhost/claude-test-npmless"
+NPMLESS_CONTEXT_DIR="$(mktemp -d)"
+if stage_common_context "$NPMLESS_CONTEXT_DIR"; then
+  cp "${SCRIPT_DIR}/packages.txt" "$NPMLESS_CONTEXT_DIR/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$NPMLESS_CONTEXT_DIR/requirements.txt"
+  : > "$NPMLESS_CONTEXT_DIR/node-version.txt"
+  check_fails "Node opt-out + Codex 有効 + npm 無し base でビルド fail" "npm が必要" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$NPMLESS_IMAGE" "$NPMLESS_CONTEXT_DIR"
+else
+  check "Node opt-out + Codex 有効 + npm 無し base でビルド fail (staging failed: see stderr above)" false
+fi
+podman rmi "$NPMLESS_IMAGE" 2>/dev/null
+rm -rf "$NPMLESS_CONTEXT_DIR"
+
+# 陽性: project の node-version.txt の pin が default より優先される（Codex は default のまま）。
+PIN_NODE_VERSION="22.14.0"
+PIN_IMAGE="localhost/claude-test-node-pin"
+PIN_PROJECT_DIR="$(mktemp -d)"
+PIN_CONTEXT_DIR="$(mktemp -d)"
+mkdir -p "$PIN_PROJECT_DIR/.c3c"
+printf '%s\n' "$PIN_NODE_VERSION" > "$PIN_PROJECT_DIR/.c3c/node-version.txt"
+if stage_common_context "$PIN_CONTEXT_DIR"; then
+  cp "${SCRIPT_DIR}/packages.txt" "$PIN_CONTEXT_DIR/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$PIN_CONTEXT_DIR/requirements.txt"
+  cp "$PIN_PROJECT_DIR/.c3c/node-version.txt" "$PIN_CONTEXT_DIR/node-version.txt"
+  check "project pin: node-version.txt の pin でビルド成功" podman build \
+    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$PIN_IMAGE" "$PIN_CONTEXT_DIR"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "project pin: node --version が pin（v$PIN_NODE_VERSION）と一致し default ではない" \
+    bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ] && [ "$actual" != "v$3" ]' _ "$PIN_IMAGE" "$PIN_NODE_VERSION" "$DEFAULT_NODE_VERSION"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "project pin: Codex は同梱 default のまま入っている" \
+    bash -c '[ "$(podman run --rm --network=none "$1" codex --version)" = "codex-cli $2" ]' _ "$PIN_IMAGE" "$DEFAULT_CODEX_VERSION"
+else
+  check "project pin: node-version.txt の pin でビルド成功 (staging failed: see stderr above)" false
+  check "project pin: node --version が pin（v$PIN_NODE_VERSION）と一致し default ではない" false
+  check "project pin: Codex は同梱 default のまま入っている" false
+fi
+podman rmi "$PIN_IMAGE" 2>/dev/null
+rm -rf "$PIN_PROJECT_DIR" "$PIN_CONTEXT_DIR"
 log ""
 
 log "## .claude-container.d/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"

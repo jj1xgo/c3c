@@ -1,5 +1,5 @@
 # claude-container のデフォルト pip パッケージ一覧。
-# プロジェクト側の .claude-container.d/requirements.txt が無い場合にのみ
+# プロジェクト側の .c3c/requirements.txt が無い場合にのみ
 # フォールバックとして使用される。名前＋extras＋バージョン指定子のみの
 # allowlist 検証（validate-build-input.sh）を経てコンテナのシステム Python
 # （pip3 install --break-system-packages）へ渡される。URL・パス・オプション行・
@@ -8,4 +8,4 @@
 # 多くのプロジェクトでは Python 依存はプロジェクト側の venv 等で隔離管理される
 # ため、通常は空のままでよい。venv の外（システム Python）で動くスクリプトが
 # 必要とする追加パッケージがある場合のみ、プロジェクト側の
-# .claude-container.d/requirements.txt に 1 行 1 パッケージで記載する。
+# .c3c/requirements.txt に 1 行 1 パッケージで記載する。

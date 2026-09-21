@@ -64,6 +64,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
   - `~/.claude/plugins/*.json` のホストパスを `sed` で書き換える処理を復活させない — `plugins/` は `:ro` 保護対象で書けず、書けてはいけない。plugin の解決は launcher 側の別名マウント（`compose.plugins-alias.yml`、`claude-container#98`）が担う。
   - PID1 は tini（`Dockerfile.claude` 項目参照）。
   - `GITHUB_MAIN_PAT` 検知時の `credential.helper` 無効化（`GIT_CONFIG_*`）を外さない — `GITCONFIG_FILE` の `credential.helper=store` が askpass 経由の PAT を平文永続化する（`claude-container#25`）。
+  - Claude 経路の起動引数は `claude --permission-mode auto` 固定（2026-09-21。従来の既定は `--dangerously-skip-permissions`）。引数を受理しない版では非ゼロ終了のままにし、auto が利用できないセッションで Claude Code 本体が Manual に戻す場合（公式 permission-modes 文書、2026-09-21 確認）も含め、旧フラグへ戻す分岐・env による切替を設けない（`tests/test_codex_entrypoint.py` が argv を検査）。auto / Manual の判定は Claude Code 本体の機能で、境界に数えない。
   - MCP監査ゲート（`/workspace/.mcp.json` の stdio 型サーバー検知＋TTY確認、fail-closed）を外さない、環境変数による opt-out を追加しない — 対象の帰結（セッション開始と同時の任意コード実行）に対しては迂回経路自体を作らない設計判断（根拠は README「セキュリティモデル」節、`claude-container#29`）。このゲートは Claude 経路（`CC_AGENT=claude`）だけで、Codex 経路の代用にしない。
   - Codex 経路（c3c 第1段階）: `CC_AGENT` は未設定のときだけ `claude`、空文字を含む不正値と `CC_CODEX_START_MODE`/`CC_CODEX_READ_ONLY` の enum 外は firewall 適用前に停止し、別 CLI へ fallback しない。preflight では初期化ログより前に元 stdout を fd3 へ確保し通常 stdout を stderr へ向ける（protocol は fd3 に 1 文書だけ）。順序は firewall → 更新ループ →（Claude のみ MCP ゲート）→ 固定 `CODEX_HOME=/home/node/.codex`・`CODEX_CLI=/usr/local/bin/codex` の確定（`readonly`、秘密 export より前 — export ループの「設定済み名はスキップ」により `secrets/export/` の `CODEX_HOME`・`HOME`・`PATH` で差し替えられない）→ 秘密 export → `cd /workspace` → `codex-mcp-audit.py` の `snapshot`（preflight、agent 非起動で終了）または `verify /etc/claude-container/codex-mcp-approved.json`（run）→ 固定 argv での `exec`。検査・再照合・本起動で home・cwd・CLI 実体・設定解決用 override（`projects={"/workspace"={trust_level="trusted"}}`、helper の `LIST_ARGS` と同値）を揃える構成を崩さない。
 - **`init-firewall.sh`**
@@ -105,7 +106,7 @@ claude-container 本体を変更する開発者（AI エージェントを含む
 
 ## セキュリティ設計の帰結（開発者が壊してはいけない前提）
 
-コンテナ内で Claude は `--dangerously-skip-permissions` で動作するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界であり、Claude は `/workspace` と、rw で opt-in された追加マウント（一覧の正本は README.md「環境変数」節）への読み書き権限を全面的に持つ（詳細は README.md「セキュリティモデル」節）。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしない。複数プロジェクトから同じホストパスを共有する追加マウント（`SHARED_MOUNT` の `/shared`）は、他プロジェクトのセッションも書き込める領域として扱う。書き込みは他プロジェクトへ波及し、読み取る内容は自セッション由来でない入力になりうる（信頼境界の詳細は README.md「セキュリティモデル」節）。
+コンテナ内で Claude は `--permission-mode auto`（Claude Code の auto mode）で動作し、claude-container はツール使用ごとの人手の確認プロンプトを境界として当てにしない（auto が利用できないセッションでは Claude Code 本体が Manual に戻り確認プロンプトが出るが、境界の扱いは変わらない）。ガードレールはコンテナ境界であり、Claude は `/workspace` と、rw で opt-in された追加マウント（一覧の正本は README.md「環境変数」節）への読み書き権限を全面的に持つ（詳細は README.md「セキュリティモデル」節）。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしない。複数プロジェクトから同じホストパスを共有する追加マウント（`SHARED_MOUNT` の `/shared`）は、他プロジェクトのセッションも書き込める領域として扱う。書き込みは他プロジェクトへ波及し、読み取る内容は自セッション由来でない入力になりうる（信頼境界の詳細は README.md「セキュリティモデル」節）。
 
 ネットワーク面は `init-firewall.sh` による deny-by-default のエグレス許可リストで制限される（既定で有効）。認証情報（`~/.claude.json`）やソースが実行時にマウントされるため、悪意ある pip パッケージやプロンプトインジェクションによる外部送信・C2 化を「許可済みエンドポイント以外への通信不可」で封じる。
 

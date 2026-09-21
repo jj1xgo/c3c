@@ -43,6 +43,14 @@ services:
       CLAUDE_CONTAINER_NO_FIREWALL: ${CLAUDE_CONTAINER_NO_FIREWALL:-}
       # mode と sysctls/network の不一致を避ける。IPv6用overrideが固定値1へ変える。
       CLAUDE_CONTAINER_IPV6: "0"
+      # 起動する CLI（c3c 第1段階）。launcher が CLI 引数から導出して明示 export する値だけを渡す
+      # （.claude-container.d/env の許可リスト外）。entrypoint.sh が enum を再検証する。
+      # CC_CODEX_START_MODE の既定は run（検査用は compose.codex-preflight.yml を選んだ launcher が
+      # preflight を明示する）。既定は「未設定のときだけ」（`${VAR-default}`）。`:-` だと明示した空文字が
+      # 既定値に化け、entrypoint の空文字拒否に届かない（計画: 未設定のみ既定、空文字を含む不正値は拒否）。
+      CC_AGENT: ${CC_AGENT-claude}
+      CC_CODEX_START_MODE: ${CC_CODEX_START_MODE-run}
+      CC_CODEX_READ_ONLY: ${CC_CODEX_READ_ONLY-0}
     volumes:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude.json:/home/node/.claude.json
       - ${CLAUDE_CONFIG_DIR:-~}/.claude:/home/node/.claude
@@ -102,5 +110,9 @@ services:
       # コンテナ内から書き換えられると次回起動の自動承認を偽装できてしまうため。
       # 未設定時は /dev/null（SECRETS_DIR と同じオプトインパターン）。
       - ${MCP_APPROVAL_FILE:-/dev/null}:/etc/claude-container/mcp-approved-hash:ro
+      # Codex の起動時 MCP 審査の承認記録（c3c 第1段階）。launcher が検査用コンテナの protocol を
+      # 人間に確認させた後にだけ書く JSON 1 文書。:ro 必須（コンテナ内から書き換えられると本起動の
+      # verify を偽装できる）。台帳ディレクトリ全体は載せない。未設定時は /dev/null（verify は空を拒否）。
+      - ${CODEX_MCP_APPROVAL_FILE:-/dev/null}:/etc/claude-container/codex-mcp-approved.json:ro
       - /etc/localtime:/etc/localtime:ro
     working_dir: /workspace

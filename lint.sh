@@ -63,6 +63,86 @@ fi
 
 scripts=("${bash_scripts[@]}" "${sh_scripts[@]}")
 
+# compose config の provider 差を扱う検査（c3c 第1段階）。podman-compose は volume を短縮表記
+# （`- src:target:ro`）のまま出し、docker compose は long syntax（`type/source/target/read_only`）へ
+# 正規化する。tty/stdin_open も provider により false が省略される。文字列一致ではなく
+# 「対象 mount が読み取り専用」「TTY と stdin が無効」という意味で検査する。stdin に config を渡す。
+# python3 標準ライブラリだけを使う（PyYAML 等は CI に無い）。tests/test-lint-compose-checks.sh が
+# `sed -n '/^compose_mount_is_ro()/,/^}/p'` 等で関数定義だけを抽出して検証する（開始行と終了行の形を変えない）。
+compose_mount_is_ro() {
+  # config は stdin から受けるので、script は -c で渡す（stdin を heredoc に取られない）。
+  local script
+  script=$(cat <<'PYTHON'
+import re
+import sys
+
+target = re.escape(sys.argv[1])
+lines = sys.stdin.read().splitlines()
+found = False
+ro = False
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(' '))
+
+
+for index, line in enumerate(lines):
+    short = re.match(r'^\s*-\s*[^\s]+?:' + target + r'(?::([^\s]+))?\s*$', line)
+    if short:
+        found = True
+        options = (short.group(1) or '').split(',')
+        if 'ro' in options:
+            ro = True
+        continue
+    long_form = re.match(r'^(\s*)(-\s*)?target:\s*' + target + r'\s*$', line)
+    if not long_form:
+        continue
+    found = True
+    key_indent = indent_of(line) + (len(long_form.group(2)) if long_form.group(2) else 0)
+    # 同じ list 要素の範囲: 上は要素の先頭（`- ` で始まり dash の indent が key より浅い行）まで、
+    # 下は次の要素の先頭か、より浅い indent の行まで。
+    start = index
+    while start > 0:
+        current = lines[start]
+        if current.lstrip(' ').startswith('- ') and indent_of(current) < key_indent:
+            break
+        if current.strip() and indent_of(current) < key_indent:
+            break
+        start -= 1
+    end = index + 1
+    while end < len(lines):
+        current = lines[end]
+        if current.strip() and (indent_of(current) < key_indent
+                                or (current.lstrip(' ').startswith('- ') and indent_of(current) < key_indent + 1)):
+            break
+        end += 1
+    block = lines[start:end]
+    if any(re.match(r'^\s*(-\s*)?read_only:\s*[\'"]?true[\'"]?\s*$', item) for item in block):
+        ro = True
+if not found:
+    print('ERROR: compose config に対象の mount がありません: ' + sys.argv[1], file=sys.stderr)
+    sys.exit(1)
+if not ro:
+    print('ERROR: compose config で対象の mount が読み取り専用ではありません: ' + sys.argv[1], file=sys.stderr)
+    sys.exit(1)
+PYTHON
+  )
+  python3 -I -c "$script" "$1"
+}
+
+# 検査用 override のマージ結果で TTY と stdin が無効であること。provider が false を省略しても
+# 「true が無い」ことで判定する。基本 compose.yml 単体には tty: true があるので、対照として
+# 同じ関数が失敗することを lint 本体で確認する。
+compose_tty_disabled() {
+  local violations
+  violations=$(grep -nE '^\s*(tty|stdin_open):\s*['"'"'"]?true['"'"'"]?\s*$' || true)
+  if [ -n "$violations" ]; then
+    printf 'ERROR: compose config に TTY/stdin の有効化が残っています:\n%s\n' "$violations" >&2
+    return 1
+  fi
+  return 0
+}
+
 if [ "${#scripts[@]}" -eq 0 ]; then
   echo "ERROR: 対象のスクリプトが1つも見つかりません（git ls-files + shebang 判定）。" >&2
   exit 1
@@ -131,6 +211,29 @@ elif command -v podman >/dev/null 2>&1; then
     podman compose -f compose.yml -f compose.shared-host.yml config >/dev/null || status=1
   AGENTS_DIR=/tmp \
     podman compose -f compose.yml -f compose.agents.yml config >/dev/null || status=1
+  # Codex の検査用 override（c3c 第1段階）。tty / stdin_open だけを false にし、他は本起動と同じ。
+  # 承認記録の :ro と TTY/stdin 無効は provider の出力形式（短縮 / long syntax、false の省略）に
+  # 依らず意味で検査する（compose_mount_is_ro / compose_tty_disabled）。
+  if base=$(podman compose -f compose.yml config); then
+    for target in /etc/claude-container/codex-mcp-approved.json /etc/claude-container/mcp-approved-hash; do
+      compose_mount_is_ro "$target" <<<"$base" || status=1
+    done
+    grep -qE '^\s*CC_CODEX_START_MODE:' <<<"$base" \
+      || { echo "ERROR: compose.yml の environment に CC_CODEX_START_MODE がありません" >&2; status=1; }
+    # 対照: 基本構成は TTY 有効なので、同じ検査が失敗しなければ検査自体が空振りしている。
+    if compose_tty_disabled <<<"$base" 2>/dev/null; then
+      echo "ERROR: compose.yml 単体の config に tty: true が無く、compose_tty_disabled の検査が空振りしています" >&2
+      status=1
+    fi
+  else
+    status=1
+  fi
+  if merged=$(podman compose -f compose.yml -f compose.codex-preflight.yml config); then
+    compose_tty_disabled <<<"$merged" || status=1
+    compose_mount_is_ro /etc/claude-container/codex-mcp-approved.json <<<"$merged" || status=1
+  else
+    status=1
+  fi
   if merged=$(CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias SHARED_MOUNT=/tmp \
       CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host AGENTS_DIR=/tmp \
       podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml \

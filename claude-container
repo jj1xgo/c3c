@@ -8,6 +8,19 @@ CLEAN=0
 CHECK=0
 CLEAN_MISSING=0
 
+# 起動する CLI（c3c 第1段階）。CLI 引数だけから決め、project env・シェル環境の CC_AGENT では
+# 選べない（許可リスト外なので export されず、下で readonly にする）。無指定は従来どおり Claude。
+AGENT=""
+AGENT_SET=0
+READ_ONLY=0
+READ_ONLY_SET=0
+# Codex の起動時 MCP 審査で対応する版と protocol（codex-mcp-audit.py・Dockerfile.claude の label と同期）。
+# 未知版・未知 protocol は同じ審査方式として黙認せず、対応確認が必要と診断する。
+CODEX_SUPPORTED_VERSION=0.155.1
+CODEX_AUDIT_PROTOCOL_VERSION=1
+CODEX_AUDIT_PROTOCOL_LABEL=io.c3c.codex-audit-protocol
+readonly CODEX_SUPPORTED_VERSION CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
+
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
 CHECK_MODE=0
@@ -44,10 +57,16 @@ usage() {
   cat <<EOF
 使い方: $(basename "$0") [オプション] <ディレクトリ>
 
-指定したディレクトリを作業ディレクトリにして、コンテナ化した Claude Code を起動する。
+指定したディレクトリを作業ディレクトリにして、コンテナ化した Claude Code（または Codex CLI）を起動する。
 
 オプション:
   -b, --build          コンテナイメージを強制的に再ビルドしてから起動する
+  --agent <claude|codex>
+                        起動する CLI を選ぶ（無指定は claude）。codex は CODEX_DIR と
+                        Codex を導入した対応イメージが必要で、起動前に設定済み MCP の
+                        ローカル command 定義を検査用コンテナで取得し、初回・変更時に
+                        ここで確認する。--clean/--clean-missing とは併用できない
+  --read-only           --agent codex 専用。Codex を read-only sandbox で起動する（諮問用）
   --clean <ディレクトリ>
                         そのプロジェクト分のイメージ・ネットワーク・
                         ステージング済みビルドコンテキストを削除して終了する
@@ -91,6 +110,42 @@ while [[ $# -gt 0 ]]; do
       CLEAN_MISSING=1
       shift
       ;;
+    --agent|--agent=*)
+      # 値欠落（末尾、または次が別オプション）・未知値・複数指定は exit 2。別 CLI へ fallback しない。
+      if [[ "$1" == --agent ]]; then
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          echo "ERROR: --agent には claude または codex を指定してください。" >&2
+          exit 2
+        fi
+        agent_value="$2"
+        shift 2
+      else
+        agent_value="${1#--agent=}"
+        shift
+      fi
+      if [[ $AGENT_SET -eq 1 ]]; then
+        echo "ERROR: --agent は 1 回だけ指定してください。" >&2
+        exit 2
+      fi
+      case "$agent_value" in
+        claude|codex) AGENT="$agent_value" ;;
+        *)
+          echo "ERROR: --agent の値が不明です: '$agent_value'（claude または codex）。" >&2
+          exit 2
+          ;;
+      esac
+      AGENT_SET=1
+      unset agent_value
+      ;;
+    --read-only)
+      if [[ $READ_ONLY_SET -eq 1 ]]; then
+        echo "ERROR: --read-only は 1 回だけ指定してください。" >&2
+        exit 2
+      fi
+      READ_ONLY=1
+      READ_ONLY_SET=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -105,6 +160,25 @@ done
 # 黙って無効化されるのを防ぐ（claude-container#39）
 readonly BUILD
 readonly CLEAN_MISSING
+[[ -n "$AGENT" ]] || AGENT=claude
+if [[ $READ_ONLY -eq 1 && "$AGENT" != codex ]]; then
+  echo "ERROR: --read-only は --agent codex と併用してください。" >&2
+  exit 2
+fi
+# --agent と clean 系は意味が曖昧（清掃は両 agent の記録を対象にする）なので併用を拒否する。
+if [[ $AGENT_SET -eq 1 && ( $CLEAN -eq 1 || $CLEAN_MISSING -eq 1 ) ]]; then
+  echo "ERROR: --agent は --clean / --clean-missing と併用できません。" >&2
+  exit 2
+fi
+readonly AGENT READ_ONLY
+# Compose へは CLI 解析から導出したこの値だけを明示して渡す。project env の読込より前に
+# freeze し、利用側 env の許可リストには加えない（container 側も enum を検証する）。
+# CC_CODEX_START_MODE は preflight/run の段階で launcher が都度設定する。
+CC_AGENT="$AGENT"
+CC_CODEX_READ_ONLY="$READ_ONLY"
+readonly CC_AGENT CC_CODEX_READ_ONLY
+CC_CODEX_START_MODE=""
+export CC_AGENT CC_CODEX_READ_ONLY CC_CODEX_START_MODE
 
 # 曖昧な併用を clean_all の判定より先に拒否する（#118）。
 if [[ $CLEAN -eq 1 && ( $CHECK -eq 1 || $CLEAN_MISSING -eq 1 ) ]] \
@@ -169,6 +243,9 @@ clean_project() {
   rm -rf "$BUILD_CONTEXT_DIR" && echo "削除しました。" || echo "見つからないのでスキップします。"
   echo "MCP 承認記録を削除します: $MCP_APPROVAL_RECORD"
   rm -f "$MCP_APPROVAL_RECORD" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  # Codex の承認記録はこのプロジェクトの subdirectory ごと（過去版を含む）削除し、他プロジェクトは残す。
+  echo "Codex MCP 承認記録を削除します: $CODEX_APPROVAL_DIR"
+  rm -rf "$CODEX_APPROVAL_DIR" && echo "削除しました。" || echo "見つからないのでスキップします。"
   if [[ -f "$CC_LEDGER_FILE" ]]; then
     echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
     # 一時台帳は毎回別名・生成時から所有者のみ。旧版の固定 .tmp は再利用しない。
@@ -281,13 +358,17 @@ freeze_project_paths() {
   # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
   MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
   MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
+  # Codex の起動時 MCP 審査の承認記録（c3c 第1段階）。既存の Claude 記録とは別に、agent 固定の
+  # subdirectory と対応版だけを採用したキーへ hash を保存する。同じく env 読込前に freeze する。
+  CODEX_APPROVAL_DIR="$MCP_APPROVAL_STORE/codex/$PROJECT_NAME"
+  CODEX_APPROVAL_RECORD="$CODEX_APPROVAL_DIR/$CODEX_SUPPORTED_VERSION.json"
   # プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
   PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
   # ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
   # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
   # クリーンアップも不要にする。
   BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
-  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD PROJECT_CONF_DIR BUILD_CONTEXT_DIR
+  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD PROJECT_CONF_DIR BUILD_CONTEXT_DIR
   # compose へはコマンド前置代入でなく export で渡す（readonly 変数への前置代入は
   # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
   # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
@@ -584,6 +665,320 @@ guard_codex_dir() {
       fi
     fi
   fi
+}
+
+# --agent codex の静的前提（c3c 第1段階）。専用 home（CODEX_DIR）と Codex の opt-in 導入
+# （codex-version.txt）を、通常起動と --check の両方で診断する。イメージ内の実際の版は
+# 起動時に codex-mcp-audit.py が `codex --version` で厳密に照合するため、ここは静的診断に留める。
+guard_codex_agent() {
+  [[ "$AGENT" == codex ]] || return 0
+  if [[ -z "${CODEX_DIR:-}" ]]; then
+    guard_fail "ERROR: --agent codex には Codex 専用の認証ディレクトリ CODEX_DIR が必要です。$PROJECT_CONF_DIR/env に CODEX_DIR=~/.codex-container のように設定してください（ホストの実 ~/.codex は指定できません。README「Codex CLI を対話で使う」節）。起動を中止します。" || return 1
+  fi
+  resolve_asset_source codex-version.txt
+  if [[ "$ASSET_ORIGIN" == "missing" ]]; then
+    guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt がありません。Codex は opt-in 導入のため、対応版 $CODEX_SUPPORTED_VERSION を書いて -b で再ビルドしてください（node-version.txt も必要）。起動を中止します。" || return 1
+  fi
+  local value
+  value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
+    guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt を読めません。起動を中止します。" || return 1
+  }
+  case "$value" in
+    "")
+      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です。対応版 $CODEX_SUPPORTED_VERSION を書いて -b で再ビルドしてください。起動を中止します。" || return 1
+      ;;
+    "$CODEX_SUPPORTED_VERSION")
+      [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（対応版）"
+      ;;
+    latest)
+      guard_warn "WARNING: $PROJECT_CONF_DIR/codex-version.txt が latest です。起動時 MCP 審査の対応版は $CODEX_SUPPORTED_VERSION で、イメージ内の版が異なると検査で拒否されます。固定版の指定を推奨します。"
+      ;;
+    *)
+      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt の $value は起動時 MCP 審査の対応版（$CODEX_SUPPORTED_VERSION）ではありません。未知版を同じ審査方式として扱わないため起動を中止します。" || return 1
+      ;;
+  esac
+  return 0
+}
+
+# 対応 image の確認。固定 label io.c3c.codex-audit-protocol が対応 protocol と一致するイメージでだけ
+# 検査用コンテナと本起動を行う。label 欠落・未知値（旧イメージ）では preflight 自体を起動しない。
+# 通常起動では必要な明示ビルドの後に呼び、--check では既存イメージの静的診断として呼ぶ。
+guard_codex_image_support() {
+  local label
+  if ! label=$(podman image inspect --format "{{index .Labels \"$CODEX_AUDIT_PROTOCOL_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null); then
+    guard_fail "ERROR: イメージ $IMAGE_NAME を inspect できないため Codex 対応を確認できません。起動を中止します。" || return 1
+  fi
+  if [[ "$label" != "$CODEX_AUDIT_PROTOCOL_VERSION" ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は Codex 起動時 MCP 審査（protocol $CODEX_AUDIT_PROTOCOL_VERSION）に対応していません（label $CODEX_AUDIT_PROTOCOL_LABEL=${label:-なし}）。-b で再ビルドしてください。起動を中止します。" || return 1
+  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 審査 protocol: $CODEX_AUDIT_PROTOCOL_LABEL=$label"
+  return 0
+}
+
+# 承認記録の正本の形。launcher が書き、コンテナ内の codex-mcp-audit.py verify が :ro で読む。
+codex_record_content() {
+  printf '{"protocol_version":%s,"codex_version":"%s","hash":"%s"}\n' \
+    "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" "$1"
+}
+
+# 承認記録の静的検証（--check 用）。JSON 1 文書・重複 key 拒否・key 集合の完全一致・int の protocol・
+# 固定 version・小文字 hash を python3 -I で検証する（grep の正規表現では前後の garbage や
+# `.` の任意一致を通してしまう）。通常起動は codex_record_content() との完全一致で照合する。
+validate_codex_record_file() {
+  python3 -I - "$1" "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" <<'PYTHON' 2>/dev/null
+import json
+import re
+import sys
+
+path, protocol_version, codex_version = sys.argv[1:4]
+
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError('duplicate key')
+        result[key] = value
+    return result
+
+
+def reject(_name):
+    raise ValueError('non-standard constant')
+
+
+try:
+    with open(path, 'rb') as handle:
+        doc = json.loads(handle.read().decode('utf-8'), object_pairs_hook=pairs, parse_constant=reject)
+except (OSError, ValueError):
+    sys.exit(1)
+ok = (isinstance(doc, dict) and set(doc) == {'protocol_version', 'codex_version', 'hash'}
+      and type(doc['protocol_version']) is int and doc['protocol_version'] == int(protocol_version)
+      and isinstance(doc['codex_version'], str) and doc['codex_version'] == codex_version
+      and isinstance(doc['hash'], str) and re.fullmatch(r'[0-9a-f]{64}', doc['hash']) is not None)
+sys.exit(0 if ok else 1)
+PYTHON
+}
+
+# 承認記録を dir 0700 / file 0600、同一 dir の一時ファイルからの atomic replace で書く。
+write_codex_record() {
+  local hash="$1" tmp
+  (
+    umask 077
+    mkdir -p "$CODEX_APPROVAL_DIR" || exit 1
+    chmod 700 "$MCP_APPROVAL_STORE" "$MCP_APPROVAL_STORE/codex" "$CODEX_APPROVAL_DIR" || exit 1
+    tmp=$(mktemp "$CODEX_APPROVAL_DIR/.tmp.XXXXXX") || exit 1
+    trap 'rm -f -- "$tmp"' EXIT
+    chmod 600 "$tmp" || exit 1
+    codex_record_content "$hash" > "$tmp" || exit 1
+    mv -f -- "$tmp" "$CODEX_APPROVAL_RECORD" || exit 1
+    trap - EXIT
+  ) || {
+    echo "ERROR: Codex MCP 承認記録を書けません: $CODEX_APPROVAL_RECORD。起動を中止します" >&2
+    exit 1
+  }
+}
+
+# 検査用コンテナ（非 TTY、stdin は /dev/null）を起動し、stdout の protocol 1 文書だけを厳密に検証する。
+# 結果は CODEX_HASH / CODEX_COUNT / CODEX_DISPLAY[] に入れる。protocol には利用者が埋め込んだ秘密が
+# command/args に含まれうるため永続ログへ保存せず、0700 の一時 dir に置いて終了時に削除する。
+CODEX_PREFLIGHT_TMP=""
+cleanup_codex_preflight() {
+  [[ -n "$CODEX_PREFLIGHT_TMP" ]] && rm -rf -- "$CODEX_PREFLIGHT_TMP"
+  CODEX_PREFLIGHT_TMP=""
+  return 0
+}
+run_codex_preflight() {
+  CODEX_HASH=""
+  CODEX_COUNT=""
+  CODEX_DISPLAY=()
+  local override="$RUN_DIR/compose.codex-preflight.yml" rc=0
+  if [[ ! -f "$override" ]]; then
+    echo "ERROR: 検査用の固定 Compose override がありません: $override。起動を中止します" >&2
+    exit 1
+  fi
+  CODEX_PREFLIGHT_TMP=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/cc-codex-preflight.XXXXXX") || {
+    echo "ERROR: 検査用の一時ディレクトリを作成できません。起動を中止します" >&2
+    exit 1
+  }
+  trap 'cleanup_codex_preflight' EXIT
+  chmod 700 "$CODEX_PREFLIGHT_TMP"
+  ( umask 077; : > "$CODEX_PREFLIGHT_TMP/protocol" ) || exit 1
+  echo "INFO: Codex 起動時 MCP 審査: 設定済み MCP の実行定義を検査用コンテナで取得します（agent と MCP command は起動しません）" >&2
+  CC_CODEX_START_MODE=preflight
+  export CC_CODEX_START_MODE
+  # 検査と本起動で同じ mount・working directory・固定引数を使う。preflight 専用 override は
+  # tty/stdin_open だけを上書きし、-T と </dev/null でホスト側の TTY も要求しない。
+  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
+    run --rm -T claude-auth-workspace </dev/null >"$CODEX_PREFLIGHT_TMP/protocol" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: Codex 起動時 MCP 審査: 検査用コンテナが終了コード $rc で失敗しました。本起動は行いません" >&2
+    exit 1
+  fi
+  # stdout 全体が対応 protocol の JSON 1 文書であることを python3 -I で検証する（shell で再解釈しない）。
+  # summary は 1 行目 hash、2 行目件数、以降が表示用行（制御文字は除去済み）。
+  if ! python3 -I - "$CODEX_PREFLIGHT_TMP/protocol" "$CODEX_PREFLIGHT_TMP/summary" \
+      "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" <<'PYTHON'
+import json
+import re
+import sys
+
+source, summary, protocol_version, codex_version = sys.argv[1:5]
+CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def fail(message):
+    print('ERROR: Codex 起動時 MCP 審査: ' + message + '。本起動は行いません', file=sys.stderr)
+    sys.exit(1)
+
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            fail('protocol に重複 key があります')
+        result[key] = value
+    return result
+
+
+def is_str(value):
+    return isinstance(value, str)
+
+
+def is_str_list(value):
+    return isinstance(value, list) and all(is_str(item) for item in value)
+
+
+def is_env_var(item):
+    # codex-mcp-audit.py と同じ受理範囲: 文字列名か {name, source?}（source は null/local/remote）。
+    if is_str(item):
+        return True
+    return (isinstance(item, dict) and 'name' in item and set(item) <= {'name', 'source'}
+            and is_str(item['name']) and item.get('source') in (None, 'local', 'remote'))
+
+
+try:
+    with open(source, 'rb') as handle:
+        text = handle.read().decode('utf-8')
+except (OSError, UnicodeDecodeError):
+    fail('検査用コンテナの stdout を UTF-8 として読めません')
+try:
+    doc = json.loads(text, object_pairs_hook=pairs, parse_constant=lambda name: fail('protocol に非標準の定数があります'))
+except ValueError:
+    fail('検査用コンテナの stdout が protocol の JSON 1 文書ではありません（余分な出力・破損・欠落）')
+if not isinstance(doc, dict) or set(doc) != {'protocol_version', 'codex_version', 'hash', 'count', 'servers'}:
+    fail('protocol の形式が対応版と異なります')
+if type(doc['protocol_version']) is not int or doc['protocol_version'] != int(protocol_version):
+    fail('protocol version が対応版と異なります')
+if not is_str(doc['codex_version']) or doc['codex_version'] != codex_version:
+    fail('Codex 版が対応版（%s）と異なります' % codex_version)
+if not is_str(doc['hash']) or not re.fullmatch(r'[0-9a-f]{64}', doc['hash']):
+    fail('hash の形式が不正です')
+if type(doc['count']) is not int or doc['count'] < 0:
+    fail('count の形式が不正です')
+servers = doc['servers']
+if not isinstance(servers, list) or doc['count'] != len(servers):
+    fail('servers と count が一致しません')
+lines = []
+for server in servers:
+    if not isinstance(server, dict) or set(server) != {'name', 'command', 'args', 'cwd', 'env_keys', 'env_vars'}:
+        fail('servers の要素の形式が対応版と異なります')
+    if not (is_str(server['name']) and is_str(server['command']) and is_str_list(server['args'])
+            and (server['cwd'] is None or is_str(server['cwd'])) and is_str_list(server['env_keys'])
+            and isinstance(server['env_vars'], list) and all(is_env_var(item) for item in server['env_vars'])):
+        fail('servers の要素の型が対応版と異なります')
+    env_vars = []
+    for item in server['env_vars']:
+        if is_str(item):
+            env_vars.append(item)
+        else:
+            env_vars.append(item['name'] + ('[' + item['source'] + ']' if item.get('source') else ''))
+    line = '  - %s: %s%s（cwd: %s、env: %s、env_vars: %s）' % (
+        server['name'], server['command'], ''.join(' ' + arg for arg in server['args']),
+        server['cwd'] if server['cwd'] is not None else '-',
+        ', '.join(server['env_keys']) or '-', ', '.join(env_vars) or '-')
+    lines.append(CONTROL.sub('', line))
+# 一時ファイルは umask に依らず 0600 で作る（表示行に command/args が含まれるため）。
+import os
+fd = os.open(summary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+    handle.write(doc['hash'] + '\n' + str(doc['count']) + '\n')
+    for line in lines:
+        handle.write(line + '\n')
+PYTHON
+  then
+    exit 1
+  fi
+  local -a summary_lines=()
+  mapfile -t summary_lines < "$CODEX_PREFLIGHT_TMP/summary"
+  CODEX_HASH="${summary_lines[0]:-}"
+  CODEX_COUNT="${summary_lines[1]:-}"
+  if [[ ! "$CODEX_HASH" =~ ^[0-9a-f]{64}$ || ! "$CODEX_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: Codex 起動時 MCP 審査: 検証結果を読み取れません。本起動は行いません" >&2
+    exit 1
+  fi
+  CODEX_DISPLAY=("${summary_lines[@]:2}")
+  cleanup_codex_preflight
+  trap - EXIT
+  return 0
+}
+
+# Codex の独立承認（TOFU＋変更検知）。既存 Claude の check_mcp_approval() と同じ人間ゲートだが、
+# 拒否・TTY 無し・EOF ではコンテナ内のゲートへ委ねず Codex を起動しない。count=0 も空定義の
+# hash として記録し、本起動へ :ro で渡す（人間への確認は省略できる）。
+# CODEX_MCP_APPROVAL_FILE は全分岐の末尾で無条件 export する（env 由来の値を信用しない）。
+check_codex_approval() {
+  local expected recorded=""
+  expected=$(codex_record_content "$CODEX_HASH")
+  if [[ -f "$CODEX_APPROVAL_RECORD" ]]; then
+    recorded=$(cat "$CODEX_APPROVAL_RECORD" 2>/dev/null || echo "")
+  fi
+  if [[ -n "$recorded" && "$recorded" == "$expected" ]]; then
+    echo "INFO: Codex MCP 審査: ローカル command 定義（$CODEX_COUNT 件）は承認済み（ハッシュ一致）。確認を省略します" >&2
+  elif [[ "$CODEX_COUNT" -eq 0 ]]; then
+    echo "INFO: Codex MCP 審査: 対象のローカル command 定義は 0 件です。空定義として記録し、本起動でも照合します" >&2
+    write_codex_record "$CODEX_HASH"
+  else
+    echo "WARNING: Codex の設定済み MCP に、前回の承認から変わっている（または未承認の）ローカル command 定義があります。そのコードは Codex のセッション中に実行され、export された全ての秘密を読めます:" >&2
+    if [[ -n "$recorded" ]]; then
+      echo "  （注: 前回のホスト側承認から定義が変わっています）" >&2
+    fi
+    # 各値の制御文字は protocol 検証時に除去済み。表示用の改行は残し、定義ごとに区切る。
+    printf '%s\n' "${CODEX_DISPLAY[@]}" >&2
+    printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
+    local codex_confirm=""
+    if ! read -r codex_confirm </dev/tty 2>/dev/null; then
+      echo "ERROR: 対話可能な TTY がないため Codex の MCP 実行定義を確認できません。Codex は起動しません" >&2
+      exit 1
+    fi
+    case "$codex_confirm" in
+      y | Y | yes | YES | Yes)
+        write_codex_record "$CODEX_HASH"
+        ;;
+      *)
+        echo "ERROR: Codex の MCP 実行定義の確認が拒否されました。Codex は起動しません" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  CODEX_MCP_APPROVAL_FILE="$CODEX_APPROVAL_RECORD"
+  export CODEX_MCP_APPROVAL_FILE
+}
+
+# -b のビルド、および Codex 経路の image 不在時の明示ビルド。`run --build` はビルド失敗時に既存の
+# 古いイメージで起動してしまう（fail-open）ため、build を独立させ set -e で失敗時に起動へ進ませない。
+run_explicit_build() {
+  # codex-version.txt が "latest" のプロジェクトだけ Codex レイヤーのキャッシュを
+  # 破棄する（Dockerfile.claude の ARG CODEX_CACHEBUST 参照箇所と対）。固定バージョン
+  # 指定・未使用（空ファイル）のプロジェクトは "pinned" のまま変えず、既存のビルド
+  # キャッシュ効率を壊さない。
+  local codex_cachebust=pinned
+  if [[ -f "$BUILD_CONTEXT_DIR/codex-version.txt" ]] \
+     && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
+    codex_cachebust="$(date +%s)"
+  fi
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
 }
 
 # ホスト ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、compose.yml が
@@ -1103,7 +1498,8 @@ check_mcp_approval() {
 # 境界アセット・ビルド時設定ファイルの解決規則（`claude-container#30`）。2種類ある:
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
-#                    validate-build-input.sh）
+#                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
+#                    codex-mcp-audit.py・固定 Compose override 群）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt）
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
@@ -1116,7 +1512,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -1152,11 +1548,13 @@ ASSET_HASH_TARGETS=(
   init-firewall.sh
   ipv6-firewall.py
   firewall-refresh.py
+  codex-mcp-audit.py
   compose.ipv6.yml
   compose.plugins-alias.yml
   compose.shared-home.yml
   compose.shared-host.yml
   compose.agents.yml
+  compose.codex-preflight.yml
   git-askpass.sh
   Dockerfile.claude
   validate-build-input.sh
@@ -1205,7 +1603,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py git-askpass.sh validate-build-input.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -1380,6 +1778,7 @@ check_one_project() {
   guard_gitconfig_file || true
   guard_secrets_dir || true
   guard_codex_dir || true
+  guard_codex_agent || true
   guard_shared_mount || true
   guard_shared_home_alias || true
   guard_agents_dir || true
@@ -1439,8 +1838,39 @@ check_one_project() {
 
   guard_asset_drift || true
 
-  compute_mcp_state
+  # --agent codex の静的診断（起動・書込みなし）。対応 label と承認記録の存在・形式だけを見る。
+  # 実効 MCP の動的照合は検査用コンテナが必要なので not run とし、承認済みとは報告しない。
+  if [[ "$AGENT" == codex ]]; then
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "[SKIP] podman が見つからないため Codex 対応イメージの確認をスキップ"
+    elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+      guard_codex_image_support || true
+    else
+      echo "[INFO] Codex 対応イメージ: 未ビルド（初回の --agent codex 起動時に明示ビルドしてから $CODEX_AUDIT_PROTOCOL_LABEL を確認します）"
+    fi
+    if [[ -f "$CODEX_APPROVAL_RECORD" ]]; then
+      if validate_codex_record_file "$CODEX_APPROVAL_RECORD"; then
+        echo "[OK]   Codex MCP 承認記録: あり（形式 OK、$CODEX_APPROVAL_RECORD）"
+      else
+        guard_warn "[WARN] Codex MCP 承認記録の形式が不正です（$CODEX_APPROVAL_RECORD）。起動時に改めて確認します"
+      fi
+    else
+      echo "[INFO] Codex MCP 承認記録: なし。初回起動時に確認プロンプトが出ます"
+    fi
+    echo "[INFO] Codex 実効 MCP の動的照合: not run（--check は検査用コンテナを起動しないため、記録が現在の定義と一致するかは判定しません）"
+  fi
+
+  # Claude の .mcp.json ゲートの診断は Claude 経路だけ。Codex 経路では Codex の審査（上）を使い、
+  # Claude 側の承認状態を Codex の承認として表示しない（通常起動の分岐と同じ）。
+  if [[ "$AGENT" == codex ]]; then
+    echo "[INFO] Claude の .mcp.json ゲート: Codex 経路では使用しない（Claude の診断は --agent claude で行う）"
+    MCP_STATE="skipped-codex"
+  else
+    compute_mcp_state
+  fi
   case "$MCP_STATE" in
+    skipped-codex)
+      ;;
     nojq)
       echo "[SKIP] jq が見つからないため MCP 監査ゲートの事前承認確認をスキップ"
       ;;
@@ -1649,6 +2079,7 @@ guard_legacy_vars
 guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir
+guard_codex_agent
 guard_shared_mount
 guard_shared_home_alias
 guard_agents_dir
@@ -1657,7 +2088,17 @@ guard_base_image
 guard_ipv6
 guard_asset_drift
 
-check_mcp_approval
+# 選択した CLI 側のゲートだけを通す。Claude の .mcp.json ゲートは従来どおり、Codex は
+# 検査用コンテナの結果に対する独立承認（下の check_codex_approval）を使い、互いに代用しない。
+# CODEX_MCP_APPROVAL_FILE も MCP_APPROVAL_FILE と同じく、全経路で launcher の値だけを export する。
+CODEX_MCP_APPROVAL_FILE=""
+export CODEX_MCP_APPROVAL_FILE
+if [[ "$AGENT" == claude ]]; then
+  check_mcp_approval
+else
+  MCP_APPROVAL_FILE=""
+  export MCP_APPROVAL_FILE
+fi
 
 # 全 guard と MCP 承認を通った後にだけホスト ~/.claude へ placeholder を作る
 # （起動を拒否する経路ではホストに何も書かない）。
@@ -1669,7 +2110,9 @@ mkdir -p "$BUILD_CONTEXT_DIR"
 
 # -b 指定時、またはイメージが未ビルドのときのみステージングを実行する
 # （podman image exists が使えない古い podman では `podman images -q` ベースの判定に読み替える）
-if [[ $BUILD -eq 1 ]] || ! podman image exists "$IMAGE_NAME" 2>/dev/null; then
+IMAGE_PRESENT=1
+podman image exists "$IMAGE_NAME" 2>/dev/null || IMAGE_PRESENT=0
+if [[ $BUILD -eq 1 || $IMAGE_PRESENT -eq 0 ]]; then
   stage_build_context
 fi
 
@@ -1694,21 +2137,20 @@ if [[ -z "${TZ:-}" ]]; then
   export TZ
 fi
 
-# -b のビルドは run と分離して実行する。`run --build` はビルド失敗時に
-# 既存の古いイメージでそのまま起動してしまう（fail-open）ため、
-# build を独立させ set -e で失敗時に起動へ進ませないようにする（fail-closed）。
-if [[ $BUILD -eq 1 ]]; then
-  # codex-version.txt が "latest" のプロジェクトだけ Codex レイヤーのキャッシュを
-  # 破棄する（Dockerfile.claude の ARG CODEX_CACHEBUST 参照箇所と対）。固定バージョン
-  # 指定・未使用（空ファイル）のプロジェクトは "pinned" のまま変えず、既存のビルド
-  # キャッシュ効率を壊さない。
-  CODEX_CACHEBUST=pinned
-  if [[ -f "$BUILD_CONTEXT_DIR/codex-version.txt" ]] \
-     && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
-    CODEX_CACHEBUST="$(date +%s)"
-  fi
-  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
+# -b のビルドは run と分離して実行する（run_explicit_build() 参照、fail-closed）。
+# Codex 経路は image 不在なら -b なしでも明示ビルドする（compose の暗黙ビルドでは、続く
+# label 確認の前に本起動へ進んでしまうため）。image があり -b なしならビルドしない。
+if [[ $BUILD -eq 1 || ( "$AGENT" == codex && $IMAGE_PRESENT -eq 0 ) ]]; then
+  run_explicit_build
+fi
+
+if [[ "$AGENT" == codex ]]; then
+  # 実際に起動する image（-b 後は再ビルド後のもの）を inspect し、対応 label でだけ先へ進む。
+  guard_codex_image_support
+  run_codex_preflight
+  check_codex_approval
+  CC_CODEX_START_MODE=run
+  export CC_CODEX_START_MODE
 fi
 
 # BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は

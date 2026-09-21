@@ -220,6 +220,12 @@ RUN chmod 755 /usr/local/bin/entrypoint.sh
 COPY ipv6-firewall.py /usr/local/bin/ipv6-firewall.py
 RUN chmod 755 /usr/local/bin/ipv6-firewall.py
 
+# Codex の起動時 MCP 審査 helper（c3c 第1段階）。entrypoint.sh が preflight の snapshot と本起動の
+# verify で同じ固定パスを python3 -I で呼ぶ。他の境界アセットと同じ root 所有 755 で、node からは
+# 実行時に書き換えられない。対応する protocol 版は下の LABEL io.c3c.codex-audit-protocol。
+COPY codex-mcp-audit.py /usr/local/bin/codex-mcp-audit.py
+RUN chmod 755 /usr/local/bin/codex-mcp-audit.py
+
 WORKDIR /workspace
 USER node
 
@@ -251,6 +257,11 @@ ARG ASSET_HASH=unknown
 LABEL claude-container.asset-hash="${ASSET_HASH}"
 # 旧 entrypoint が IPv6 モードを無視して起動するのを launcher で防ぐ。
 LABEL claude-container.ipv6-support="1"
+# Codex の起動時 MCP 審査 protocol（c3c 第1段階）。launcher の guard_codex_image_support() は
+# この label が対応版（1）と一致するイメージでだけ検査用コンテナと本起動を行う（旧イメージ・
+# label 欠落では preflight 自体を起動しない）。protocol の内容は codex-mcp-audit.py と entrypoint.sh。
+# 上と同じく CACHEBUST を消費する RUN より後に置く。
+LABEL io.c3c.codex-audit-protocol="1"
 
 # base-image.txt の現在の内容とは独立に、このビルドに実際に焼き込まれたベース
 # イメージの値を記録する。compute_asset_hash() はファイル内容しかハッシュしない

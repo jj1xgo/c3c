@@ -17,6 +17,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 - [MCP サーバーの追加](#mcp-サーバーの追加)
 - [Codex CLI をセカンドオピニオンとして使う](#codex-cli-をセカンドオピニオンとして使う)
 - [Codex CLI を対話で使う](#codex-cli-を対話で使う)
+- [c3c 入口（CLI の選択と記憶）](#c3c-入口cli-の選択と記憶)
 - [アーキテクチャ](#アーキテクチャ)
 - [イメージの変更](#イメージの変更)
 - [コンテナ間の永続化](#コンテナ間の永続化)
@@ -34,6 +35,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 - [Podman](https://podman.io/) および `podman-compose`
 - ホストの取得処理に `curl`、`jq`、GNU coreutils の `timeout`
 - 残存イメージの診断・清掃にホストの Python 3.9 以上とローカル Podman（`rmi --no-prune` / `ps --external` 対応版）
+- `c3c` の CLI 選択の記憶（前回の CLI を同じリポジトリで既定にする機能）に同じホストの Python 3。無くても `c3c claude` / `c3c codex` の明示指定と `claude-container` は動く（後述「c3c 入口」節）
   - 実機検証は Podman 5.8.6。非対応オプションや未知の JSON 形式は清掃を失敗として報告し、強制削除へ切り替えない。
 - ホストに `~/.claude.json`（Claude 認証情報）が存在すること
 
@@ -66,7 +68,26 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 ./claude-container --check --clean-missing /path/to/deleted-project
 ```
 
-スクリプトはシンボリックリンク経由でも動作する（`readlink` で自身のパスを解決する）。異なるターゲットプロジェクトを交互に起動・リビルドしても互いのイメージ・ビルドコンテキストを上書きしない（後述「アーキテクチャ」参照）。同時に別々のプロジェクトを起動することもできる。
+同じ実装を `c3c` という名前でも呼べる（`c3c` は `claude-container` への symlink）。`c3c` で呼んだときだけ、サブコマンドで CLI を選ぶ・無指定なら前回の CLI を使う・ディレクトリ省略で現在のディレクトリを使う、という新しい引数解釈になる（詳細は後述「[c3c 入口（CLI の選択と記憶）](#c3c-入口cli-の選択と記憶)」）。`claude-container` の名前で呼んだときの解釈は従来どおり変わらない。
+
+```bash
+# インストール例（PATH 上に symlink を置く。相対・絶対・多段のどれでもよい）
+ln -s /path/to/claude-container/c3c ~/.local/bin/c3c
+
+# CLI を明示して起動（ディレクトリ省略時は現在のディレクトリ）
+c3c claude /path/to/project
+c3c codex
+# 無指定: 同じリポジトリで前回正常終了した CLI を使う。初回は端末で 1（Claude）/ 2（Codex）を尋ねる
+c3c /path/to/project
+# Codex を read-only sandbox で（最終的に選ばれた CLI が Claude なら終了コード 2）
+c3c codex --read-only
+# 診断・清掃は claude-container と同じ（CLI を尋ねず、前回の選択も読まない・変えない）
+c3c --check
+c3c codex --check /path/to/project
+c3c --clean /path/to/project
+```
+
+スクリプトはシンボリックリンク経由でも動作する（`claude-container`・`c3c` とも、実ファイルまで symlink を辿ってから自身のディレクトリを解決する。絶対・相対・多段リンク、PATH 経由、`bash ./c3c` のいずれも同じ基点になり、解決できない場合は起動前にエラーで止まる）。異なるターゲットプロジェクトを交互に起動・リビルドしても互いのイメージ・ビルドコンテキストを上書きしない（後述「アーキテクチャ」参照）。同時に別々のプロジェクトを起動することもできる。
 
 通常起動には実在してアクセスできるディレクトリが必要で、不正なパスは `ERROR:` で案内する。`--clean <ディレクトリ>` は、削除済みでも起動台帳（`~/.local/state/claude-container/projects`）に同じ絶対パスが残っていれば実行できる。相対パス・`.`・`..`・末尾の `/` は正規化し、シンボリックリンクの綴りは起動時と同じものを使う（リンク先の実体パスとは別プロジェクト扱い）。先頭が `//` の綴りで起動したプロジェクトは対象外（bash は先頭の `//` を保持し `realpath` は `/` に畳むため、削除後の照合が一致せずエラーで停止する）。台帳にない削除済みパスや、改行を含む削除済みパスからは清掃対象を推測せず、エラーで停止する。現在のディレクトリを特定できない場合（cwd が削除済みで環境の `PWD` も無いか空）も、相対パスからは対象を推測せず、絶対パスの指定を求めてエラーで停止する。cwd が削除済みのまま `.`・`..` を指定した場合も同様で、bash は削除済み cwd からの `cd .` を成功させ `pwd -L` が `.` をそのまま返すため、通常起動・`--clean`・`--check` のいずれも `.` の幽霊名で清掃・台帳記録・診断を始めず、絶対パスの指定を求めてエラーで停止する。対象のイメージ・ネットワーク・ビルドコンテキスト・MCP 承認記録・台帳エントリを清掃するほか、従来どおり最後に dangling イメージ全体を整理する。
 
@@ -398,15 +419,42 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 
 実イメージと専用 ChatGPT 認証で、非 TTY protocol 分離、承認・変更拒否、対話作業と `/resume`、hook の個別承認後の実行まで確認した。共有ノートの Markdown は読めるが、既定の `workspace-write` sandbox では `/shared` への書込みは拒否された。CLI ごとの自動 memory の同等性や、期限切れ認証の refresh まで確認した意味ではない。最終レビューと残る受入条件は [第1段階の検証記録](docs/superpowers/plans/2026-09-20-c3c-phase1-results.md) を参照。
 
+## c3c 入口（CLI の選択と記憶）
+
+`c3c` は `claude-container` への symlink で、実装は同じ。呼出名が `c3c` のときだけ次の引数解釈になる（c3c 第2a段階。[増分移行の段階計画](docs/superpowers/specs/2026-09-20-c3c-incremental-design.md) 第2段階 2a）。設定ディレクトリ（`.claude-container.d/`）・`CLAUDE_CONTAINER_*` の env キー・イメージ名・state directory・承認記録・コンテナ内のパスはこの段階では変えない。
+
+| 入力 | 動作 |
+|---|---|
+| `claude-container <dir>` | 従来どおり Claude。選択記憶を読まない・書かない |
+| `claude-container --agent codex <dir>` | 現行の Codex 経路。選択記憶を読まない・書かない |
+| `c3c claude [<dir>]` / `c3c codex [<dir>]` | 明示した CLI。dir 省略時は現在のディレクトリ |
+| `c3c [<dir>]` | 記憶があれば使用（`INFO: 前回の選択: codex` のように表示）。なければ対話選択 |
+| `c3c --agent codex [<dir>]` | 既存オプションの別表記。サブコマンドとの重複は同値でも終了コード 2 |
+| `c3c --read-only [<dir>]` | 最終的に選ばれた CLI が Codex の場合だけ有効。Claude なら終了コード 2 |
+| `c3c --check [<dir>...]` | 選択待ちをしない・記憶を更新しない。無指定は既存の台帳全件診断、CLI 無指定は現行どおり Claude の診断 |
+| `c3c codex --check <dir>` / `c3c --agent codex --check <dir>` | 既存の Codex 診断。記憶による選択はしない |
+| `c3c --clean [<dir>]` / `c3c --check --clean-missing [<dir>...]` | 既存の清掃範囲。選択・記憶の更新なし、CLI の指定は終了コード 2。記憶は削除しない |
+
+- `c3c` では最初の位置引数の `claude` / `codex` だけをサブコマンドにする。同名のディレクトリは `./codex` や `-- codex` と書く。`--` 以降はすべて位置引数。通常起動と `--clean` のディレクトリは最大 1 件、未知のオプションは終了コード 2（旧入口 `claude-container` は未知オプションを従来どおり位置引数として扱い、この厳格化の対象外）。
+- **初回選択**: 記憶が無いとき `/dev/tty` から `1`（Claude）か `2`（Codex）を 1 回だけ読む（stdin は消費しない）。不正値・EOF は終了コード 2、Ctrl-C は 130、端末が無い（パイプ・cron 等）場合は待たずに終了コード 2 で `c3c claude <dir>` / `c3c codex <dir>` の明示指定を案内する。失敗後の再プロンプトや別 CLI への自動 fallback は無い。
+- **記憶の単位**: 同じ Git リポジトリ（`git rev-parse --git-common-dir` の実体が同じ。main checkout・linked worktree・symlink 別名・リポジトリ内のサブディレクトリは同じ単位、別 clone は別）。非 Git ディレクトリはパスの実体単位。リポジトリを移動すると新しい記憶になり再選択する（旧記憶の探索・移し替えはしない）。既存のイメージ・承認記録・起動台帳の識別（起動パス単位）はこの変更で変えない。
+- **記憶の保存先と形式**: `~/.local/state/claude-container/agent-preferences/<sha256>.json`（directory 0700・file 0600、内容は `{"schema":1,"agent":"codex"}`）。ホスト専用の `agent-preference.py` が Git 識別・検証・原子的保存を担当し、`claude-container` からだけ呼ばれる。`.claude-container.d/env` やシェル環境から保存先・値を変えることはできない。symlink・非通常ファイル・4096 byte 超・未知の値は不正として扱い、不正な記憶は WARNING の後に初回選択へ進む（明示指定なら不正な記憶を無視して起動する）。
+- **更新時点**: 本起動の `podman compose run` が終了コード 0 で戻った後だけ更新する（「最後に正常終了した CLI」の記憶。起動直後のクラッシュは記憶しない）。preflight・ビルド・承認拒否・中断・CLI の非ゼロ終了では旧値を保持し、launcher の終了コードは常に本起動の終了コードになる。保存に失敗しても WARNING だけで終了コードは変えない。同時セッションは最後に正常終了した書込が勝ち、JSON が部分書込になることはない。
+- **記憶が使えないとき**: Python 3 が無い、祖先に `.git` があるのに Git として解決できない（壊れた gitfile・権限不足・`--path-format=absolute` 非対応の古い Git 等）場合、明示指定なら WARNING を出して記憶せずに起動し、無指定なら明示指定を案内して終了コード 2 で止まる（別リポジトリの記憶へ誘導しない。継承した `GIT_DIR` 等の `GIT_*` は Git 子プロセスへ渡さず、system/global 設定も無効にして対象ディレクトリから解決する）。記憶した CLI がガード（`CODEX_DIR` 未設定・`codex-version.txt`・イメージの label）で使えない場合は既存の理由に加えて明示再選択のコマンドを案内して終了する。
+- **終了コード**: 引数の誤り・選択の不成立は 2、初回選択の Ctrl-C は 130、ガードによる中止は従来どおり 1、それ以外は本起動の終了コード。
+
+実 Podman・実認証での対話受入は 2026-09-21 に実施し、Claude の `/exit`・Ctrl-D ×2（短い間隔で 2 回）と Codex の `/quit`・Ctrl-C ×2 で compose と launcher の終了コードが対で 0 になり記憶が更新されること、`c3c` が前回の CLI を採用すること、非ゼロ終了・中断では記憶が変わらないことを確認した（[第2a段階の検証記録](docs/superpowers/plans/2026-09-21-c3c-phase2a-results.md)）。日常利用・認証 refresh・`/resume` はこの確認に含まない。
+
 ## アーキテクチャ
 
 主要ファイルが連携して動作する。
 
-- **`claude-container`**（bash）— エントリーポイント。絶対パスを解決し、ターゲットプロジェクトのディレクトリ名（basename）をサニタイズした文字列に絶対パスの sha256 先頭8文字を付与した `PROJECT_NAME` を算出する（例: `myproject-3f2a9c1b`）。これによりイメージ名（`localhost/<PROJECT_NAME>_claude-auth-workspace`）とビルドコンテキストのステージング先（`.build-context/<PROJECT_NAME>/`）をプロジェクトごとに分離し、`podman compose -p "$PROJECT_NAME"` でプロジェクト名を明示する。以前は全プロジェクト共通の固定イメージ名・固定ステージング先だったため、異なるプロジェクトを交互にビルドすると後勝ちで上書きされる問題があった。`.claude-container.d/env` の `KEY=VALUE` 行のうち許可リストのキーだけを読み込み、`TZ` を自動検出した上で `CONTEXT` / `CLAUDE_CONTAINER_DIR` を設定して `podman compose run` に委譲する（`--env-file /dev/null` を付け、対象プロジェクト直下の `.env` は補間に使わない）。`-b` 指定時は `podman compose build` を `run` とは別ステップで実行する — `run --build` はビルド失敗時に既存の古いイメージへフォールバックしてしまう（fail-open）ため、分離して失敗時は起動へ進ませない（fail-closed）。ビルド前に、プロジェクト側の `.claude-container.d/packages.txt`・`requirements.txt`・`allowed-domains.txt`（無ければ claude-container 同梱のデフォルト）・`node-version.txt`・`codex-version.txt`・`allowed-ports.txt`（無ければ空ファイルを都度生成。他の3ファイルと異なり同梱のデフォルトファイルは持たず、WARNING も出さない）と `entrypoint.sh`・`init-firewall.sh`・`ipv6-firewall.py`・`firewall-refresh.py`・`codex-mcp-audit.py`・`git-askpass.sh`・`validate-build-input.sh`・GitHub meta スナップショット（後述）をこのプロジェクト専用の `BUILD_CONTEXT_DIR` に集約する（`-b` 指定時、またはイメージ未ビルド時のみ実行）。`--clean <directory>` はそのプロジェクト分のイメージ・ネットワーク・ビルドコンテキストのみを、`--clean`（引数なし）は実在する claude-container イメージ全てを走査して全プロジェクト分を削除する（レガシーの単一共有イメージ `localhost/claude-container_claude-auth-workspace` も同じ命名パターンで検出されるため、旧バージョンからの移行時は `--clean` の実行だけで回収できる）。
+- **`claude-container`**（bash）— エントリーポイント（`c3c` は同じファイルへの symlink。呼出名 `${0##*/}` が `c3c` のときだけ新 parser・CLI 選択の記憶を使い、前述「c3c 入口」節の解釈になる）。絶対パスを解決し、ターゲットプロジェクトのディレクトリ名（basename）をサニタイズした文字列に絶対パスの sha256 先頭8文字を付与した `PROJECT_NAME` を算出する（例: `myproject-3f2a9c1b`）。これによりイメージ名（`localhost/<PROJECT_NAME>_claude-auth-workspace`）とビルドコンテキストのステージング先（`.build-context/<PROJECT_NAME>/`）をプロジェクトごとに分離し、`podman compose -p "$PROJECT_NAME"` でプロジェクト名を明示する。以前は全プロジェクト共通の固定イメージ名・固定ステージング先だったため、異なるプロジェクトを交互にビルドすると後勝ちで上書きされる問題があった。`.claude-container.d/env` の `KEY=VALUE` 行のうち許可リストのキーだけを読み込み、`TZ` を自動検出した上で `CONTEXT` / `CLAUDE_CONTAINER_DIR` を設定して `podman compose run` に委譲する（`--env-file /dev/null` を付け、対象プロジェクト直下の `.env` は補間に使わない）。`-b` 指定時は `podman compose build` を `run` とは別ステップで実行する — `run --build` はビルド失敗時に既存の古いイメージへフォールバックしてしまう（fail-open）ため、分離して失敗時は起動へ進ませない（fail-closed）。ビルド前に、プロジェクト側の `.claude-container.d/packages.txt`・`requirements.txt`・`allowed-domains.txt`（無ければ claude-container 同梱のデフォルト）・`node-version.txt`・`codex-version.txt`・`allowed-ports.txt`（無ければ空ファイルを都度生成。他の3ファイルと異なり同梱のデフォルトファイルは持たず、WARNING も出さない）と `entrypoint.sh`・`init-firewall.sh`・`ipv6-firewall.py`・`firewall-refresh.py`・`codex-mcp-audit.py`・`git-askpass.sh`・`validate-build-input.sh`・GitHub meta スナップショット（後述）をこのプロジェクト専用の `BUILD_CONTEXT_DIR` に集約する（`-b` 指定時、またはイメージ未ビルド時のみ実行）。`--clean <directory>` はそのプロジェクト分のイメージ・ネットワーク・ビルドコンテキストのみを、`--clean`（引数なし）は実在する claude-container イメージ全てを走査して全プロジェクト分を削除する（レガシーの単一共有イメージ `localhost/claude-container_claude-auth-workspace` も同じ命名パターンで検出されるため、旧バージョンからの移行時は `--clean` の実行だけで回収できる）。
 - **`compose.yml`** — サービス `claude-auth-workspace` を定義。ビルドコンテキストは `${BUILD_CONTEXT_DIR}`（上記でステージングされたディレクトリ）、Dockerfile は `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` を参照する。ホストの `~/.claude.json` と `~/.claude/`（認証・設定）、対象ワークスペース（`/workspace`）、`/etc/localtime`（タイムゾーン）をマウントする。`userns_mode: keep-id` でコンテナ内ファイルのオーナーをホストユーザーに合わせる。`cap_add` で `NET_ADMIN`/`NET_RAW` を付与し、`init-firewall.sh` がコンテナのネットワーク名前空間に iptables ルールを設定できるようにする（rootless podman + `userns_mode: keep-id` ではこれらが非root ユーザー `node` の ambient set にも入り全子プロセスへ継承されるため、`Dockerfile.claude` の `ENTRYPOINT`（次項）で剥奪する。後述「セキュリティモデル」節参照）。既定の `sysctls` は `net.ipv6.conf.{all,default}.disable_ipv6=1` で IPv6 を無効化する。IPv6 を明示的に有効にした場合は `compose.ipv6.yml` でネットワークと sysctl を切り替える（「IPv6 を任意で有効にする」参照）。ホストで install した plugin をコンテナ内で読み込めるよう、`compose.plugins-alias.yml` でホストの `~/.claude/plugins` をホストと同じ絶対パス（例 `/home/<host user>/.claude/plugins`）にも `:ro` で重ねる（`claude-container` の `guard_plugins_alias()` が条件を満たすときだけ追加する固定 override。後述「何ができて何ができないか」節の plugin の項と「セキュリティモデル」節の限界 (7) を参照。[`#98`](https://github.com/jj1xgo/claude-container/issues/98)）。`SHARED_MOUNT_HOME_ALIAS=1` のときは `compose.shared-home.yml`（`~` 配下の同じ相対位置）と `compose.shared-host.yml`（ホストと同じ絶対パス）で `SHARED_MOUNT` の実体を `:ro` で重ね、`AGENTS_DIR` のときは `compose.agents.yml` で `/home/node/.agents` に `:ro` で付ける（いずれも `claude-container` の `guard_shared_home_alias()`・`guard_agents_dir()` が値を検証したときだけ追加する固定 override。前述「ホストの指示ファイルとスキルをコンテナ内で解決する」節。[`#99`](https://github.com/jj1xgo/claude-container/issues/99)）。`CODEX_DIR` を設定した場合は Codex CLI の認証情報ディレクトリを rw でマウントする（他のオプトインマウントと異なり `:ro` を付けない — auth.json のトークンリフレッシュ書き戻しのため。前述「Codex CLI をセカンドオピニオンとして使う」節参照）。起動する CLI は `CC_AGENT`（既定 `claude`）・`CC_CODEX_START_MODE`（既定 `run`）・`CC_CODEX_READ_ONLY`（既定 `0`）の environment で渡し、`claude-container` が CLI 引数から導出した値だけを export する（`.claude-container.d/env` では設定できない）。Codex の承認記録は `${CODEX_MCP_APPROVAL_FILE:-/dev/null}` を `/etc/claude-container/codex-mcp-approved.json` に `:ro` で載せる。`--agent codex` の検査用コンテナは `compose.codex-preflight.yml`（`tty: false` / `stdin_open: false` だけの固定 override）を重ねて起動する（前述「Codex CLI を対話で使う」節）。
 - **`Dockerfile.claude`** — 既定 `debian:stable`（`.claude-container.d/base-image.txt` で上書き可、前述「利用側プロジェクトの設定」参照。`FROM` は `COPY` より先に評価されるためファイルを直接読めず、`ARG BASE_IMAGE` 経由で受け取る）をベースにビルド。`ca-certificates` を HTTP でインストール後、apt ソースの全 URI を HTTPS に書き換えてから残りのパッケージを取得する（ホスト名リテラルではなく結果ベースで書き換えるため、ミラーが異なっても無言で no-op にならない）。固定 apt レイヤーの直後に、ベースイメージ可変化に伴うビルド時アサーション（`setpriv`/`tini` の存在・`setpriv --ambient-caps`/`--inh-caps` の受理・apt sources に `http://` が残っていないこと）を fail-closed で実行し、境界機構の土台が壊れたまま静かにビルドが成功する事態を防ぐ。Claude Code は公式 native installer（`curl -fsSL https://claude.ai/install.sh | bash`）でインストール。非 root ユーザー `node`（UID 1000、明示的に作成）で動作し、`CMD ["/usr/local/bin/entrypoint.sh"]`（次項参照。root 所有の `/usr/local/bin` に境界アセットとして配置され、node からは書き換えられない）を実行する。`node:24`（約 1.1 GB）から切り替えた理由: native installer は glibc のみ依存で実行時に Node.js を必要としないため、軽量な Debian ベースで十分。slim ではなく full 版を使う理由: full 版には `ca-certificates` 等の基本パッケージが含まれており apt 周りの初期設定が最小限で済む。`ENTRYPOINT` は `setpriv --ambient-caps=-all --inh-caps=-all /usr/bin/tini --` で、`tini` の起動前に ambient/inheritable capability を全プロセスツリーから剥奪する（`setpriv` は exec するため居残らず、tini は PID1 のまま）。これにより `compose.yml` の `cap_add` が非root ユーザーの ambient set にも入る問題（前項参照）を打ち消し、`NET_ADMIN`/`NET_RAW` の実消費者を `sudo` 経由の `init-firewall.sh`（root、bounding set 由来）のみに限定する。tini を PID1 に据えるのは、claude 自身が PID1 だと、PID1 に再親付けされた子プロセス（ファイアウォール更新ループの sudo 補助プロセス等）が reap されずゾンビとして蓄積し、さらに claude が終了時にハングした場合（2026-07-02 に実障害: ホストカーネルの workqueue Oops により kill 不能な D 状態スレッドが残存）は PID1 自体が reap 不能なゾンビとなり、crun がシグナルを配送できず（`crun kill ... failed` / "No such process"）`podman stop` でもコンテナを回収できなくなる。tini を PID1 に置くことで reap と `podman stop` が機能し続ける（カーネル側のハング自体は tini でも防げない）。`tini` は `packages.txt` に入れず Dockerfile 固定のパッケージ行に含める — プロジェクト側 `.claude-container.d/packages.txt` で上書きされて消えるのを防ぐため。`node-version.txt` ブロックの直後には、同じ任意オプトインの流儀で Codex CLI（`@openai/codex`）を npm 経由で導入するレイヤーがある（`codex-version.txt` で指定、npm 不在時はビルドをエラーで止める。詳細は内部運用issue参照）。`packages.txt`/`requirements.txt` の取り込みも `validate-build-input.sh` による allowlist 検証を `apt-get`/`pip3` の実行より前に置く同格の fail-closed 検証で、setpriv/tini アサーションと同じく境界機構の土台が壊れたまま静かにビルドが成功する事態を防ぐ（前述「利用側プロジェクトの設定」参照）。
 - **`entrypoint.sh`** — コンテナの `CMD`（PID1 は上記 tini、このスクリプトと `exec` 先の claude はその子として動く）。起動時に `init-firewall.sh` でエグレス制限を適用し（失敗時は起動を中断）、非特権の `firewall-refresh.py` をバックグラウンドで開始（各更新後15秒待機、状態記録とログ上限は下記参照）したうえで `claude --dangerously-skip-permissions` を起動する。あわせて `/workspace/.mcp.json` を監査して stdio タイプの MCP サーバーを検知した場合は対話確認を要求する（fail-closed。詳細は「MCP サーバーの追加」節参照）。`CC_AGENT=codex` のときは、同じ firewall 適用の後、秘密 export より前に固定の `CODEX_HOME=/home/node/.codex` と CLI 実体 `/usr/local/bin/codex`（npm global bin）を確定し（`secrets/export/` の `CODEX_HOME`・`HOME`・`PATH` では差し替えられない）、秘密 export を完了してから `/workspace` を基点に `codex-mcp-audit.py`（root 所有の境界アセット）で `snapshot`（`CC_CODEX_START_MODE=preflight`: protocol 1 文書だけを起動時に確保した元 stdout へ出して終了）または `verify`（`run`: `:ro` の承認記録と一致した場合だけ `codex --sandbox workspace-write|read-only --ask-for-approval on-request -c 'projects={"/workspace"={trust_level="trusted"}}'` を `exec`）を行う。`.mcp.json` の Claude 用ゲートは Codex 経路では使わない。`CC_AGENT` の未知値・空文字、Codex 経路の `CC_CODEX_START_MODE`/`CC_CODEX_READ_ONLY` の不正値は firewall 適用前に停止し、Claude へ fallback しない。Claude 起動時、launcher は `CC_CODEX_START_MODE` を空文字で渡し、entrypoint はこの Codex 専用値を参照しない。
 - **`init-firewall.sh`** — コンテナ起動時に root（sudo）で実行されるエグレス制限スクリプト。Anthropic 公式 devcontainer の同名スクリプトの移植で、iptables により「許可したドメイン以外への外向き通信を遮断」する（deny-by-default）。Claude Code に必要なエンドポイント（api.anthropic.com・GitHub 等）とプロジェクト指定の `allowed-domains.txt` のみ許可する。許可ドメイン宛のルール（GitHub CIDR・タグ付きドメインルール）はさらに TCP ポートを `allowed-ports.txt` で指定した範囲（既定 `443,22`）へ限定する（`jj1xgo/claude-container#31`）。この制限は許可ドメイン宛のルールにのみ適用され、DNS（53番、指定リゾルバ限定）とホストネットワーク宛のルール（ゲートウェイ単一IPのみ許可、`/24` 全体ではない）は対象外（それぞれ別の理由でスコープが絞られているため）。GitHub IP レンジは起動時にライブ取得せず、ビルド時に焼き込まれたスナップショットを読み込むだけ（詳細は下記「GitHub meta スナップショット」参照）。設定後に example.com へ到達**できない**こと・api.github.com / api.anthropic.com へ到達**できる**こと・許可ドメイン上の非許可ポート（api.github.com:80）へ到達**できない**ことを自己検証する（GitHub 側は API クォータを消費しない TCP 接続確認）。失敗時はコンテナを起動しない（fail-closed）。ただし、許可ドメイン（`allowed-domains.txt` 指定分を含む）が恒久的に存在しない場合（NXDOMAIN）は警告に留め起動を継続する（一時的な解決失敗は従来どおり fail-closed）。DNS の A 応答が `0.0.0.0/8`・`127.0.0.0/8` の場合も、警告してその IP の追加・更新をスキップし、それだけでは起動を失敗させない。同じ応答内の他の IP や次のドメインは処理を続ける。既存の該当ルールは通常の約3分の猶予期間を経て削除する。DNS が返した private / link-local には、内部ホストの明示的な許可に使うため従来どおり許可ルールを追加する。loopback・ホストゲートウェイの別ルールによる許可も維持する。既定の IPv4 モードでは IPv6 を `compose.yml` の `sysctls` で無効化するのが主対策だが、それが効かない環境向けに本スクリプト自身も `/proc/sys/net/ipv6/conf/*/disable_ipv6` への書き込みをフォールバックとして試みる（失敗しても警告のみで起動は継続する）。いずれの結果にかかわらず、既定モードの `ip6tables` による IPv6 全遮断は最終防衛線として維持する。IPv6 有効時は専用の `ipv6-firewall.py` が AAAA と IPv6 CIDR の許可リストを管理し、この全遮断処理は実行しない。許可ドメインの IP は `entrypoint.sh` が起動する `firewall-refresh.py` により各更新後15秒待機で再解決され（`init-firewall.sh --refresh-domains`）、新しい IP を差分追加・約3分間見つからない IP を個別削除することで、CDN の短い TTL による IP ローテーションに追従する（チェーン全体のフラッシュは行わないため、更新中に新規接続が失敗する窓は作らない）。
+- **`agent-preference.py`**（ホスト専用）— `c3c` の CLI 選択記憶の helper。`key <dir>`（Git common directory またはパスの実体から sha256 のキー）、`read <state-dir> <key>`（strict JSON の検証だけ、書き込みなし）、`write <state-dir> <key> <agent>`（同じディレクトリの一時ファイルから `os.replace` で原子的に保存、0700/0600）。`project-images.py` と同じく `claude-container` が固定パスを `python3 -I` で呼び、ビルドコンテキストへは COPY しない。秘密を読まない。終了コードは前述「c3c 入口」節。
 - **`validate-build-input.sh`** — `packages.txt`/`requirements.txt` の正規化・照合を担う POSIX sh スクリプト。ビルド時（`Dockerfile.claude` の `RUN`）・起動前診断（`--check`）・テスト（`test-build.sh`）の3者が同じスクリプトを呼ぶことで、検証ロジックが複数箇所へ複製されドリフトする事態を防ぐ（`claude-container#34`）。責務は正規化と照合のみで、インストール・ネットワークアクセスは行わない。
 - **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト apt/pip パッケージ・許可ドメイン一覧（フォールバック既定値）。プロジェクト側で上書きする場合は `.claude-container.d/` を使う（「利用側プロジェクトの設定」参照）。`node-version.txt`・`allowed-ports.txt` にはこの種の同梱デフォルトは無く、プロジェクト側に無ければ `claude-container` がビルドコンテキスト内に空ファイルをその場で生成する（前者は Node.js 未導入、後者は `init-firewall.sh` 自身が既定値 `443,22` を適用する、という意味。いずれも警告は出さない）。`codex-version.txt` も同じ扱い（Codex CLI 未導入、警告なし）。
 
@@ -569,6 +617,8 @@ GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push �
 `compose.yml` の `:ro` 重ねマウント、または `claude-container` の `prepare_claude_config_ro()` を編集した場合は、ビルド済みのテストイメージ `localhost/claude-test`（`./test-build.sh` の全実行で作られる）がある状態で `./test-build.sh --config-ro-only` を実行する。実物の `compose.yml` とイメージで 12 項目への書き込みが拒否されること、実物のランチャーが placeholder 作成・型検査・`--check` の無書き込み・compose への `CLAUDE_CONFIG_DIR` 受け渡しを正しく行うことを、それぞれ別のテストで確認する（両者を通した対話起動は手動で行う）。
 
 `claude-container` のガード関数（`guard_*`・`prepare_claude_config_ro()`）を編集した場合は `./test-build.sh --launcher-only` を実行する。podman をダミーに置き換えた隔離環境（一時 `HOME`・空の環境変数）で実物のランチャーを起動し、各ガードの通常起動と `--check` の挙動、compose へ渡る環境変数を検証する。実 podman が不要なので、コンテナ内の開発セッションや CI からも回せる。通常の `./test-build.sh` にも含まれる。
+
+`c3c` 入口（呼出名の判定・新 parser・`resolve_launcher_path()`・`select_c3c_agent()`・`prompt_c3c_agent()`・`write_agent_preference()`・`run_main_compose()` 以降の終了コード保持）と `agent-preference.py` の変更も `--launcher-only` に含む。単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_agent_preference.py' -v` と `... -p 'test_c3c_launch.py' -v` を使う（後者は本物の `c3c` symlink を fake Podman・専用 PTY で起動し、初回選択・EOF・Ctrl-C・非 TTY、記憶の更新時点、`--check`/`--clean`/旧入口の無書込、symlink 解決を検証する。ハングはタイムアウトで失敗になる）。旧 `tests/test_codex_launch.py` は比較対象として変更しない。実 Podman と実認証での対話受入は fake Podman の成功で代替しない。
 
 `project-images.py` と `--clean-missing` の変更も `--launcher-only` に含む。単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_project_images.py` を使う。参照保護・親保持と JSON 形式は、利用中のストレージから隔離した Podman でも確認する。ラベルの配線を変えた場合は、明示 build と run の暗黙ビルドへの受け渡し、実ビルドでのラベル値も確認する。
 

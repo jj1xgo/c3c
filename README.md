@@ -4,7 +4,7 @@
 
 Podman + Compose を使い、ホストの Claude 認証情報を共有しながら任意のディレクトリを `/workspace` にマウントして Claude Code を起動する。
 
-apt/pip パッケージは `.c3c/`（後述。旧名 `.claude-container.d/` も移行期間中は読める）でプロジェクトごとに指定でき、claude-container リポジトリ自体にはプロジェクト固有のパッケージを持たせない。
+apt/pip パッケージは `.c3c/`（後述。旧名 `.claude-container.d/` も移行期間中は読める）でプロジェクトごとに指定でき、本リポジトリ自体にはプロジェクト固有のパッケージを持たせない。
 
 - [前提](#前提)
 - [使い方](#使い方)
@@ -44,7 +44,10 @@ apt/pip パッケージは `.c3c/`（後述。旧名 `.claude-container.d/` も�
 公開リポジトリは [jj1xgo/c3c](https://github.com/jj1xgo/c3c)（旧名 `jj1xgo/claude-container`）。origin が旧 `jj1xgo/claude-container` を指す既存 clone では、そのリポジトリ内で origin を更新する。
 
 ```bash
+# HTTPS の場合
 git remote set-url origin https://github.com/jj1xgo/c3c.git
+# SSH の場合は上のコマンドに代えて次を使う
+# git remote set-url origin git@github.com:jj1xgo/c3c.git
 git fetch origin
 ```
 

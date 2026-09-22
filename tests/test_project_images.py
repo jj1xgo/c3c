@@ -76,7 +76,7 @@ else:
 
 def reference_key(path):
     """既存 Bash のキー算出を独立した期待値として使う。"""
-    source = (REPO / 'claude-container').read_text()
+    source = (REPO / 'c3c').read_text()
     func = source.split('compute_project_name() {', 1)[1].split('\n}', 1)[0]
     result = subprocess.run(['bash', '-c', 'WORKING_DIR=$1\n'
                              'compute_project_name() {' + func + '\n}\n'
@@ -356,7 +356,7 @@ class ImageTests(unittest.TestCase):
                 shutil.copy2(source, runner / source.name)
         (self.root / 'state').write_text(json.dumps(self.state))
         (self.root / 'calls').write_text('')
-        result = subprocess.run(['bash', str(runner / 'claude-container'), *args],
+        result = subprocess.run(['bash', str(runner / 'c3c'), *args],
                                 cwd=cwd or self.root, env=self.env, capture_output=True, text=True)
         self.calls = [json.loads(line) for line in (self.root / 'calls').read_text().splitlines()]
         self.state = json.loads((self.root / 'state').read_text())
@@ -446,7 +446,7 @@ exit 2
             with self.subTest(extra=extra):
                 log = self.root / 'compose-metadata'
                 log.write_text('')
-                result = self.run_launcher(*extra, self.live)
+                result = self.run_launcher('claude', *extra, self.live)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual([json.loads(line) for line in log.read_text().splitlines()], [expected] * count)
 

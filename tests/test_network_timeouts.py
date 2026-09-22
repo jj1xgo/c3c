@@ -147,7 +147,7 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
         self.env.update(RUN_DIR=str(self.run_dir), SCRIPT_DIR=str(self.run_dir),
                         BUILD_CONTEXT_DIR=str(self.stage), SOURCE_ROOT=str(ROOT))
         setup = 'set -euo pipefail\n' + ASSET_RESOLVER
-        file, name, call = ('claude-container', 'stage_build_context', 'stage_build_context') if kind == 'launcher' else (
+        file, name, call = ('c3c', 'stage_build_context', 'stage_build_context') if kind == 'launcher' else (
             'test-build.sh', 'stage_common_context',
             'if stage_common_context "$BUILD_CONTEXT_DIR"; then exit 0; else exit $?; fi')
         start = time.monotonic()
@@ -231,7 +231,7 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
         self.env.update(RUN_DIR=str(self.run_dir), BUILD_CONTEXT_DIR=str(self.stage),
                         SOURCE_ROOT=str(ROOT), TEST_TIMEOUT_SCALE='30')
         script = "set -euo pipefail\ntrap 'exit 1' INT\n" + ASSET_RESOLVER
-        script += function('claude-container', 'stage_build_context') + '\nstage_build_context'
+        script += function('c3c', 'stage_build_context') + '\nstage_build_context'
         harness = self.root / 'interrupt.sh'
         harness.write_text(script)
         self.env['TEST_PTY_SCRIPT'] = str(harness)

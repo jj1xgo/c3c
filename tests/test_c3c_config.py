@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """設定ディレクトリの新旧選択（c3c 第2b-1段階 Task 3）の launcher 経路の回帰試験。
 
-tests/test_c3c_launch.py の隔離 HOME・fixture project・fake podman/compose をそのまま使い、本物の `c3c`（symlink）と
-旧入口 `claude-container` を起動する。実 Podman・実ユーザー設定・認証には触れない。
+tests/test_c3c_launch.py の隔離 HOME・fixture project・fake podman/compose をそのまま使い、本物の `c3c` を直接と
+旧名 `claude-container` の外部 symlink 経由で起動する（旧入口は削除済みで、どちらも同じ parser・選択記憶）。
+実 Podman・実ユーザー設定・認証には触れない。
 
 契約は計画の第5節「2b-1: 設定名だけの移行」の配置表:
 
@@ -16,7 +17,7 @@ tests/test_c3c_launch.py の隔離 HOME・fixture project・fake podman/compose 
 
 directory へ解決できる symlink は許容し、二重配置は `-e` だけでなく `-L` でも検出する。`--check` は対象ごとに診断を続け
 何も書かず、選択に失敗した対象では env・resolver・hash を呼ばない。clean 系は設定の状態に関わらず既存対象を清掃する。
-入口名（`c3c` / `claude-container`）で探索結果を変えない。
+呼出名（`c3c` / 旧名 symlink `claude-container`）で探索結果を変えない。
 """
 
 import hashlib
@@ -102,7 +103,7 @@ class ConfigCase(LaunchCase):
 
 
 class SelectionTableTests(ConfigCase):
-    """計画第5節の配置表。通常起動（c3c と旧入口）と --check の双方で同じ結果になる。"""
+    """計画第5節の配置表。通常起動（c3c 直接と旧名 symlink 経由）と --check の双方で同じ結果になる。"""
 
     def test_no_config_dir_uses_c3c_as_reference_without_creating_it(self):
         self.use_no_layout()
@@ -169,8 +170,8 @@ class SelectionTableTests(ConfigCase):
         before = self.snapshot(self.proj)
         for label, runner, args in (('c3c', self.run_c3c, ['claude', str(self.proj)]),
                                     ('c3c codex', self.run_c3c, ['codex', str(self.proj)]),
-                                    ('legacy', self.run_legacy, [str(self.proj)]),
-                                    ('legacy -b', self.run_legacy, ['-b', str(self.proj)])):
+                                    ('legacy-name', self.run_legacy, ['claude', str(self.proj)]),
+                                    ('legacy-name -b', self.run_legacy, ['claude', '-b', str(self.proj)])):
             with self.subTest(entry=label):
                 result = runner(*args)
                 self.assertEqual(result.returncode, 1, label + ': ' + result.stdout + result.stderr)
@@ -278,7 +279,7 @@ class SelectionTableTests(ConfigCase):
                 before = self.snapshot(self.proj)
                 self.state = {'image_exists': False, 'preflight': {}}
                 for entry, runner, args in (('c3c', self.run_c3c, ['claude', str(self.proj)]),
-                                            ('legacy', self.run_legacy, ['-b', str(self.proj)])):
+                                            ('legacy', self.run_legacy, ['claude', '-b', str(self.proj)])):
                     result = runner(*args)
                     self.assertEqual(result.returncode, 1, f'{label}/{entry}: ' + result.stdout + result.stderr)
                     self.assertIn('ERROR', result.stderr)
@@ -360,7 +361,7 @@ class CheckAndCleanContractTests(ConfigCase):
                 # 設定が不正でも通常起動は止まる…
                 result = self.run_c3c('claude', str(self.proj))
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                # …が、清掃は既存契約どおり進む（c3c と旧入口の両方）。
+                # …が、清掃は既存契約どおり進む（c3c 直接と旧名 symlink 経由の両方）。
                 for entry, runner in (('c3c', self.run_c3c), ('legacy', self.run_legacy)):
                     result = runner('--clean', str(self.proj))
                     self.assertEqual(result.returncode, 0, f'{label}/{entry}: ' + result.stdout + result.stderr)
@@ -510,7 +511,7 @@ class BuildInputDefaultTests(ConfigCase):
     def test_bundled_defaults_are_the_contract_values_and_match_the_codex_helper(self):
         self.assertEqual((REPO / 'node-version.txt').read_bytes(), (DEFAULT_NODE + '\n').encode())
         self.assertEqual((REPO / 'codex-version.txt').read_bytes(), (DEFAULT_CODEX + '\n').encode())
-        launcher = (REPO / 'claude-container').read_text()
+        launcher = (REPO / 'c3c').read_text()
         self.assertIn(f'CODEX_SUPPORTED_VERSION={DEFAULT_CODEX}\n', launcher)
         helper = (REPO / 'codex-mcp-audit.py').read_text()
         self.assertIn(f"SUPPORTED_VERSION = '{DEFAULT_CODEX}'", helper)

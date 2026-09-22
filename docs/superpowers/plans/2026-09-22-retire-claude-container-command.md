@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-状態: 段階Aの実装・実機受入と初回の二重レビューは完了。PR #141 はドラフトで、後段レビューの警告漏れ修正に対する確認・CI 更新・公開が未完了。段階Bは起動方法の聞き取りまで、段階Cは未着手。日付による廃止期限は設けず、下記の移行・検証条件を満たした次のメジャー版で削除する。
+状態（2026-09-22 更新）: 段階Aは PR #141 と `v11.1.0` で公開済み。段階Bは管理対象 3 プロジェクトの両 CLI 起動・終了・再開と PATH 入口の移行を完了（記録は非公開の運用記録）。段階Cは [段階C実装計画](2026-09-22-retire-legacy-entry-stage-c.md) に従って実装中。日付による廃止期限は設けず、上記条件を満たした次のメジャー版（`v12.0.0` 案、未承認）で削除する。以下の各段階の記述と測定行は作成時のもので、遡って書き換えない。
 
 目的: 起動本体を通常ファイルの `c3c` に移し、Claude Code と Codex を単一の入口から利用する。旧入口専用の引数解析・分岐を廃止する。
 

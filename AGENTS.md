@@ -13,7 +13,7 @@ claude-container は標準的な技術（Podman・iptables・fine-grained PAT �
 ## 開発の進め方
 
 - 現在の README.md・`docs/` と実装の整合を優先する。挙動を変えたら README.md の該当節も同じコミットで更新する。
-- シェルスクリプトは bash または POSIX sh で書き、shebang を明示する（`lint.sh` が shebang から dialect を自動判定するため）。セキュリティ境界に関わる制約（`source` しない設計、fail-closed、capability 剥奪、トークンの非 export、マウントの `:ro` 保護、入力検証、アセットのハッシュ照合、ファイアウォール生成のエラー処理 等）は `docs/development-invariants.md` に不変条件としてまとめてある。`claude-container`（`c3c` はその symlink）・`agent-preference.py`・`compose.yml`・`Dockerfile.claude`・`entrypoint.sh`・`init-firewall.sh`・`ipv6-firewall.py`・`firewall-refresh.py`・`codex-mcp-audit.py`・`git-askpass.sh`・`validate-build-input.sh` を変更する前に該当節を読むこと。
+- シェルスクリプトは bash または POSIX sh で書き、shebang を明示する（`lint.sh` が shebang から dialect を自動判定するため）。セキュリティ境界に関わる制約（`source` しない設計、fail-closed、capability 剥奪、トークンの非 export、マウントの `:ro` 保護、入力検証、アセットのハッシュ照合、ファイアウォール生成のエラー処理 等）は `docs/development-invariants.md` に不変条件としてまとめてある。`c3c`・`agent-preference.py`・`compose.yml`・`Dockerfile.claude`・`entrypoint.sh`・`init-firewall.sh`・`ipv6-firewall.py`・`firewall-refresh.py`・`codex-mcp-audit.py`・`git-askpass.sh`・`validate-build-input.sh` を変更する前に該当節を読むこと。
 - ファイルを編集したら、そのターン内で `./lint.sh` を実行し、原則として終了コード 0・警告ゼロを確認する。README.md が説明する環境制約で Compose 検証をスキップした場合は、理由とともにその検証を `not run` と報告し、lint 全項目の検証完了とは扱わない。残る必須検証は実行可能なホスト・CI 等で確認する。README.md「変更後の確認」節に、変更箇所ごとに追加で必要な検証（`test-build.sh` の各モード、実機リビルド等）が一覧されている。該当する検証を実行し、実行できなかった場合は理由とともに `not run` と明記する（実行済みの検証結果とテスト成功・環境制約による未実行は区別して報告する）。
 - 日本語で書く（README.md「表記」節の既定の例外に従う。技術用語・コマンド名・URL・機械可読トークン等は英語のままでよい）。
 

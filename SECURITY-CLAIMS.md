@@ -93,7 +93,7 @@ command、args、cwd、env、env_vars を正規化して hash 化し、初回・
   MCP 承認はこれらの承認を兼ねず、hooks の信頼確認は Codex の native 機能に委ねる。
   CLI の sandbox/approval 指定は固定するが、追加の書込み先などは native 設定の影響を受ける。
 
-**根拠・検証範囲**: `claude-container`、`entrypoint.sh`、`codex-mcp-audit.py`、`compose.yml`、
+**根拠・検証範囲**: `c3c`、`entrypoint.sh`、`codex-mcp-audit.py`、`compose.yml`、
 `compose.codex-preflight.yml` と各 Codex 回帰テスト。実装の契約と実機受入は区別し、現在の受入状況は
 [README の Codex 節](README.md#codex-cli-を対話で使う) を参照する。
 
@@ -117,6 +117,6 @@ CLI 間の認証・状態の完全隔離は未達成である。Codex 専用 hom
 ホストの通常作業でその home を使えば、変更された設定をホストで読み込むことになる。
 第0B-4 の認証成功は現在の launcher 全体の受入や、期限切れ認証の refresh 成功を保証しない。
 
-**根拠**: `claude-container` の `CODEX_DIR` guard、`compose.yml` のマウント、`entrypoint.sh` の固定 home。
+**根拠**: `c3c` の `CODEX_DIR` guard、`compose.yml` のマウント、`entrypoint.sh` の固定 home。
 
 **再確認契機**: 認証・設定の全面分離、home の指定方法、CLI の認証保存方式、共有マウントの変更時。

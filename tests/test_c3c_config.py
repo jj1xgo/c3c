@@ -103,7 +103,7 @@ class ConfigCase(LaunchCase):
 
 
 class SelectionTableTests(ConfigCase):
-    """計画第5節の配置表。通常起動（c3c と旧入口）と --check の双方で同じ結果になる。"""
+    """計画第5節の配置表。通常起動（c3c 直接と旧名 symlink 経由）と --check の双方で同じ結果になる。"""
 
     def test_no_config_dir_uses_c3c_as_reference_without_creating_it(self):
         self.use_no_layout()
@@ -361,7 +361,7 @@ class CheckAndCleanContractTests(ConfigCase):
                 # 設定が不正でも通常起動は止まる…
                 result = self.run_c3c('claude', str(self.proj))
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                # …が、清掃は既存契約どおり進む（c3c と旧入口の両方）。
+                # …が、清掃は既存契約どおり進む（c3c 直接と旧名 symlink 経由の両方）。
                 for entry, runner in (('c3c', self.run_c3c), ('legacy', self.run_legacy)):
                     result = runner('--clean', str(self.proj))
                     self.assertEqual(result.returncode, 0, f'{label}/{entry}: ' + result.stdout + result.stderr)

@@ -506,7 +506,68 @@ class ParserTests(LaunchCase):
         legacy = self.run_legacy('--help')
         self.assertEqual(legacy.returncode, 0)
         self.assertIn('claude-container', legacy.stdout.splitlines()[0])
-        self.assertNotIn('c3c claude', legacy.stdout)
+        self.assertIn('廃止予定', legacy.stdout)
+        self.assertIn('c3c claude', legacy.stdout)
+
+
+class LegacyRetirementTests(LaunchCase):
+    def test_legacy_run_warns_and_keeps_claude_and_saved_preference(self):
+        pref = self.set_pref('codex')
+        before = pref.read_bytes()
+        result = self.run_legacy(str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertIn('WARNING: 旧入口 claude-container', result.stderr)
+        self.assertEqual(pref.read_bytes(), before)
+        self.state['run_rc'] = 17
+        result = self.run_legacy(str(self.proj))
+        self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+        self.assertEqual(pref.read_bytes(), before)
+
+    def test_check_reports_retirement_without_mutating_projects_or_home(self):
+        self.conf.rename(self.proj / '.c3c')
+        for directory in (self.proj / '.c3c', self.home / '.c3c'):
+            directory.mkdir(exist_ok=True)
+            for name in ('packages.txt', 'requirements.txt', 'allowed-domains.txt'):
+                (directory / name).write_text('')
+        for name in ('hooks', 'skills', 'plugins', 'commands', 'agents', 'workflows', 'rules', 'output-styles', '.git'):
+            (self.home / '.claude' / name).mkdir()
+        for name in ('settings.json', 'CLAUDE.md', 'statusline.sh'):
+            (self.home / '.claude' / name).write_text('')
+        self.state['image_exists'] = False
+        self.set_pref('codex')
+        self.approve_codex()
+        (self.state_dir / 'projects').write_text(str(self.proj) + '\n')
+        before = self.snapshot(self.home), self.snapshot(self.proj)
+        for entry in (self.launcher, self.c3c):
+            with self.subTest(entry=entry.name):
+                result = self.run_entry(entry, '--check', str(self.proj), str(self.home))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('外部スクリプト・alias・PATH の旧入口利用は未確認', result.stdout)
+                if entry == self.launcher:
+                    self.assertEqual(result.stdout.count('WARNING: 旧入口 claude-container'), 2)
+                    self.assertIn('PASS: 0   WARN: 2   FAIL: 0', result.stdout)
+                else:
+                    self.assertNotIn('WARNING: 旧入口 claude-container', result.stdout + result.stderr)
+                    # HOME を対象にした2件目には既存の rw マウント警告が残る。
+                    self.assertIn('PASS: 1   WARN: 1   FAIL: 0', result.stdout)
+                self.assert_no_containers()
+                self.assertEqual((self.snapshot(self.home), self.snapshot(self.proj)), before)
+
+    def test_empty_ledger_still_reports_retirement_without_creating_state(self):
+        before = self.snapshot(self.home)
+        result = self.run_legacy('--check')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('WARNING: 旧入口 claude-container', result.stderr)
+        self.assertIn('検査対象: 0 プロジェクト', result.stdout)
+        self.assertEqual(self.snapshot(self.home), before)
+        self.assert_no_containers()
+
+    def test_retirement_warning_does_not_hide_failure_or_skip_next_project(self):
+        result = self.run_legacy('--check', str(self.root / 'missing'), str(self.proj))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('PASS: 0   WARN: 1   FAIL: 1', result.stdout)
+        self.assertEqual(result.stdout.count('WARNING: 旧入口 claude-container'), 2)
+        self.assert_no_containers()
 
 
 class SelectionTests(LaunchCase):

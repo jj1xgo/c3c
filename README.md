@@ -55,29 +55,29 @@ git fetch origin
 
 ```bash
 # 任意のディレクトリで Claude Code を起動
-./claude-container /path/to/project
+./c3c claude /path/to/project
 
 # イメージを強制リビルドして起動
-./claude-container -b /path/to/project
+./c3c claude -b /path/to/project
 
-# 同じ外側境界の中で Codex CLI を起動する（無指定と --agent claude は従来の Claude Code）
-./claude-container --agent codex /path/to/project
-# Codex を read-only sandbox で起動する（諮問・レビュー用。--agent codex 専用）
-./claude-container --agent codex --read-only /path/to/project
+# 同じ外側境界の中で Codex CLI を起動する（サブコマンドで CLI を明示）
+./c3c codex /path/to/project
+# Codex を read-only sandbox で起動する（諮問・レビュー用。Codex 専用）
+./c3c codex --read-only /path/to/project
 
 # そのプロジェクトのイメージ・ネットワーク・ビルドコンテキストを削除して終了
-./claude-container --clean /path/to/project
+./c3c --clean /path/to/project
 
 # 全プロジェクト分のイメージ・ネットワーク・ビルドコンテキストを削除して終了
-./claude-container --clean
+./c3c --clean
 
 # 起動せず設定を診断（引数なしなら起動台帳の全プロジェクトを一括診断）
-./claude-container --check
-./claude-container --check /path/to/project
+./c3c --check
+./c3c --check /path/to/project
 
 # 削除済みパスに対応する、確認済みのイメージだけを清掃する（台帳は保持）
-./claude-container --check --clean-missing
-./claude-container --check --clean-missing /path/to/deleted-project
+./c3c --check --clean-missing
+./c3c --check --clean-missing /path/to/deleted-project
 ```
 
 同じ実装を `c3c` という名前でも呼べる（`c3c` は `claude-container` への symlink）。`c3c` で呼んだときだけ、サブコマンドで CLI を選ぶ・無指定なら前回の CLI を使う・ディレクトリ省略で現在のディレクトリを使う、という新しい引数解釈になる（詳細は後述「[c3c 入口（CLI の選択と記憶）](#c3c-入口cli-の選択と記憶)」）。`claude-container` の名前で呼んだときの解釈は従来どおり変わらない。
@@ -105,16 +105,37 @@ c3c --clean /path/to/project
 
 `CDPATH` を使って相対パスから起動したプロジェクトを削除した場合は、起動台帳に記録された絶対パスを `--clean` に指定する。削除済みパスの復元では `CDPATH` を探索しない。
 
+### 旧コマンドからの移行
+
+旧入口 `claude-container` は、利用側の移行と実機検証を終えた次のメジャー版で廃止予定。日付は未定で、現行版では警告を表示しながら従来の動作を維持する。まず PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile・CI・cron 等の呼び出しを更新する。既存のリンク先・定義と互換版のタグを記録してから切り替える。
+
+| 旧呼び出し | 移行後 |
+| --- | --- |
+| `claude-container <dir>` | `c3c claude <dir>` |
+| `claude-container -b <dir>` | `c3c claude -b <dir>` |
+| `claude-container --agent codex <dir>` | `c3c codex <dir>` |
+| `claude-container --agent codex --read-only <dir>` | `c3c codex --read-only <dir>` |
+| `claude-container --check [<dir>...]` | `c3c --check [<dir>...]` |
+| `claude-container --agent codex --check <dir>` | `c3c codex --check <dir>` |
+| `claude-container --clean [<dir>]` | `c3c --clean [<dir>]` |
+| `claude-container --check --clean-missing` | `c3c --check --clean-missing` |
+
+従来の Claude 固定の呼び出しは **`c3c claude` と明示する**。`c3c` 無指定は前回の CLI を使うため、単なるコマンド名の置換では同じ動作にならない。`claude` / `codex` という相対ディレクトリは `./claude` / `./codex`、先頭が `-` のパスは `--` の後に指定する。通常起動のディレクトリは最大1件で、未知オプションは拒否する。
+
+旧入口の `--check` は廃止予告を表示し、各対象の WARN に集計する（FAIL は優先、WARN のみなら終了コード0）。対象0件でも予告を表示する。両入口の `--check` は外部のスクリプト・alias・PATH が未確認であることも表示する。これらを自動走査する機能ではなく、警告がないことは利用側すべての移行完了を意味しない。
+
+切替後は `c3c --check` と各 CLI の起動を確認する。問題があれば、入口を記録した互換版の checkout に戻す。新しい `c3c claude` / `c3c codex` は互換版でも利用できる。設定・認証・承認記録の削除や再作成は不要。旧設定 `.claude-container.d/` の互換読込や内部の保存先は今回のコマンド廃止とは別で、引き続き維持する。
+
 ## 起動前チェック（`--check`）
 
 複数のファミリープロジェクトが本リポジトリを直接参照して稼働している運用（内部運用issue参照）では、破壊的変更（v3.0.0 の旧設定形式削除、v4.0.0 のトークン配線変更等）の後、各プロジェクトの設定を更新しないと起動が fail-closed ガードで停止する。`--check` は起動せずにこれを事前診断し、リビルド・起動前に必要な移行作業を一括提示する。
 
 ```bash
 # 起動台帳（後述）の全プロジェクトを一括診断
-./claude-container --check
+./c3c --check
 
 # 個別のディレクトリを診断（複数指定可）
-./claude-container --check /path/to/project-a /path/to/project-b
+./c3c --check /path/to/project-a /path/to/project-b
 ```
 
 通常の `--check` は台帳が空でも残存イメージを調べ、台帳外のイメージ、欠落パスの候補、由来不明の候補を報告する。明示したパスがある場合は、そのパスに対応すると確認できるイメージだけを報告する。Python または Podman がない場合はこの追加診断をスキップする。利用可能でも一覧取得・JSON 解析・台帳検査などに失敗した場合は、プロジェクトの設定診断が成功していても終了コードは非 0 になる。通常診断ではイメージを削除しない。

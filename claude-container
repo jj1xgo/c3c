@@ -65,6 +65,14 @@ guard_warn() {
   return 0
 }
 
+# 旧入口の互換動作は残し、通常起動と診断で同じ移行案内を出す。
+guard_legacy_entry() {
+  if [[ $C3C_INTERFACE -eq 0 ]]; then
+    guard_warn "WARNING: 旧入口 claude-container は利用側移行後の次のメジャー版で廃止予定です。Claude 起動は c3c claude <dir>、Codex 起動は c3c codex <dir>、診断・清掃は c3c --check / --clean へ移行してください。"
+  fi
+  return 0
+}
+
 usage() {
   if [[ $C3C_INTERFACE -eq 1 ]]; then
     cat <<EOF
@@ -78,7 +86,7 @@ Claude Code または Codex CLI を起動する。最初の位置引数が claud
 CLI を指定する（同名のディレクトリは ./codex や -- codex と書く）。CLI を指定しない通常起動は、
 同じリポジトリ（Git common directory 単位）で前回正常終了した CLI を使い、記憶が無ければ
 端末で 1（Claude）か 2（Codex）を 1 回だけ尋ねる。--check / --clean は尋ねず記憶も変えない。
-旧入口 claude-container は従来どおり（無指定は Claude、記憶を読まない・書かない）。
+旧入口 claude-container は廃止予定（現在は無指定で Claude、記憶を読まない・書かない）。
 
 サブコマンド:
   claude                Claude Code を起動する
@@ -98,8 +106,8 @@ CLI を指定する（同名のディレクトリは ./codex や -- codex と書
                         （CLI 選択の記憶は削除しない）。CLI の指定とは併用できない
   --clean              （ディレクトリなし）全プロジェクト分を削除して終了する
   --check [<ディレクトリ>...]
-                        起動せずに診断する（claude-container --check と同じ。CLI 無指定は
-                        Claude の診断で、記憶による選択はしない）
+                        起動せずに診断する（CLI 無指定は Claude の診断で、記憶による選択はしない）。
+                        旧入口 claude-container --check は各対象に廃止予告の WARN を加える
   --check --clean-missing [<ディレクトリ>...]
                         欠落パスの確認済みイメージだけを削除する
   -h, --help            このヘルプを表示して終了する
@@ -112,6 +120,10 @@ EOF
 使い方: $(basename "$0") [オプション] <ディレクトリ>
 
 指定したディレクトリを作業ディレクトリにして、コンテナ化した Claude Code（または Codex CLI）を起動する。
+
+旧入口 claude-container は利用側移行後の次のメジャー版で廃止予定です。
+Claude 起動は c3c claude <dir>、Codex 起動は c3c codex <dir> に移行してください。
+診断・清掃は c3c --check / --clean を使います。無指定の c3c は前回の CLI を選びます。
 
 オプション:
   -b, --build          コンテナイメージを強制的に再ビルドしてから起動する
@@ -2177,6 +2189,7 @@ check_one_project() {
   # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（claude-container#39）
   readonly CHECK_MODE
   local dir="$1" from_ledger="$2"
+  guard_legacy_entry
 
   if ! WORKING_DIR=$(cd -- "$dir" >/dev/null 2>&1 && pwd -L); then
     echo "[FAIL] ディレクトリを開けません: $dir"
@@ -2376,6 +2389,9 @@ run_check_mode() (
     fi
   fi
 
+  # 入口以外の呼び出し経路は走査しない。
+  echo "[INFO] 入口移行: 外部スクリプト・alias・PATH の旧入口利用は未確認です。Claude 固定の呼び出しは c3c claude に移行してください（c3c 無指定は前回の CLI を選択）。"
+
   local image_rc=0 image_check_tmp d normalized
   local -a image_args=(--ledger "$CC_LEDGER_FILE")
   if command -v python3 >/dev/null 2>&1 && [[ -f "$RUN_DIR/project-images.py" ]]; then
@@ -2432,6 +2448,11 @@ for row in data["paths"]:
     fi
   fi
 
+  # 清掃診断で対象が再構成された後に判定し、最終対象0件でも旧入口の利用を案内する。
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    guard_legacy_entry
+  fi
+
   local pass=0 warn=0 fail=0
   local -a fail_names=()
   local i dir from_ledger rc
@@ -2472,6 +2493,10 @@ for row in data["paths"]:
 # ============================================================
 
 set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+
+if [[ $CHECK -eq 0 ]]; then
+  guard_legacy_entry
+fi
 
 # --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
 # （c3c の agent 確定はこの経路では選択せず既定の Claude。記憶は読まない・消さない）

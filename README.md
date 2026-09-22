@@ -334,7 +334,7 @@ fine-grained PAT はトークン単位で、選択した全リポジトリに同
 
 **常時 export をやめる場合**: 移動前に `.mcp.json` の `${GITHUB_MCP_PAT}` と hook 等の参照を確認する。MCP を使い続けるなら export 配置を維持する。MCP をやめるなら対応する MCP 設定を外し、hook は明示読みに変更してから、ファイルを直下へ移す。直下でも `GITHUB_MCP_PAT` という名前のままなら用途確認の WARNING が出るため、gh 専用には `GITHUB_ISSUES_PAT` 等の名前を使う。移動だけでは既存プロセスに継承済みの値は消えないので、対象コンテナを終了して起動し直す。配置変更自体にリビルドは不要。非 export 化は漏洩済みトークンの失効・再発行の代わりにはならない。
 
-**設定済みスコープの確認**: **現時点で fine-grained PAT の対象リポジトリ一覧を機械的に取得する手段は存在しない**。GitHub側にも対象リポジトリを一覧で返すAPIは無く（個人アカウント所有リポジトリ向けの同等APIは存在しない。組織所有リポジトリ限定の `GET /orgs/{org}/personal-access-tokens/{pat_id}/repositories` はGitHub App専用でPATでは使えない）、本プロジェクトもPAT設定変更への追従コストを避けるため対象リポジトリ自体を保持しない。したがって個別リポジトリ単位で疎通確認するしかない: 上記の明示読み手順で確認対象のトークンを渡し、`gh api /repos/<owner>/<repo>` を実行し、**private リポジトリに対してのみ** 200/404 がスコープ判定として機能する（200＝アクセス範囲内、404＝範囲外）。**public リポジトリはこの方法で判定できない**: GitHub は public リポジトリのメタデータ（`GET /repos/{owner}/{repo}` とその `permissions` フィールド）をトークンの `Repository access` 設定に関わらず常に200で返すため、公開リポジトリでは到達可否も `permissions` の値もスコープの証拠にならない（実機検証済み。詳細: `jj1xgo/claude-container#13`）。public リポジトリの実効スコープを確認したい場合は、実際に書き込み操作（`gh issue create` 等）を試すか、PAT設定画面（Web UI）の `Repository access` 一覧を直接確認すること。対象範囲の正本は常にPATの `Repository access` 設定側にある。
+**設定済みスコープの確認**: **現時点で fine-grained PAT の対象リポジトリ一覧を機械的に取得する手段は存在しない**。GitHub側にも対象リポジトリを一覧で返すAPIは無く（個人アカウント所有リポジトリ向けの同等APIは存在しない。組織所有リポジトリ限定の `GET /orgs/{org}/personal-access-tokens/{pat_id}/repositories` はGitHub App専用でPATでは使えない）、本プロジェクトもPAT設定変更への追従コストを避けるため対象リポジトリ自体を保持しない。したがって個別リポジトリ単位で疎通確認するしかない: 上記の明示読み手順で確認対象のトークンを渡し、`gh api /repos/<owner>/<repo>` を実行し、**private リポジトリに対してのみ** 200/404 がスコープ判定として機能する（200＝アクセス範囲内、404＝範囲外）。**public リポジトリはこの方法で判定できない**: GitHub は public リポジトリのメタデータ（`GET /repos/{owner}/{repo}` とその `permissions` フィールド）をトークンの `Repository access` 設定に関わらず常に200で返すため、公開リポジトリでは到達可否も `permissions` の値もスコープの証拠にならない（実機検証済み。詳細: `jj1xgo/claude-container#13`）。public リポジトリの実効スコープを確認したい場合は、PAT設定画面（Web UI）の `Repository access` 一覧を直接確認すること。実際の書き込みの可否は、承認済みの実作業を行った結果で確認し、権限確認だけのために書き込み操作を追加しない。対象範囲の正本は常にPATの `Repository access` 設定側にある。
 
 **トークンの更新**: 期限が近づいたら GitHub 側でトークンを再生成し、対応するファイルの中身を新しい文字列で上書きするだけでよい。ビルド時に焼き込まれる設定ではなくランタイムマウントなので、リビルド（`-b`）は不要 — 次回起動時に読み直される。
 
@@ -576,18 +576,25 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 ## 何ができて何ができないか（git / gh / PAT / hook 早見表）
 
-コンテナ内の `git` と `gh` CLI は認証系統が完全に独立している。`git push` が失敗するのは権限不足ではなく credential helper を意図的に配線していないためであり、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）。どちらも `SECRETS_DIR` 配下のトークンファイルを（直下の PAT は明示読みで、`export/` 配下の PAT は export された値で）使って初めて認証される。
+コンテナ内の `git` と `gh` CLI は認証の渡し方が異なる。`SECRETS_DIR/GITHUB_MAIN_PAT` を配置すると、github.com への HTTPS リモートに対する `git` の認証は `GIT_ASKPASS` 経由で配線される。一方、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）であり、同じ PAT を使う場合も「PAT を gh CLI に明示的に渡す」の手順が必要になる。PAT 配置後の `git push` 失敗も、まず接続先と起動中のコンテナへの配線を確認し、その上で PAT の有効期限・対象リポジトリ・権限やブランチ保護等の制約を切り分ける。
 
 **操作系統別の認証経路と可否**
 
 | 操作 | 認証経路 | コンテナ内での可否 |
 |---|---|---|
 | git ローカル操作（`commit` / `log` / `diff` / `branch` / `merge` 等） | 認証不要（`commit` のみ `GITCONFIG_FILE` で `user.name`/`user.email` が必要。前述） | 可 |
-| git リモート操作（`push` / `pull` / `fetch`） | git credential helper（既定で**未配線**。`SECRETS_DIR/GITHUB_MAIN_PAT` 設定時のみ `GIT_ASKPASS` 経由で配線される） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる |
+| git リモート操作（`push` / `pull` / `fetch`） | `SECRETS_DIR/GITHUB_MAIN_PAT` 設定時の `GIT_ASKPASS`（credential helper はリセットする） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる |
 | `gh` CLI（素） | 認証なし | **既定で未認証・失敗する**（v4〜の正常な既定状態） |
 | `gh` CLI（直下の PAT 明示読み） | 「PAT を gh CLI に明示的に渡す」の手順（メイン PAT または `GITHUB_ISSUES_PAT`） | 渡した PAT のパーミッション・対象リポジトリの範囲内で可 |
 | `gh` CLI（export 済みの MCP／issues 用 PAT） | `[ -n "${GITHUB_MCP_PAT:-}" ] && GH_TOKEN="$GITHUB_MCP_PAT" gh ...`（空・未設定なら実行しない） | MCP／issues 用 PAT のパーミッション範囲内で可（通常 Issues のみ） |
 | MCP（GitHub 公式サーバー） | `${GITHUB_MCP_PAT}`（`.mcp.json` の Authorization ヘッダ、export 経由） | 同上 |
+
+**GitHub 操作が失敗したときの切り分け**
+
+1. 失敗した操作・対象リポジトリ・ツール名・HTTP ステータスを確認する。`git`、PAT を明示した `gh`、プロジェクトの GitHub MCP、エージェントの GitHub 連携（App／Connector）は分けて扱う。連携側の認証が c3c に配置した PAT を使うとは仮定しない。連携の `403 Resource not accessible by integration` や素の `gh` の未認証だけで、配置した PAT の権限不足やコンテナ全体での操作不可とは判断しない。エラー文だけから連携の認証主体・トークン種別を確定しない。
+2. `git` の失敗なら、接続先が github.com の HTTPS リモートか確認する（SSH や他ホストは ASKPASS の対象外）。起動中のコンテナで `GIT_ASKPASS` と `GITHUB_MAIN_PAT_FILE` の設定、後者が指すファイルの存在・読み取り可否を、値を表示せず確認する。未配線なら「git push を使う場合」に戻り、`SECRETS_DIR`、PAT 配置後の再起動、ASKPASS 配線に対応したイメージかを確認する。古い実装のイメージには再ビルドが必要だが、PAT の更新だけなら不要。
+3. PAT の経路を確認する場合は、前述の明示読み手順で、目的に合った PAT を必要な `gh` コマンドにだけ渡す。明示読み手順の最後のコマンドを `GH_TOKEN="$github_pat" gh api --hostname github.com user --jq .login` に置き換えて認証、対象リポジトリの GET で読み取りを確認する。読み取り成功は書き込み権限の証明ではない。特に public リポジトリの GET やリポジトリ応答の `permissions` は、PAT の対象範囲・書き込み権限を証明しない。詳細は「設定済みスコープの確認」を参照。トークン値や環境変数全体を出力しない。
+4. GitHub の PAT 設定画面で対象リポジトリと操作に必要な権限を照合する。[PR 作成](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)には `Pull requests: write`、[PR マージ](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)には `Contents: write` が必要。実際の操作にはリポジトリのルールや利用側の承認条件も適用される。Issues 用 PAT の権限拡大やメイン PAT への自動切替は行わず、権限確認だけを目的とする PR 作成・マージもしない。
 
 **メイン PAT / MCP・issues 用 PAT 対応表**
 

@@ -660,7 +660,7 @@ Claude は `--permission-mode auto`（Claude Code の auto mode）で起動す�
 
 ## Podman 固有の注意
 
-- Codex で `bwrap: Can't mount proc on /proc: Operation not permitted` が出る場合は、[#140 の調査・診断手順](docs/codex-proc-investigation.md)を参照する。Codex 0.155.1 とシステム版 bubblewrap 0.12.0 の組合せでは失敗し、システム版を外して Codex 同梱版を使う比較では成功した。Codex 用に追加した `bubblewrap` がある場合は他ツールの依存を確認して追加を戻し、再ビルド後に通常起動で確認する。`unmask=/proc/*` の既定追加は行わない。
+- Codex で `bwrap: Can't mount proc on /proc: Operation not permitted` が出る場合は、[#140 の調査・診断手順](docs/codex-proc-investigation.md)を参照する。報告環境（Podman 5.8.6）では Codex 0.155.1 とシステム版 bubblewrap 0.12.0 の組合せで失敗し、システム版を外して Codex 同梱版を使う比較では成功した。Codex 用に追加した `bubblewrap` がある場合は他ツールの依存を確認して追加を戻し、再ビルド後に通常起動で確認する。`unmask=/proc/*` の既定追加は行わない。
 
 - `userns_mode: keep-id` はホストユーザーの UID/GID をコンテナ内にマップする Podman 固有の機能。Docker に移植する場合は削除する。
 - `--in-pod false` は Podman Compose がデフォルトでサービスを Pod にラップする挙動を抑制する。Docker Compose はこのフラグを無視する。

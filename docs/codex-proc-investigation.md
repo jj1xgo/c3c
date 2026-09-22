@@ -9,11 +9,11 @@
 別の原因候補として、Codex の失敗検出と bubblewrap のエラー表記の不一致を確認した。
 
 - [Codex 0.155.1 の `run_bwrap_with_proc_fallback()` と `preflight_proc_mount_support()`](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/linux-sandbox/src/linux_run_main.rs) は、本コマンドの前に `/proc` の新規マウントを試す。認識できたマウント失敗なら `mount_proc=false` に切り替える。
-- 同ファイルの `is_proc_mount_failure()` は、エラーに `Can't mount proc`、`/newroot/proc`、所定の権限エラー等が含まれることを要求する。報告の `/proc` はこの条件に一致しない。
+- 同ファイルの `is_proc_mount_failure()` は、エラーに `Can't mount proc` と `/newroot/proc` の両方に加えて、`Invalid argument`・`Operation not permitted`・`Permission denied` のいずれかを含むことを要求する。報告の `/proc` はこの条件に一致しない。
 - [bubblewrap 0.12.0 の `SETUP_MOUNT_PROC` 処理](https://github.com/containers/bubblewrap/blob/v0.12.0/bubblewrap.c) は、エラー表示に `op->dest` を使う。`--proc /proc` なら報告と同じ `/proc` になる。
 - [Codex 0.155.1 の launcher](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/linux-sandbox/src/launcher.rs) は、必要な機能を持つシステム版 bwrap を同梱版より先に選ぶ。
 
-ユーザーがホストで初版の診断スクリプトを実行した結果、実 Codex 0.155.1、システム bubblewrap 0.12.0 を確認した。Podman 5.8.6、カーネル 7.2.6-local。結果は次のとおり。
+報告者がホストで初版の診断スクリプトを実行した結果、実 Codex 0.155.1、システム bubblewrap 0.12.0 を確認した。Podman 5.8.6、カーネル 7.2.6-local。結果は次のとおり。
 
 | 検査 | 終了コード・結果 |
 | --- | --- |
@@ -27,7 +27,7 @@ CapInh/CapPrm/CapEff/CapAmb はゼロ、Seccomp=2。`/proc` 配下のマスク�
 
 ### 第2回の比較と診断コマンドの訂正
 
-同じイメージで system / bundled の比較をユーザーが実行した。helper alias の警告は解消。system は引き続き `/proc` マウントエラー（rc 1）、bundled は `Failed to execvp linux: No such file or directory`（rc 101）となった。
+同じイメージで system / bundled の比較を報告者が実行した。helper alias の警告は解消。system は引き続き `/proc` マウントエラー（rc 1）、bundled は `Failed to execvp linux: No such file or directory`（rc 101）となった。
 
 診断スクリプトの `codex sandbox linux -c ... -- ...` が誤りだった。0.155.1 の実機 `codex sandbox --help` と [CLI の `HostSandboxArgs` および `Subcommand::Sandbox` の実装](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/cli/src/main.rs) を確認したところ、OS 名のサブコマンドはなく、正しくは `codex sandbox -c ... -- ...`。`linux` は実行するコマンドとして扱われていた。このため、これまでの2回を read-only の `pwd` / workspace-write の `git status` の実行検証とは扱わず、指定したポリシーの適用確認も取り消す。
 
@@ -35,16 +35,16 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 
 ### 第3回の比較（正しい CLI 呼出し）
 
-ユーザーが同じイメージ（ID `5705bfe02f86ce01d31b5455d894f85b1e3f089286a6bcd248a704e039db06c5`）で訂正後のスクリプトを実行した。
+報告者が同じイメージ（ID `5705bfe02f86ce01d31b5455d894f85b1e3f089286a6bcd248a704e039db06c5`）で訂正後のスクリプトを実行した。
 
 | 実行 | システム版 0.12.0 | Codex 同梱版 |
 | --- | --- | --- |
 | `codex sandbox -c 'sandbox_mode="read-only"' -- /bin/pwd` | rc 1、`/proc` マウント失敗 | rc 0、診断リポジトリのパス |
 | `codex sandbox -c 'sandbox_mode="workspace-write"' -- git status --short --branch` | rc 1、`/proc` マウント失敗 | rc 0、空の Git リポジトリの状態 |
 
-両ケースの `/proc` マスク・読み取り専用マウント、Seccomp=2、CapInh/CapPrm/CapEff/CapAmb=0 は同じ。少なくともこの環境では、Podman の保護設定を緩めず同梱版で実行できることが確認できた。失敗判定の不一致というソース上の説明とも整合する。読み取り専用保護に対する書込み拒否や、製品の起動経路全体の受入はこの比較では検証していない。
+両ケースの `/proc` マスク・読み取り専用マウント、Seccomp=2、CapInh/CapPrm/CapEff/CapAmb=0 は同じ。少なくともこの環境では、Podman の保護設定を緩めず同梱版で実行できることが確認できた。失敗判定の不一致というソース上の説明とも整合する。同梱版が新規 procfs をマウントしたのか、自動切替で既存 `/proc` を継承したのかは未計測である。読み取り専用保護に対する書込み拒否や、製品の起動経路全体の受入はこの比較では検証していない。後述の利用側受入は Podman 層の保護も別途確認している。
 
-同梱版の Git で `/root/.config/git/ignore` の Permission denied 警告が出た。診断用 root 初期化から uid 1000 へ移る際に HOME が残ったため、スクリプトに `HOME=/home/node` と `XDG_CONFIG_HOME=/home/node/.config` を明示した。この時点では警告修正後の実 Podman 再実行は未実施で、上表は修正前のユーザー実行結果である。公開前の再実行結果は末尾に記す。
+同梱版の Git で `/root/.config/git/ignore` の Permission denied 警告が出た。診断用 root 初期化から uid 1000 へ移る際に HOME が残ったため、スクリプトに `HOME=/home/node` と `XDG_CONFIG_HOME=/home/node/.config` を明示した。この時点では警告修正後の実 Podman 再実行は未実施で、上表は修正前の報告者の実行結果である。公開前の再実行結果は末尾に記す。
 
 ## 利用側の受入結果
 
@@ -57,7 +57,7 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 - コンテナ側で確認した IPv4 HTTPS は、許可先2件に接続成功、禁止先2件に接続失敗。Codex 自身のネットワーク禁止をコンテナの拒否として数えていない。
 - コンテナ側は CapInh/CapPrm/CapEff/CapAmb=0・Seccomp=2、Codex サンドボックス内は CapBnd を含め capability=0・Seccomp=2・NoNewPrivs=1。
 
-再ビルドと通常起動はユーザー確認済み。この範囲で issue の受入条件を満たしてクローズした。IPv6 実通信と c3c 全体の回帰テストは、この利用側受入では **not run**。上記の結果をすべてのホスト・版に一般化しない。
+再ビルドと通常起動は報告者による確認済み。この範囲で issue の受入条件を満たしてクローズした。IPv6 実通信と c3c 全体の回帰テストは、この利用側受入では **not run**。上記の結果をすべてのホスト・版に一般化しない。
 
 ## 対応方針
 
@@ -90,11 +90,10 @@ bash tests/diagnose-codex-proc.sh <ローカルイメージ>
 - `./lint.sh`: シェル検査は成功。Podman 不在による Compose 検証スキップの警告あり。
 - `./c3c --check /workspace`: FAIL。この環境に設定先の `SECRETS_DIR` と `CODEX_DIR` が存在しないため。イメージ診断は Podman 不在でスキップ。#140 の再現結果ではない。
 - 初版の実 Podman 診断: ユーザーのホスト実行結果を上記へ記録済み。
-- 第2回の実 Podman 比較: ユーザー実行済み。ただし診断コマンドの誤りにより、意図したコマンド・ポリシーの検証は未成立。
+- 第2回の実 Podman 比較: 報告者の実行済み。ただし診断コマンドの誤りにより、意図したコマンド・ポリシーの検証は未成立。
 - 訂正後の `codex sandbox -c 'sandbox_mode="read-only"' -- /bin/pwd`: 開発環境で rc 0。
-- 訂正後の実 Podman 比較: ユーザー実行済み。システム版では2コマンドとも失敗、同梱版では2コマンドとも成功。
-- HOME 警告修正後の診断再実行、通常 c3c 起動、findsummits での解消確認: この初期調査環境では **not run**（Podman と対象ホストへの接続がない）。後続の利用側受入は前節の報告を参照。
-
+- 訂正後の実 Podman 比較: 報告者の実行済み。システム版では2コマンドとも失敗、同梱版では2コマンドとも成功。
+- HOME 警告修正後の診断再実行、通常 c3c 起動、findsummits での解消確認: この初期調査環境では **not run**（Podman と対象ホストへの接続がない）。後続の利用側受入は「利用側の受入結果」節、診断再実行は次の「公開前のホスト再検証」節を参照。
 
 ## 公開前のホスト再検証（2026-09-22）
 
@@ -102,6 +101,6 @@ HOME / XDG_CONFIG_HOME 修正を含む公開版スクリプトを、前述のイ
 
 - システム版: 新規 `/proc` の生 bwrap は rc 1、既存 `/proc` 継承は rc 0。Codex の read-only `pwd` と workspace-write `git status` は両方 rc 1 で、同じ `/proc` マウント失敗を再現した。
 - 同梱版: 両 Codex コマンドは rc 0。`/root/.config/git/ignore` の警告は出なかった。
-- 両ケースとも CapInh/CapPrm/CapEff/CapAmb=0、Seccomp=2、`/proc` のマスク・読み取り専用マウントを確認した。CapBnd は非ゼロ、NoNewPrivs=0 の診断初期化経路であり、製品 ENTRYPOINT の受入と混同しない。
+- 両ケースとも CapInh/CapPrm/CapEff/CapAmb=0、Seccomp=2、`/proc` のマスク・読み取り専用マウントを確認した。この診断では CapBnd は非ゼロ、NoNewPrivs=0 だった。製品も bounding set は保持するが、この診断は Compose の `cap_add` を使わず、製品 ENTRYPOINT も通らないため、権限設定全体の同一性は主張しない。
 - `./lint.sh`: rc 0、Compose 検証込みで成功。`git diff --check`: rc 0。
 - この公開作業での全体ビルド・通常起動の受入再実行: **not run**。製品コードの変更はなく、利用側の通常起動と境界の結果は上記の完了報告を参照する。

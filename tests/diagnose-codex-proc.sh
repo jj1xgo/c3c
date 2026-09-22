@@ -50,7 +50,7 @@ probe '実 Codex 版' codex --version
 if command -v bwrap >/dev/null 2>&1; then
 probe 'システム bubblewrap 版' /usr/bin/bwrap --version
 else
-  echo 'PATH にシステム bwrap なし。同梱版の選択を検証します。'
+  echo 'PATH にシステム bwrap なし。同梱版が選ばれる前提で比較します。'
 fi
 probe 'プロセスの権限' /bin/grep -E '^(Cap|Seccomp|NoNewPrivs)' /proc/self/status
 probe '/proc のマウント構成' /bin/grep -E ' /proc(/| )' /proc/self/mountinfo

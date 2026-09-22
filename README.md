@@ -576,18 +576,24 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 ## 何ができて何ができないか（git / gh / PAT / hook 早見表）
 
-コンテナ内の `git` と `gh` CLI は認証系統が完全に独立している。`git push` が失敗するのは権限不足ではなく credential helper を意図的に配線していないためであり、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）。どちらも `SECRETS_DIR` 配下のトークンファイルを（直下の PAT は明示読みで、`export/` 配下の PAT は export された値で）使って初めて認証される。
+コンテナ内の `git` と `gh` CLI は認証の渡し方が異なる。`SECRETS_DIR/GITHUB_MAIN_PAT` を配置すると、GitHub の HTTPS に対する `git` の認証は `GIT_ASKPASS` 経由で配線される。一方、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）であり、同じ PAT を使う場合も「PAT を gh CLI に明示的に渡す」の手順が必要になる。PAT 配置後の `git push` 失敗は、認証未配線と決めつけず、PAT の有効期限・対象リポジトリ・権限やブランチ保護等の制約を確認する。
 
 **操作系統別の認証経路と可否**
 
 | 操作 | 認証経路 | コンテナ内での可否 |
 |---|---|---|
 | git ローカル操作（`commit` / `log` / `diff` / `branch` / `merge` 等） | 認証不要（`commit` のみ `GITCONFIG_FILE` で `user.name`/`user.email` が必要。前述） | 可 |
-| git リモート操作（`push` / `pull` / `fetch`） | git credential helper（既定で**未配線**。`SECRETS_DIR/GITHUB_MAIN_PAT` 設定時のみ `GIT_ASKPASS` 経由で配線される） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる |
+| git リモート操作（`push` / `pull` / `fetch`） | `SECRETS_DIR/GITHUB_MAIN_PAT` 設定時の `GIT_ASKPASS`（credential helper はリセットする） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる |
 | `gh` CLI（素） | 認証なし | **既定で未認証・失敗する**（v4〜の正常な既定状態） |
 | `gh` CLI（直下の PAT 明示読み） | 「PAT を gh CLI に明示的に渡す」の手順（メイン PAT または `GITHUB_ISSUES_PAT`） | 渡した PAT のパーミッション・対象リポジトリの範囲内で可 |
 | `gh` CLI（export 済みの MCP／issues 用 PAT） | `[ -n "${GITHUB_MCP_PAT:-}" ] && GH_TOKEN="$GITHUB_MCP_PAT" gh ...`（空・未設定なら実行しない） | MCP／issues 用 PAT のパーミッション範囲内で可（通常 Issues のみ） |
 | MCP（GitHub 公式サーバー） | `${GITHUB_MCP_PAT}`（`.mcp.json` の Authorization ヘッダ、export 経由） | 同上 |
+
+**GitHub 操作が失敗したときの切り分け**
+
+1. 失敗した操作・対象リポジトリ・ツール名・HTTP ステータスを確認する。`git`、PAT を明示した `gh`、プロジェクトの GitHub MCP、エージェントの GitHub 連携（App／Connector）は分けて扱う。連携の `403 Resource not accessible by integration` や素の `gh` の未認証だけで、配置した PAT の権限不足やコンテナ全体での操作不可とは判断しない。エラー文だけから連携の認証主体・トークン種別を確定しない。
+2. PAT の経路を確認する場合は、前述の明示読み手順で、目的に合った PAT を必要な `gh` コマンドにだけ渡す。`gh api --hostname github.com user --jq .login` で認証、対象リポジトリの GET で読み取りを確認する。読み取り成功は書き込み権限の証明ではない。特に public リポジトリの GET やアカウントの `permissions` は、PAT の対象範囲・書き込み権限を証明しない。トークン値や環境変数全体を出力しない。
+3. GitHub の PAT 設定画面で対象リポジトリと操作に必要な権限を照合する。[PR 作成](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)には `Pull requests: write`、[PR マージ](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)には `Contents: write` が必要。実際の操作にはリポジトリのルールや利用側の承認条件も適用される。Issues 用 PAT の権限拡大やメイン PAT への自動切替は行わず、権限確認だけを目的とする PR 作成・マージもしない。
 
 **メイン PAT / MCP・issues 用 PAT 対応表**
 

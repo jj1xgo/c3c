@@ -537,8 +537,8 @@ run_config_ro_tests() {
   log ""
 }
 
-# --- ランチャー（claude-container）のダミー podman テスト ---
-# ランチャー本体のガード群を、模倣ではなく claude-container を実際に起動して検証する
+# --- ランチャー（c3c）のダミー podman テスト ---
+# ランチャー本体のガード群を、模倣ではなく c3c を実際に起動して検証する
 # （podman はダミー化し、compose には到達させない。実 podman 不要のためコンテナ内や
 # CI でも回せる）。HOME を一時ディレクトリに向けることで、既定の基点（$HOME/.claude）・
 # 起動台帳・MCP 承認記録がすべて一時領域に閉じ、実環境を汚さない。
@@ -586,13 +586,13 @@ launcher_sandbox_reset_records() {
 
 run_launcher() {
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/c3c" claude "$proj" 2>&1) && rc=0 || rc=$?
 }
 
 # run_launcher の --check 版（同じ環境の隔離、同じプロジェクト）。引数は省略可。
 # shellcheck disable=SC2120
 run_launcher_check() {
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/claude-container" --check "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "$@" "${SCRIPT_DIR}/c3c" --check "$proj" 2>&1) && rc=0 || rc=$?
 }
 
 # --check の保護対象を記録する。atime は読むだけでも変わるので比較しない。
@@ -624,7 +624,7 @@ launcher_sandbox_cleanup() {
 # 1 回呼ぶ（個別テスト関数を直接呼ばない。呼び出しがここに一本化されていないと、
 # 入口を増やしたときに一方からだけ新テストが漏れる）。
 run_launcher_tests() {
-  log "## ランチャー（claude-container）のガード検証（ダミー podman、実 podman 不要）"
+  log "## ランチャー（c3c）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
   run_plugins_alias_launcher_tests
   run_instruction_mount_launcher_tests
@@ -636,7 +636,7 @@ run_launcher_tests() {
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
   check "CLI 選択記憶 helper（Git 識別・strict JSON・無書込 read・原子的 write）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_agent_preference.py"
-  check "c3c 入口（symlink 解決・新 parser・初回選択/記憶・本 run 終了コード保持・check/clean/legacy の無書込）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_launch.py"
+  check "c3c 入口（symlink 解決・旧名 symlink の同一契約・parser・初回選択/記憶・本 run 終了コード保持・check/clean の無書込）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_launch.py"
   check "設定ディレクトリの選択（.c3c/旧名/なし/二重配置/型不正・symlink、check の継続と無書込、clean の独立、新旧配置の hash 同一）と Node/Codex の既定ビルド入力（同梱 default・project pin・空 opt-out・npm WARNING）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_config.py"
   check "entrypoint の agent 分岐（enum・preflight 分離・固定 home/CLI・verify→exec・Claude 順序）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_entrypoint.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
@@ -670,7 +670,7 @@ run_clean_ledger_launcher_tests() {
     printf '%s\n' "$root/other project" "$proj" "$root/last-project" > "$ledger"
     chmod 600 "$ledger"
     out=$(umask "$mask"; env -i HOME="$home" PATH="$bin:$PATH" \
-      "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+      "${SCRIPT_DIR}/c3c" --clean "$proj" 2>&1) && rc=0 || rc=$?
     printf '%s\n' "$root/other project" "$root/last-project" > "$root/expected-ledger"
     check "umask $mask: clean 後の台帳は600、対象行だけ除去（rc=$rc）" \
       bash -c '[ "$1" -eq 0 ] && [ "$(stat -c %a "$2")" = 600 ] && cmp -s "$2" "$3" && [ ! -e "$2.tmp" ]' _ "$rc" "$ledger" "$root/expected-ledger"
@@ -679,7 +679,7 @@ run_clean_ledger_launcher_tests() {
 
   printf '%s\n' "$proj" > "$ledger"
   out=$(umask 002; env -i HOME="$home" PATH="$bin:$PATH" \
-    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+    "${SCRIPT_DIR}/c3c" --clean "$proj" 2>&1) && rc=0 || rc=$?
   check "最後の対象を clean すると空の600台帳を残す（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [ -f "$2" ] && [ ! -s "$2" ] && [ "$(stat -c %a "$2")" = 600 ]' _ "$rc" "$ledger"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -691,7 +691,7 @@ run_clean_ledger_launcher_tests() {
   printf '#!/bin/bash\nexit 1\n' > "$bin/chmod"
   chmod +x "$bin/chmod"
   out=$(env -i HOME="$home" PATH="$bin:$PATH" \
-    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+    "${SCRIPT_DIR}/c3c" --clean "$proj" 2>&1) && rc=0 || rc=$?
   check "権限設定失敗時は ERROR で停止し元の600台帳を保持（rc=$rc）" \
     bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳の一時ファイル"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -718,7 +718,7 @@ SHIM
     chmod 600 "$ledger"
     cp "$ledger" "$root/expected-ledger"
     out=$(umask 000; env -i HOME="$home" PATH="$bin:$PATH" LEDGER_TEST_FAILURE="$failure" \
-      "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+      "${SCRIPT_DIR}/c3c" --clean "$proj" 2>&1) && rc=0 || rc=$?
     check "grep $failure 失敗時は元台帳を保持し一時台帳を除去（rc=$rc）" \
       bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"ERROR: 起動台帳"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out"
     printf '%s\n' "$out" >> "$LOG_FILE"
@@ -738,7 +738,7 @@ SHIM
   printf '%s\n' "$proj" "$root/other project" > "$ledger"
   printf '%s\n' "$root/other project" > "$root/expected-ledger"
   out=$(umask 000; env -i HOME="$home" PATH="$bin:$PATH" \
-    "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+    "${SCRIPT_DIR}/c3c" --clean "$proj" 2>&1) && rc=0 || rc=$?
   check "旧tmpを再利用せず、生成時・書き込み前・更新後の権限は600（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2")" = 600 ] && [ "$(cat "$6")" = 600 ] && [ "$(stat -c %a "$3")" = 600 ] && cmp -s "$3" "$4" && cmp -s "$3.tmp" "$5" && [ "$(stat -c %a "$3.tmp")" = 666 ] && ! compgen -G "$3.tmp.*" >/dev/null' _ "$rc" "$home/ledger-write-mode" "$ledger" "$root/expected-ledger" "$root/old-temp" "$home/ledger-create-mode"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -765,7 +765,7 @@ SHIM
     fi
     chmod +x "$bin/$shim_command"
     out=$(env -i HOME="$home" PATH="$bin:$PATH" \
-      "${SCRIPT_DIR}/claude-container" --clean "$proj" 2>&1) && rc=0 || rc=$?
+      "${SCRIPT_DIR}/c3c" --clean "$proj" 2>&1) && rc=0 || rc=$?
     check "$operation 失敗時は元台帳を保持し一時台帳を除去（rc=$rc）" \
       bash -c '[ "$1" -ne 0 ] && cmp -s "$2" "$3" && [ "$(stat -c %a "$2")" = 600 ] && ! compgen -G "$2.tmp*" >/dev/null && [[ "$4" == *"$5"* ]]' _ "$rc" "$ledger" "$root/expected-ledger" "$out" "$expected_error"
     printf '%s\n' "$out" >> "$LOG_FILE"
@@ -793,14 +793,14 @@ SHIM
   missing="$root/missing project"
   printf '通常ファイル\n' > "$root/file"
   for input in "$missing" "$root/file" ''; do
-    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" "$input" 2>&1) && rc=0 || rc=$?
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$input" 2>&1) && rc=0 || rc=$?
     check "通常起動は不正なディレクトリを ERROR で案内する: '$input'" \
       bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ] && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
-    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" --clean "$input" 2>&1) && rc=0 || rc=$?
     check "台帳にない不正なパスの clean は削除を始めない: '$input'" \
       bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *": cd:"* ]] && [ ! -e "$3/podman-args" ]' _ "$rc" "$out" "$home"
   done
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check "$missing" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" --check "$missing" 2>&1) && rc=0 || rc=$?
   check "単一引数の check は既存の FAIL 表示を維持して書き込まない" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"[FAIL]"* && "$2" != *": cd:"* ]] && ! grep -Eq "^(rmi|rm|prune|compose|network)$" "$3/podman-args" && [ ! -e "$4" ]' _ "$rc" "$out" "$home" "$ledger"
   rm -f "$home/podman-args"
@@ -818,7 +818,7 @@ SHIM
       ln -s "$root/nested/deep" "$root/parent-link"
       launcher_sandbox_reset_records
       out=$(cd "$root/parent-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
-        "${SCRIPT_DIR}/claude-container" "../parent/$kind project" 2>&1) && rc=0 || rc=$?
+        "${SCRIPT_DIR}/c3c" claude "../parent/$kind project" 2>&1) && rc=0 || rc=$?
     else
       run_launcher
     fi
@@ -837,20 +837,20 @@ SHIM
     input="$root/unrecorded"$'\n'"$root/other-project"
     [[ "$kind" != symlink ]] || input="$root/parent/$kind project"
     cp "$ledger" "$root/ledger-before-reject"
-    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?
+    out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" --clean "$input" 2>&1) && rc=0 || rc=$?
     check "$kind: 台帳と異なる綴りや改行入り引数は削除前に拒否する" \
       bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-reject"
     input="$proj"
     [[ "$kind" == relative ]] && input="./parent/../parent/$kind project/"
     if [[ "$kind" == logical_cwd ]]; then
       out=$(cd "$root/logical_cwd-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
-        "${SCRIPT_DIR}/claude-container" --clean "./$kind project/" 2>&1) && rc=0 || rc=$?
+        "${SCRIPT_DIR}/c3c" --clean "./$kind project/" 2>&1) && rc=0 || rc=$?
     elif [[ "$kind" == logical_parent ]]; then
       out=$(cd "$root/parent-link" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
-        "${SCRIPT_DIR}/claude-container" --clean "../parent/$kind project" 2>&1) && rc=0 || rc=$?
+        "${SCRIPT_DIR}/c3c" --clean "../parent/$kind project" 2>&1) && rc=0 || rc=$?
     else
       out=$(cd "$root" && env -i HOME="$home" PATH="$bin:$PATH" \
-        "${SCRIPT_DIR}/claude-container" --clean "$input" 2>&1) && rc=0 || rc=$?
+        "${SCRIPT_DIR}/c3c" --clean "$input" 2>&1) && rc=0 || rc=$?
     fi
     check "$kind: 削除後も起動時と同じイメージ・ネットワークを清掃する" \
       bash -c '[ "$1" = 0 ] && grep -qxF "localhost/${2}_claude-auth-workspace" "$3/podman-args" && grep -qxF "${2}_default" "$3/podman-args"' _ "$rc" "$launched_name" "$home"
@@ -864,7 +864,7 @@ SHIM
   cp "$ledger" "$root/ledger-before-nl"
   rm -f "$home/podman-args"
   out=$(cd "$root/nl"$'\n' && env -i HOME="$home" PATH="$bin:$PATH" PWD="$PWD" \
-    "${SCRIPT_DIR}/claude-container" --clean victim 2>&1) && rc=0 || rc=$?
+    "${SCRIPT_DIR}/c3c" --clean victim 2>&1) && rc=0 || rc=$?
   check "cwd 末尾の改行を落として台帳の別エントリを清掃しない" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nl"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -875,7 +875,7 @@ SHIM
   cp "$ledger" "$root/ledger-before-nopwd"
   rm -f "$home/podman-args"
   out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" \
-    "${SCRIPT_DIR}/claude-container" --clean victim 2>&1) && rc=0 || rc=$?
+    "${SCRIPT_DIR}/c3c" --clean victim 2>&1) && rc=0 || rc=$?
   check "cwd 削除済みで PWD が無い相対引数は台帳照合せず ERROR で止める" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* && "$2" != *"unbound variable"* ]] && [ ! -e "$3/podman-args" ] && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-nopwd"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -884,17 +884,17 @@ SHIM
   # 関わらず絶対パスの指定を求めて止める。
   printf '%s\n' "/victim" > "$ledger"
   cp "$ledger" "$root/ledger-before-dot"
-  for input in "--clean ." "--clean .." "." "--check ."; do
+  for input in "--clean ." "--clean .." "claude ." "--check ."; do
     for pwd_env in none stale; do
       read -ra args <<<"$input"
       mkdir -p "$root/gone"
       rm -f "$home/podman-args"
       if [[ "$pwd_env" == stale ]]; then
         out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$root/gone" \
-          "${SCRIPT_DIR}/claude-container" "${args[@]}" 2>&1) && rc=0 || rc=$?
+          "${SCRIPT_DIR}/c3c" "${args[@]}" 2>&1) && rc=0 || rc=$?
       else
         out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" \
-          "${SCRIPT_DIR}/claude-container" "${args[@]}" 2>&1) && rc=0 || rc=$?
+          "${SCRIPT_DIR}/c3c" "${args[@]}" 2>&1) && rc=0 || rc=$?
       fi
       check "cwd 削除済み（PWD $pwd_env）の '$input' は幽霊名で進めず止める" \
         bash -c '[ "$1" != 0 ] && [[ "$2" == *"現在のディレクトリを特定できない"* && "$2" != *"project-cdb4ee2a"* && "$2" != *"project-5ec1f7e7"* ]] && ! grep -Eq "^(rmi|rm|prune|compose|network)$" "$3/podman-args" 2>/dev/null && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-dot"
@@ -1089,7 +1089,7 @@ run_env_file_launcher_tests() {
   # D2: build 側・run 側・Codex preflight 側の全呼び出しに付いている（静的確認。run_launcher は -b を
   # 渡せないため本体を数える。compose 呼び出しの行数と --env-file /dev/null 付きの行数が一致すること）
   check "D2: podman compose の全呼び出しに --env-file /dev/null がある" \
-    bash -c "total=\$(grep -c '^ *podman compose ' '${SCRIPT_DIR}/claude-container'); with=\$(grep -c '^ *podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/claude-container'); [ \"\$total\" -ge 2 ] && [ \"\$total\" -eq \"\$with\" ]"
+    bash -c "total=\$(grep -c '^ *podman compose ' '${SCRIPT_DIR}/c3c'); with=\$(grep -c '^ *podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/c3c'); [ \"\$total\" -ge 2 ] && [ \"\$total\" -eq \"\$with\" ]"
   rm -f "$proj/.env"
 
   # 許可リスト（claude-container#44）。偽 grep は実行痕跡を残してから本物へ委譲する
@@ -1188,7 +1188,7 @@ DUMMY
   # E7: 許可リストと README「環境変数」節の表が一致する（静的確認）。両者がずれると、
   # 表に載っているのに無視されるキー（利用者の設定が黙って消える）か、無検証で通るキーが出る。
   check "E7: ENV_FILE_ALLOWED_KEYS と README「環境変数」節の表が一致する" \
-    bash -c "diff <(awk '/^ENV_FILE_ALLOWED_KEYS=\(/{f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,\"\");print}' '${SCRIPT_DIR}/claude-container' | sort) \
+    bash -c "diff <(awk '/^ENV_FILE_ALLOWED_KEYS=\(/{f=1;next} f&&/^\)/{exit} f{gsub(/[ \t]/,\"\");print}' '${SCRIPT_DIR}/c3c' | sort) \
                   <(awk '/^## 環境変数/{f=1;next} f&&/^## /{exit} f' '${SCRIPT_DIR}/README.md' | grep -oE '^\| \`[A-Z0-9_]+\`' | tr -d '| \`' | sort)"
 
   launcher_sandbox_cleanup
@@ -1312,7 +1312,7 @@ exit 2
 CURL
   chmod +x "$bin/curl"
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -1325,7 +1325,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{claude-container,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1411,7 +1411,7 @@ run_config_ro_launcher_tests() {
   printf '%s\n' "$root/deleted-project" >> "$home/.local/state/claude-container/projects"
   snapshot_ok=1
   snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" --check 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" --check 2>&1) && rc=0 || rc=$?
   snapshot_check_targets > "$root/check-after" 2>> "$LOG_FILE" || snapshot_ok=0
   check "C2: 台帳の実体不在を失敗として報告する" [ "$snapshot_ok" -eq 1 -a "$rc" -eq 1 ]
   check "C2: 失敗した --check も台帳と保護対象を変更しない" cmp "$root/check-before" "$root/check-after"
@@ -1434,7 +1434,7 @@ run_config_ro_launcher_tests() {
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # F: 作業ディレクトリが基点の .claude を含む（= 別の rw 経路で書ける）→ WARNING
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" "$home" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$home" 2>&1) && rc=0 || rc=$?
   check "F: 作業ディレクトリが ~/.claude を含むと WARNING（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING' && printf '%s' \"\$0\" | grep -q '別の rw'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -1455,7 +1455,7 @@ run_plugins_alias_launcher_tests() {
   # T: 判定関数の単体検査（関数抽出。ファイルシステムに触れない）。
   # 各行は <ケース名>|<base の綴り>|<HOME>|<期待 rc>|<期待 stdout>。
   local fn t_case t_base t_home t_rc t_out got_rc got_out
-  fn=$(sed -n '/^plugins_alias_target()/,/^}/p' "${SCRIPT_DIR}/claude-container")
+  fn=$(sed -n '/^plugins_alias_target()/,/^}/p' "${SCRIPT_DIR}/c3c")
   check "T: plugins_alias_target() を抽出できる" [ -n "$fn" ]
   while IFS='|' read -r t_case t_base t_home t_rc t_out; do
     got_out=$(bash -euo pipefail -c "$fn"$'\n''plugins_alias_target "$1" "$2"' _ "$t_base" "$t_home" 2>/dev/null) && got_rc=0 || got_rc=$?
@@ -1507,7 +1507,7 @@ exit 2
 CURL
   chmod +x "$bin/curl"
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "P2: -b の build と run の各呼び出しに別名が渡る（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [ "$(cat "$3/compose-calls")" -eq 2 ] \
       && grep -qx build "$3/compose-args.1" && grep -qx run "$3/compose-args.2" \
@@ -1521,7 +1521,7 @@ CURL
   mkdir -p "$proj/.claude-container.d"
   printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "P3: IPv6 override と別名 override が build・run に共存する（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2/compose-calls")" -eq 2 ] && for n in 1 2; do
       [ "$(grep -cxF "$3/compose.ipv6.yml" "$2/compose-args.$n")" -eq 1 ] || exit 1
@@ -1540,7 +1540,7 @@ CURL
   # P5: HOME がシンボリックリンク → launcher は綴り（リンク）を保つ（実体パスに解決しない）
   ln -s "$home" "$root/home-link"
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$root/home-link" PATH="$bin:$PATH" "${SCRIPT_DIR}/claude-container" "$proj" 2>&1) && rc=0 || rc=$?
+  out=$(env -i HOME="$root/home-link" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$proj" 2>&1) && rc=0 || rc=$?
   check "P5: symlink の HOME でも別名はリンクの綴り（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/home-link/.claude/plugins" "$2/compose-env"' _ "$rc" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -1620,7 +1620,7 @@ run_instruction_mount_launcher_tests() {
 
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONTAINER_IPV6=1 \
-    "${SCRIPT_DIR}/claude-container" -b "$proj" 2>&1) && rc=0 || rc=$?
+    "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "build と run に共有・スキル・plugin・IPv6 の override が共存する" \
     bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] || exit 1
       for n in 1 2; do for f in shared-home shared-host agents plugins-alias ipv6; do
@@ -1692,13 +1692,13 @@ log "========================================"
 log ""
 
 log "## 静的チェック"
-check "bash -n claude-container" bash -n "${SCRIPT_DIR}/claude-container"
+check "bash -n c3c" bash -n "${SCRIPT_DIR}/c3c"
 check "podman compose config" env \
   CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$SCRIPT_DIR/.build-context/test" CONTEXT="$SCRIPT_DIR" \
   podman compose -f "${SCRIPT_DIR}/compose.yml" config
 log ""
 
-# claude-container の stage_build_context() 相当。Dockerfile.claude が要求する
+# c3c の stage_build_context() 相当。Dockerfile.claude が要求する
 # entrypoint.sh・init-firewall.sh・git-askpass.sh・validate-build-input.sh・
 # allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・
 # github-meta.json を一時ディレクトリへ集約する（packages.txt/requirements.txt は
@@ -1804,7 +1804,7 @@ check "同梱 node-version.txt が固定版（空・latest でない）" \
 check "同梱 codex-version.txt が固定版（空・latest でない）" \
   bash -c '[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$DEFAULT_CODEX_VERSION"
 check "launcher の CODEX_SUPPORTED_VERSION が同梱 codex-version.txt と一致" \
-  grep -qxF "CODEX_SUPPORTED_VERSION=$DEFAULT_CODEX_VERSION" "${SCRIPT_DIR}/claude-container"
+  grep -qxF "CODEX_SUPPORTED_VERSION=$DEFAULT_CODEX_VERSION" "${SCRIPT_DIR}/c3c"
 check "codex-mcp-audit.py の SUPPORTED_VERSION が同梱 codex-version.txt と一致" \
   grep -qxF "SUPPORTED_VERSION = '$DEFAULT_CODEX_VERSION'" "${SCRIPT_DIR}/codex-mcp-audit.py"
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
@@ -1832,7 +1832,7 @@ OVERRIDE_CONTEXT_DIR="$(mktemp -d)"
 mkdir -p "$OVERRIDE_PROJECT_DIR/.claude-container.d"
 echo "htop" > "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt"
 
-# claude-container スクリプトが行うステージング（プロジェクト側 packages.txt を
+# c3c スクリプトが行うステージング（プロジェクト側 packages.txt を
 # ビルドコンテキストへ集約する処理）を模して検証する
 if stage_common_context "$OVERRIDE_CONTEXT_DIR"; then
   cp "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
@@ -2010,7 +2010,7 @@ rm -rf "$PIN_PROJECT_DIR" "$PIN_CONTEXT_DIR"
 log ""
 
 log "## .claude-container.d/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"
-# 模倣コピーではなく claude-container 本体の stage_build_context() を実際に実行させて
+# 模倣コピーではなく c3c 本体の stage_build_context() を実際に実行させて
 # 検証する。podman をダミー化し「イメージ未ビルド」を常に返させることでビルド分岐に
 # 入らせ、実際のステージング結果（.build-context/<project>/）に env が無いことを見る。
 # こうすることで、本体のステージングループが将来ワイルドカード化されるリグレッションを
@@ -2035,7 +2035,7 @@ echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.claude-
 BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 # 他のランチャーテストと同じく env -i で隔離する。隔離しないと record_project_in_ledger() が
 # 実ユーザーの $HOME の起動台帳に一時パスを 1 行残す（claude-container#59）。
-env -i HOME="$ENV_TESTROOT" PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1
+env -i HOME="$ENV_TESTROOT" PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$ENV_PROJECT_DIR" >/dev/null 2>&1
 AFTER_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 NEW_BUILD_CONTEXT="$(comm -13 <(echo "$BEFORE_BUILD_CONTEXTS" | sort) <(echo "$AFTER_BUILD_CONTEXTS" | sort) | head -1)"
 

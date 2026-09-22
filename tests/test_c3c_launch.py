@@ -2,8 +2,9 @@
 """`c3c` 入口（c3c 第2a段階 Task 1・Task 2）の launcher 経路の回帰試験。
 
 tests/test_codex_launch.py と同じ方式（隔離 HOME・fixture project・fake podman/compose・専用 PTY）で本物の
-`c3c`（`claude-container` への symlink）を起動する。実 Podman・実ユーザー設定・認証には触れない。
-旧 suite は変更せず比較対象として残す。fixture は symlink を保ったまま runner へコピーする。
+`c3c`（通常ファイル。旧 `claude-container` は削除済み）を起動する。実 Podman・実ユーザー設定・認証には触れない。
+旧名 `claude-container` は fixture 外部の bin に置いた symlink（→ runner/c3c）としてだけ検証し、配布ツリーには
+再作成しない。fixture は symlink を保ったまま runner へコピーする。
 
 契約は計画の第4節「2a の利用者向け契約」と「記憶の形式と更新」。
 """
@@ -145,8 +146,12 @@ class LaunchCase(unittest.TestCase):
         self.runner = self.root / 'runner'
         self.runner.mkdir()
         copy_tree_keeping_symlinks(REPO, self.runner)
-        self.launcher = self.runner / 'claude-container'
-        self.c3c = self.runner / 'c3c'
+        self.launcher = self.runner / 'c3c'
+        self.c3c = self.launcher
+        # 旧名の外部 symlink（配布ツリーの外）。旧 alias・PATH が残る利用側の呼び出しを表す。
+        self.legacy_link = self.root / 'legacy-bin' / 'claude-container'
+        self.legacy_link.parent.mkdir()
+        self.legacy_link.symlink_to(Path('..') / 'runner' / 'c3c')
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.state_path = self.root / 'state.json'
@@ -209,7 +214,7 @@ class LaunchCase(unittest.TestCase):
 
     def run_entry(self, entry, *args, answer=None, tty=False, env_extra=None, cwd=None, interrupt=False,
                   command_prefix=('bash',)):
-        """entry（c3c か claude-container の path）を隔離環境で起動する。
+        """entry（c3c、または c3c を指す symlink の path）を隔離環境で起動する。
 
         tty=True なら専用 PTY を制御端末にする。answer は /dev/tty へ流す 1 行、None は EOF（Ctrl-D）。
         interrupt=True は Ctrl-C（SIGINT）を送る。ハングはタイムアウト（60 秒）で失敗にする。
@@ -269,7 +274,9 @@ class LaunchCase(unittest.TestCase):
         return self.run_entry(self.c3c, *args, **kwargs)
 
     def run_legacy(self, *args, **kwargs):
-        return self.run_entry(self.launcher, *args, **kwargs)
+        # 旧名の外部 symlink から新入口を実行する（cwd は link の親の兄弟にしない）。
+        kwargs.setdefault('cwd', self.root)
+        return self.run_entry(self.legacy_link, *args, **kwargs)
 
     def compose_calls(self, verb=None):
         calls = [c for c in self.calls if c['args'][:1] == ['compose']]
@@ -305,10 +312,11 @@ class EntryResolutionTests(LaunchCase):
         self.assertIn(str(self.runner / 'compose.yml'), run['args'])
         self.assertEqual(run['env']['CC_AGENT'], 'claude')
 
-    def test_c3c_is_a_symlink_to_the_launcher(self):
-        self.assertTrue((REPO / 'c3c').is_symlink())
-        self.assertEqual(os.readlink(REPO / 'c3c'), 'claude-container')
-        self.assertTrue(self.c3c.is_symlink())
+    def test_c3c_is_the_only_executable_launcher(self):
+        self.assertTrue((REPO / 'c3c').is_file())
+        self.assertFalse((REPO / 'c3c').is_symlink())
+        self.assertTrue(os.access(REPO / 'c3c', os.X_OK))
+        self.assertFalse(os.path.lexists(REPO / 'claude-container'))
 
     def test_absolute_symlink_from_another_directory(self):
         link = self.root / 'abs-bin' / 'c3c'
@@ -326,7 +334,7 @@ class EntryResolutionTests(LaunchCase):
     def test_two_hop_symlink(self):
         first = self.root / 'hop1' / 'c3c'
         first.parent.mkdir()
-        first.symlink_to(Path('..') / 'runner' / 'claude-container')
+        first.symlink_to(Path('..') / 'runner' / 'c3c')
         second = self.root / 'hop2' / 'c3c'
         second.parent.mkdir()
         second.symlink_to(Path('..') / 'hop1' / 'c3c')
@@ -352,13 +360,22 @@ class EntryResolutionTests(LaunchCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls, [])
 
-    def test_legacy_name_via_relative_symlink_resolves_the_same_run_dir(self):
-        link = self.root / 'legacy-bin' / 'claude-container'
-        link.parent.mkdir()
-        link.symlink_to(Path('..') / 'runner' / 'claude-container')
-        result = self.run_entry(link, str(self.proj), cwd=self.root)
+    def test_legacy_name_via_relative_symlink_uses_the_c3c_contract(self):
+        # 旧名の外部 symlink でも新 parser・選択記憶・同じアセット基点を使う（旧 parser は復活させない）。
+        result = self.run_legacy('claude', str(self.proj))
         self.assert_run_dir(result)
         self.assertNotIn('前回の選択', result.stderr)
+        self.approve_codex()
+        pref = self.set_pref('codex')
+        result = self.run_legacy(str(self.proj))
+        self.assert_single_run(result, 'codex')
+        self.assertIn('前回の選択', result.stderr)
+        self.assertIn(f'RUN DIR: {self.runner}', result.stdout)
+        self.assertEqual(self.saved_agent(), 'codex')
+        result = self.run_legacy('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertEqual(self.saved_agent(), 'claude')
+        self.assertTrue(pref.is_file())
 
 
 class ParserTests(LaunchCase):
@@ -415,16 +432,22 @@ class ParserTests(LaunchCase):
                 self.assertEqual(self.calls, [])
                 self.assertEqual(self.snapshot(self.home), before)
 
-    def test_legacy_entry_keeps_lenient_parsing(self):
-        # 旧入口は未知オプションを位置引数として扱い、ディレクトリ不在の ERROR（exit 1）になる（exit 2 に変えない）。
-        result = self.run_legacy('--foo', str(self.proj))
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn('ERROR', result.stderr)
-        # 引数なしは従来どおり usage（exit 1）。c3c と違い `.` に置き換えない。
-        result = self.run_legacy(cwd=self.proj)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('使い方', result.stdout)
-        self.assertEqual(self.calls, [])
+    def test_legacy_name_uses_the_strict_c3c_parser(self):
+        # 旧名の外部 symlink でも旧 parser（未知オプションを位置引数として扱う）は復活しない。
+        other = self.root / 'other'
+        other.mkdir()
+        before = self.snapshot(self.home)
+        for label, args in (('unknown option', ['--foo', str(self.proj)]),
+                            ('two dirs', [str(self.proj), str(other)]),
+                            ('duplicate agent', ['claude', '--agent', 'claude', str(self.proj)]),
+                            ('no memory no tty', [str(self.proj)])):
+            with self.subTest(case=label):
+                result = self.run_legacy(*args)
+                self.assertEqual(result.returncode, 2, label + ': ' + result.stdout + result.stderr)
+                self.assertEqual(self.calls, [])
+                self.assertEqual(self.snapshot(self.home), before)
+        # 引数なしは c3c と同じく `.`（cwd）を対象にする。
+        self.assert_single_run(self.run_legacy('claude', cwd=self.proj), 'claude')
 
     def test_directory_defaults_to_cwd_only_for_normal_launch(self):
         self.assert_single_run(self.run_c3c('claude', cwd=self.proj), 'claude')
@@ -503,27 +526,19 @@ class ParserTests(LaunchCase):
         self.assertIn('c3c', result.stdout.splitlines()[0])
         self.assertIn('claude', result.stdout)
         self.assertIn('codex', result.stdout)
+        self.assertIn('削除済み', result.stdout)
+        self.assertNotIn('廃止予定', result.stdout)
         legacy = self.run_legacy('--help')
         self.assertEqual(legacy.returncode, 0)
-        self.assertIn('claude-container', legacy.stdout.splitlines()[0])
-        self.assertIn('廃止予定', legacy.stdout)
-        self.assertIn('c3c claude', legacy.stdout)
+        self.assertEqual(legacy.stdout, result.stdout)
 
 
-class LegacyRetirementTests(LaunchCase):
-    def test_legacy_run_warns_and_keeps_claude_and_saved_preference(self):
-        pref = self.set_pref('codex')
-        before = pref.read_bytes()
-        result = self.run_legacy(str(self.proj))
-        self.assert_single_run(result, 'claude')
-        self.assertIn('WARNING: 旧入口 claude-container', result.stderr)
-        self.assertEqual(pref.read_bytes(), before)
-        self.state['run_rc'] = 17
-        result = self.run_legacy(str(self.proj))
-        self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
-        self.assertEqual(pref.read_bytes(), before)
+class CheckMigrationInfoTests(LaunchCase):
+    """--check の入口移行案内と、対象0件・複数件・FAIL 併存・欠落清掃の契約（旧入口の WARN は削除済み）。"""
 
-    def test_check_reports_retirement_without_mutating_projects_or_home(self):
+    INFO = '入口移行: 旧入口は削除済み。外部スクリプト・alias・PATH の呼び出しは c3c claude / c3c codex へ移行してください'
+
+    def test_check_reports_migration_info_without_mutating_projects_or_home(self):
         self.conf.rename(self.proj / '.c3c')
         for directory in (self.proj / '.c3c', self.home / '.c3c'):
             directory.mkdir(exist_ok=True)
@@ -538,51 +553,49 @@ class LegacyRetirementTests(LaunchCase):
         self.approve_codex()
         (self.state_dir / 'projects').write_text(str(self.proj) + '\n')
         before = self.snapshot(self.home), self.snapshot(self.proj)
-        for entry in (self.launcher, self.c3c):
+        for entry in (self.legacy_link, self.c3c):
             with self.subTest(entry=entry.name):
                 result = self.run_entry(entry, '--check', str(self.proj), str(self.home))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn('外部スクリプト・alias・PATH の旧入口利用は未確認', result.stdout)
-                if entry == self.launcher:
-                    self.assertEqual(result.stdout.count('WARNING: 旧入口 claude-container'), 2)
-                    self.assertIn('PASS: 0   WARN: 2   FAIL: 0', result.stdout)
-                else:
-                    self.assertNotIn('WARNING: 旧入口 claude-container', result.stdout + result.stderr)
-                    # HOME を対象にした2件目には既存の rw マウント警告が残る。
-                    self.assertIn('PASS: 1   WARN: 1   FAIL: 0', result.stdout)
+                self.assertIn(self.INFO, result.stdout)
+                self.assertNotIn('WARNING: 旧入口', result.stdout + result.stderr)
+                # HOME を対象にした2件目には既存の rw マウント警告が残る。
+                self.assertIn('PASS: 1   WARN: 1   FAIL: 0', result.stdout)
                 self.assert_no_containers()
                 self.assertEqual((self.snapshot(self.home), self.snapshot(self.proj)), before)
 
-    def test_empty_ledger_still_reports_retirement_without_creating_state(self):
+    def test_empty_ledger_check_reports_zero_targets_without_creating_state(self):
         before = self.snapshot(self.home)
         result = self.run_legacy('--check')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('WARNING: 旧入口 claude-container', result.stderr)
+        self.assertIn(self.INFO, result.stdout)
+        self.assertNotIn('WARNING: 旧入口', result.stdout + result.stderr)
         self.assertIn('検査対象: 0 プロジェクト', result.stdout)
         self.assertEqual(self.snapshot(self.home), before)
         self.assert_no_containers()
 
-    def test_retirement_warning_does_not_hide_failure_or_skip_next_project(self):
-        # WARN の帰属は test_check_reports_retirement_without_mutating_projects_or_home の対比で検証する。
+    def test_check_failure_is_not_hidden_and_next_project_is_still_checked(self):
         result = self.run_legacy('--check', str(self.root / 'missing'), str(self.proj))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        # 2件目（旧名設定 directory の WARN）は 1件目の FAIL に隠れず診断される。
         self.assertIn('PASS: 0   WARN: 1   FAIL: 1', result.stdout)
-        self.assertEqual(result.stdout.count('WARNING: 旧入口 claude-container'), 2)
+        self.assertIn('→ 結果: WARN', result.stdout.split(f'=== {self.proj} ===', 1)[1])
+        self.assertNotIn('WARNING: 旧入口', result.stdout + result.stderr)
         self.assert_no_containers()
 
-    def test_clean_missing_reports_retirement_after_all_targets_are_filtered(self):
+    def test_clean_missing_with_all_targets_filtered_reports_zero_without_warning(self):
         missing = self.root / 'missing'
         self.set_pref('codex')
         (self.state_dir / 'projects').write_text(str(missing) + '\n')
         before = self.snapshot(self.home), self.snapshot(self.proj)
-        for entry in (self.launcher, self.c3c):
+        for entry in (self.legacy_link, self.c3c):
             for args in ((), (str(missing),)):
                 with self.subTest(entry=entry.name, explicit=bool(args)):
                     result = self.run_entry(entry, '--check', '--clean-missing', *args)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn('検査対象: 0 プロジェクト', result.stdout)
-                    expected = 1 if entry == self.launcher else 0
-                    self.assertEqual((result.stdout + result.stderr).count('WARNING: 旧入口 claude-container'), expected)
+                    self.assertIn(self.INFO, result.stdout)
+                    self.assertNotIn('WARNING: 旧入口', result.stdout + result.stderr)
                     self.assert_no_containers()
                     self.assertEqual((self.snapshot(self.home), self.snapshot(self.proj)), before)
 
@@ -797,7 +810,7 @@ class MemoryUpdateTests(LaunchCase):
         self.assertIn('WARNING', result.stderr)
         self.assertEqual(self.pref_dir.read_text(), 'not a directory')
 
-    def test_check_clean_and_legacy_never_touch_memory(self):
+    def test_check_and_clean_never_touch_memory(self):
         self.approve_codex()
         self.set_pref('codex')
         record = self.pref_file()
@@ -807,9 +820,7 @@ class MemoryUpdateTests(LaunchCase):
                 ('check codex', self.run_c3c, ['codex', '--check', str(self.proj)], {}),
                 ('check all', self.run_c3c, ['--check'], {}),
                 ('check clean-missing', self.run_c3c, ['--check', '--clean-missing', str(self.proj)], {}),
-                ('legacy run', self.run_legacy, [str(self.proj)], {}),
-                ('legacy codex', self.run_legacy, ['--agent', 'codex', str(self.proj)], {}),
-                ('legacy check', self.run_legacy, ['--check', str(self.proj)], {}),
+                ('legacy-name check', self.run_legacy, ['--check', str(self.proj)], {}),
                 ('clean project', self.run_c3c, ['--clean', str(self.proj)], {}),
                 ('clean all', self.run_c3c, ['--clean'], {})):
             with self.subTest(case=label):
@@ -818,9 +829,9 @@ class MemoryUpdateTests(LaunchCase):
                 self.assertEqual((record.read_bytes(), record.stat().st_mtime_ns), before, label)
                 self.assertNotIn('前回の選択', result.stderr, label)
                 self.assertNotIn('前回の選択', result.stdout, label)
-        # 記憶が無くても legacy と --check は対話しない（TTY があっても）。
+        # 記憶が無くても --check は対話しない（TTY があっても。旧名の symlink からでも同じ）。
         record.unlink()
-        for label, runner, args in (('legacy tty', self.run_legacy, [str(self.proj)]),
+        for label, runner, args in (('legacy-name check tty', self.run_legacy, ['--check', str(self.proj)]),
                                     ('check tty', self.run_c3c, ['--check', str(self.proj)])):
             with self.subTest(case=label):
                 result = runner(*args, tty=True, answer=None)
@@ -856,7 +867,7 @@ class MemoryUpdateTests(LaunchCase):
 
     def test_project_env_cannot_move_or_disable_memory(self):
         (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nHOME={self.root}/evil\n'
-                                       f'CC_STATE_DIR={self.root}/evil\nC3C_PREF_KEY=x\nC3C_INTERFACE=0\n')
+                                       f'CC_STATE_DIR={self.root}/evil\nC3C_PREF_KEY=x\n')
         result = self.run_c3c('claude', str(self.proj))
         self.assert_single_run(result, 'claude')
         self.assertEqual(self.saved_agent(), 'claude')

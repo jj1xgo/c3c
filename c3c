@@ -3,14 +3,8 @@
 set -euo pipefail
 trap 'exit 1' INT
 
-# 呼出名（c3c 第2a段階）。`c3c`（`claude-container` への symlink）で呼ばれたときだけ新 parser・
-# CLI 選択の記憶・dir 省略を使い、`claude-container` は従来の解釈のまま。シェルが渡した名前だけで
-# 決め（実体の解決 RUN_DIR とは独立）、env 読込より前に readonly にする。
-INVOKED_NAME="${0##*/}"
-C3C_INTERFACE=0
-[[ "$INVOKED_NAME" == c3c ]] && C3C_INTERFACE=1
-readonly INVOKED_NAME C3C_INTERFACE
-
+# 入口は通常ファイル `c3c` だけ（旧 `claude-container` は削除済み）。呼出名では分岐せず、
+# 旧名の外部 symlink から呼ばれても同じ parser・CLI 選択の記憶・dir 省略を使う。
 BUILD=0
 CLEAN=0
 CHECK=0
@@ -18,8 +12,8 @@ CLEAN_MISSING=0
 
 # 起動する CLI（c3c 第1段階）。CLI 引数だけから決め、project env・シェル環境の CC_AGENT では
 # 選べない（許可リスト外なので export されず、finalize_agent() で readonly にする）。
-# 旧入口の無指定は従来どおり Claude。c3c の無指定は通常起動に限り記憶か初回選択で決める
-# （AGENT_SET=0 のまま select_c3c_agent() が埋める。--check/--clean は選択せず Claude）。
+# 無指定は通常起動に限り記憶か初回選択で決める（AGENT_SET=0 のまま select_c3c_agent() が埋める。
+# --check/--clean は選択せず Claude）。
 AGENT=""
 AGENT_SET=0
 # 記憶から採用したときだけ非空。ガードで使えなかった際に既存の理由へ明示再選択の案内を添える。
@@ -65,17 +59,8 @@ guard_warn() {
   return 0
 }
 
-# 旧入口の互換動作は残し、通常起動と診断で同じ移行案内を出す。
-guard_legacy_entry() {
-  if [[ $C3C_INTERFACE -eq 0 ]]; then
-    guard_warn "WARNING: 旧入口 claude-container は利用側移行後の次のメジャー版で廃止予定です。Claude 起動は c3c claude <dir>、Codex 起動は c3c codex <dir>、診断・清掃は c3c --check / --clean へ移行してください。"
-  fi
-  return 0
-}
-
 usage() {
-  if [[ $C3C_INTERFACE -eq 1 ]]; then
-    cat <<EOF
+  cat <<EOF
 使い方: c3c [claude|codex] [オプション] [<ディレクトリ>]
         c3c [claude|codex] --check [<ディレクトリ>...]
         c3c --clean [<ディレクトリ>]
@@ -86,7 +71,7 @@ Claude Code または Codex CLI を起動する。最初の位置引数が claud
 CLI を指定する（同名のディレクトリは ./codex や -- codex と書く）。CLI を指定しない通常起動は、
 同じリポジトリ（Git common directory 単位）で前回正常終了した CLI を使い、記憶が無ければ
 端末で 1（Claude）か 2（Codex）を 1 回だけ尋ねる。--check / --clean は尋ねず記憶も変えない。
-旧入口 claude-container は廃止予定（現在は無指定で Claude、記憶を読まない・書かない）。
+旧入口 claude-container は削除済み。旧入口の Claude 固定の呼び出しは c3c claude <dir> に移行する。
 
 サブコマンド:
   claude                Claude Code を起動する
@@ -106,57 +91,16 @@ CLI を指定する（同名のディレクトリは ./codex や -- codex と書
                         （CLI 選択の記憶は削除しない）。CLI の指定とは併用できない
   --clean              （ディレクトリなし）全プロジェクト分を削除して終了する
   --check [<ディレクトリ>...]
-                        起動せずに診断する（CLI 無指定は Claude の診断で、記憶による選択はしない）。
-                        旧入口 claude-container --check は各対象に廃止予告の WARN を加える
+                        起動せずに診断する（CLI 無指定は Claude の診断で、記憶による選択はしない）
   --check --clean-missing [<ディレクトリ>...]
                         欠落パスの確認済みイメージだけを削除する
   -h, --help            このヘルプを表示して終了する
 
 終了コード: 引数の誤り・選択の不成立は 2、初回選択の Ctrl-C は 130、それ以外は本起動の終了コード。
 EOF
-    return 0
-  fi
-  cat <<EOF
-使い方: $(basename "$0") [オプション] <ディレクトリ>
-
-指定したディレクトリを作業ディレクトリにして、コンテナ化した Claude Code（または Codex CLI）を起動する。
-
-旧入口 claude-container は利用側移行後の次のメジャー版で廃止予定です。
-Claude 起動は c3c claude <dir>、Codex 起動は c3c codex <dir> に移行してください。
-診断・清掃は c3c --check / --clean を使います。無指定の c3c は前回の CLI を選びます。
-
-オプション:
-  -b, --build          コンテナイメージを強制的に再ビルドしてから起動する
-  --agent <claude|codex>
-                        起動する CLI を選ぶ（無指定は claude）。codex は CODEX_DIR と
-                        Codex を導入した対応イメージが必要で、起動前に設定済み MCP の
-                        ローカル command 定義を検査用コンテナで取得し、初回・変更時に
-                        ここで確認する。--clean/--clean-missing とは併用できない
-  --read-only           --agent codex 専用。Codex を read-only sandbox で起動する（諮問用）
-  --clean <ディレクトリ>
-                        そのプロジェクト分のイメージ・ネットワーク・
-                        ステージング済みビルドコンテキストを削除して終了する
-                        削除済みのディレクトリも、起動台帳に同じ絶対パスがあれば対象にできる
-  --clean              （ディレクトリなし）全プロジェクト分のイメージ・
-                        ネットワーク・ビルドコンテキストを削除して終了する
-  --check [<ディレクトリ>...]
-                        起動せずに診断する: 再ビルド・起動に必要な対応
-                        （レガシー変数、SECRETS_DIR のレイアウト、MCP の承認状態
-                        など）を、指定したディレクトリについて、指定がなければ
-                        起動台帳（~/.local/state/claude-container/projects）の
-                        全プロジェクトについて報告する。非対話で、書き込みはしない。
-                        FAIL のプロジェクトが 1 つでもあれば終了コードは非 0。
-                        イメージ一覧や台帳の検査に失敗した場合も非 0。
-                        --check と併用した -b は無視される。
-  --check --clean-missing [<ディレクトリ>...]
-                        元パスの欠落・由来・未使用を確認したイメージだけを削除する。
-                        台帳・ネットワーク・ビルドコンテキスト・親イメージは保持する。
-                        名前なし・由来不明の候補は報告のみ。--clean との併用は不可。
-  -h, --help            このヘルプを表示して終了する
-EOF
 }
 
-# --agent の値の共通処理（両 parser から呼ぶ）。値欠落（末尾、または次が別オプション）・未知値・
+# --agent の値の共通処理（サブコマンドと --agent の両方から呼ぶ）。値欠落（末尾、または次が別オプション）・未知値・
 # 複数指定は exit 2。別 CLI へ fallback しない。
 set_agent_option() {
   if [[ $AGENT_SET -eq 1 ]]; then
@@ -173,66 +117,10 @@ set_agent_option() {
   AGENT_SET=1
 }
 
-# 引数を解析する。旧入口（claude-container）の parser は据え置き、c3c だけ新 parser を使う。
-# 両 parser とも同じ BUILD/CLEAN/CHECK/CLEAN_MISSING/AGENT/READ_ONLY/POSITIONAL_ARGS へ渡す。
+# 引数を解析する。最初の位置引数の claude / codex だけをサブコマンド（agent の明示指定）にする。
+# `--` 以降はすべて位置引数。未知オプションは exit 2（旧入口の「位置引数として扱う」解釈は削除済み）。
+# 同名ディレクトリは ./codex や -- codex と書く。
 POSITIONAL_ARGS=()
-if [[ $C3C_INTERFACE -eq 0 ]]; then
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -b|--build)
-      BUILD=1
-      shift
-      ;;
-    --clean)
-      CLEAN=1
-      shift
-      ;;
-    --check)
-      CHECK=1
-      shift
-      ;;
-    --clean-missing)
-      CLEAN_MISSING=1
-      shift
-      ;;
-    --agent|--agent=*)
-      if [[ "$1" == --agent ]]; then
-        if [[ $# -lt 2 || "$2" == -* ]]; then
-          echo "ERROR: --agent には claude または codex を指定してください。" >&2
-          exit 2
-        fi
-        agent_value="$2"
-        shift 2
-      else
-        agent_value="${1#--agent=}"
-        shift
-      fi
-      set_agent_option "$agent_value"
-      unset agent_value
-      ;;
-    --read-only)
-      if [[ $READ_ONLY_SET -eq 1 ]]; then
-        echo "ERROR: --read-only は 1 回だけ指定してください。" >&2
-        exit 2
-      fi
-      READ_ONLY=1
-      READ_ONLY_SET=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      POSITIONAL_ARGS+=("$1")
-      shift
-      ;;
-  esac
-done
-else
-# c3c parser（c3c 第2a段階）。最初の位置引数の claude / codex だけをサブコマンド（agent の明示指定）
-# にする。`--` 以降はすべて位置引数。未知オプションは exit 2（旧入口の「位置引数として扱う」解釈は
-# 旧入口に残す）。同名ディレクトリは ./codex や -- codex と書く。
 C3C_SUBCOMMAND=""
 c3c_after_dashdash=0
 while [[ $# -gt 0 ]]; do
@@ -324,7 +212,6 @@ if [[ $CHECK -eq 0 ]]; then
     POSITIONAL_ARGS=(.)
   fi
 fi
-fi
 # -b の有無は引数解析で確定する。env からの上書き（BUILD=0）で利用者の -b が
 # 黙って無効化されるのを防ぐ（claude-container#39）
 readonly BUILD
@@ -341,18 +228,14 @@ if [[ $READ_ONLY -eq 1 && $AGENT_SET -eq 1 && "$AGENT" != codex ]]; then
   exit 2
 fi
 
-# agent の確定（両入口共通、各 dispatch 経路でちょうど 1 回）。無指定の既定は Claude。
+# agent の確定（各 dispatch 経路でちょうど 1 回）。無指定の既定は Claude。
 # Compose へは CLI 解析（c3c は記憶・初回選択を含む）から導出したこの値だけを明示して渡す。
 # project env の読込より前に freeze し、利用側 env の許可リストには加えない（container 側も
 # enum を検証する）。CC_CODEX_START_MODE は preflight/run の段階で launcher が都度設定する。
 finalize_agent() {
   [[ -n "$AGENT" ]] || AGENT=claude
   if [[ $READ_ONLY -eq 1 && "$AGENT" != codex ]]; then
-    if [[ $C3C_INTERFACE -eq 1 ]]; then
-      echo "ERROR: --read-only は Codex 専用です（選ばれた CLI: $AGENT）。c3c codex --read-only のように指定してください。" >&2
-    else
-      echo "ERROR: --read-only は --agent codex と併用してください。" >&2
-    fi
+    echo "ERROR: --read-only は Codex 専用です（選ばれた CLI: $AGENT）。c3c codex --read-only のように指定してください。" >&2
     exit 2
   fi
   readonly AGENT READ_ONLY AGENT_RESELECT_HINT
@@ -362,11 +245,8 @@ finalize_agent() {
   CC_CODEX_START_MODE=""
   export CC_AGENT CC_CODEX_READ_ONLY CC_CODEX_START_MODE
 }
-# 旧入口は従来どおり引数解析の直後に確定する。c3c は dispatch の各経路で確定する
-# （通常起動は対象ディレクトリ解決→記憶/選択の後、--check/--clean はその直前）。
-if [[ $C3C_INTERFACE -eq 0 ]]; then
-  finalize_agent
-fi
+# 確定は dispatch の各経路で行う（通常起動は対象ディレクトリ解決→記憶/選択の後、--check/--clean は
+# その直前）。引数解析直後には確定しない。
 
 # 曖昧な併用を clean_all の判定より先に拒否する（#118）。
 if [[ $CLEAN -eq 1 && ( $CHECK -eq 1 || $CLEAN_MISSING -eq 1 ) ]] \
@@ -608,7 +488,7 @@ freeze_project_paths() {
 
 # プロジェクト設定ディレクトリの選択（c3c 第2b-1段階）。起動 checkout 直下の新名 .c3c と旧名
 # .claude-container.d を次の表で解決し、採用パスを PROJECT_CONF_DIR に返してから readonly にする。
-# 入口名（c3c / claude-container）では結果を変えない。
+# 呼出名（旧名の外部 symlink を含む）では結果を変えない。
 #   .c3c   旧名   → なし/なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
 #                 → 片方だけ: それを採用（旧名だけなら移行推奨 WARNING、--check は WARN 集計）
 #                 → 両方: ERROR（内容や実体が同じでも混ぜない・勝手に移動しない）
@@ -684,7 +564,7 @@ record_project_in_ledger() {
 # c3c の CLI 選択記憶（c3c 第2a段階）。記憶は「同じリポジトリで最後に正常終了した CLI」の利便設定で、
 # 承認記録ではない。キーは agent-preference.py が Git common directory（非 Git はパス）から算出し、
 # 保存先は $CC_STATE_DIR/agent-preferences/<key>.json（$HOME 由来、load_env_file() より前に freeze）。
-# 通常起動の c3c だけが読み書きし、旧入口・--check・--clean は読まない・書かない・消さない。
+# 通常起動だけが読み書きし、--check・--clean は読まない・書かない・消さない。
 # ------------------------------------------------------------
 
 # 記憶のキーを確定する（env 読込前に呼び、結果を readonly にする）。使えない場合は空のまま理由を残す。
@@ -2189,7 +2069,6 @@ check_one_project() {
   # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（claude-container#39）
   readonly CHECK_MODE
   local dir="$1" from_ledger="$2"
-  guard_legacy_entry
 
   if ! WORKING_DIR=$(cd -- "$dir" >/dev/null 2>&1 && pwd -L); then
     echo "[FAIL] ディレクトリを開けません: $dir"
@@ -2390,7 +2269,7 @@ run_check_mode() (
   fi
 
   # 入口以外の呼び出し経路は走査しない。
-  echo "[INFO] 入口移行: 外部スクリプト・alias・PATH の旧入口利用は未確認です。Claude 固定の呼び出しは c3c claude に移行してください（c3c 無指定は前回の CLI を選択）。"
+  echo "[INFO] 入口移行: 旧入口は削除済み。外部スクリプト・alias・PATH の呼び出しは c3c claude / c3c codex へ移行してください（c3c 無指定は前回の CLI を選択）。"
 
   local image_rc=0 image_check_tmp d normalized
   local -a image_args=(--ledger "$CC_LEDGER_FILE")
@@ -2448,11 +2327,6 @@ for row in data["paths"]:
     fi
   fi
 
-  # 清掃診断で対象が再構成された後に判定し、最終対象0件でも旧入口の利用を案内する。
-  if [[ ${#targets[@]} -eq 0 ]]; then
-    guard_legacy_entry
-  fi
-
   local pass=0 warn=0 fail=0
   local -a fail_names=()
   local i dir from_ledger rc
@@ -2494,34 +2368,20 @@ for row in data["paths"]:
 
 set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
 
-if [[ $CHECK -eq 0 ]]; then
-  guard_legacy_entry
-fi
-
 # --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
-# （c3c の agent 確定はこの経路では選択せず既定の Claude。記憶は読まない・消さない）
+# （agent 確定はこの経路では選択せず既定の Claude。記憶は読まない・消さない）
 if [[ $CLEAN -eq 1 && $# -eq 0 ]]; then
-  if [[ $C3C_INTERFACE -eq 1 ]]; then
-    finalize_agent
-  fi
+  finalize_agent
   clean_all
   exit 0
 fi
 
-# --check（内部運用issue参照）: 引数なしでも起動台帳を全件診断できる必要が
-# あるため、「引数なし→usage」判定より前で dispatch する。
-# c3c でも選択待ちをせず記憶を読まない（agent 無指定は現行どおり Claude の診断）。
+# --check（内部運用issue参照）: 引数なしは起動台帳の全件診断（parser は `.` に置き換えない）。
+# 選択待ちをせず記憶を読まない（agent 無指定は現行どおり Claude の診断）。
 if [[ $CHECK -eq 1 ]]; then
-  if [[ $C3C_INTERFACE -eq 1 ]]; then
-    finalize_agent
-  fi
+  finalize_agent
   run_check_mode ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
   exit $?
-fi
-
-if [[ $# -eq 0 ]]; then
-  usage
-  exit 1
 fi
 
 echo "RUN DIR: $RUN_DIR"
@@ -2536,21 +2396,17 @@ freeze_project_paths
 
 # --clean <directory>: このプロジェクト分のみ削除して終了（記憶は削除しない — image/承認とは寿命が異なる）
 if [[ $CLEAN -eq 1 ]]; then
-  if [[ $C3C_INTERFACE -eq 1 ]]; then
-    finalize_agent
-  fi
+  finalize_agent
   clean_project
   exit 0
 fi
 
-# c3c の通常起動: 対象ディレクトリの解決後・env 読込前に、記憶のキー（$HOME 由来の保存先）を
+# 通常起動: 対象ディレクトリの解決後・env 読込前に、記憶のキー（$HOME 由来の保存先）を
 # freeze してから agent を確定する（明示指定 → 記憶 → 初回選択）。--read-only の検証は
 # finalize_agent() 内で最終的な agent に対して行う。
-if [[ $C3C_INTERFACE -eq 1 ]]; then
-  freeze_agent_preference_key
-  select_c3c_agent
-  finalize_agent
-fi
+freeze_agent_preference_key
+select_c3c_agent
+finalize_agent
 
 cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開けません: $WORKING_DIR" \
   "パスが存在するディレクトリか、アクセス権があるかを確認してください。"
@@ -2653,11 +2509,11 @@ if [[ "$AGENT" == codex ]]; then
 fi
 
 # 本起動（run_main_compose() の説明を参照）。終了コードは常に本 run のものを保持する。
-# c3c の通常起動では、本 run が終了コード 0 で戻った後だけ CLI 選択を記憶する（「最後に正常終了した
+# 通常起動では、本 run が終了コード 0 で戻った後だけ CLI 選択を記憶する（「最後に正常終了した
 # CLI」。preflight・build・承認拒否・中断・CLI の非ゼロ終了では旧値を保持し、保存失敗は WARNING）。
 run_rc=0
 run_main_compose || run_rc=$?
-if [[ $run_rc -eq 0 && $C3C_INTERFACE -eq 1 ]]; then
+if [[ $run_rc -eq 0 ]]; then
   write_agent_preference || true
 fi
 exit "$run_rc"

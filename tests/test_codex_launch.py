@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`--agent codex` の launcher 経路（c3c 第1段階 Task 2）の回帰試験。
 
-実物の launcher を隔離 HOME・fixture project・fake podman/compose で起動する。実 Podman・実 network・
+実物の launcher（`c3c`）を隔離 HOME・fixture project・fake podman/compose で起動する。実 Podman・実 network・
 実ユーザー設定には触れない。preflight の protocol は fake compose が fixture を返し、人間確認は専用 PTY で行う。
 compose.codex-preflight.yml と codex-mcp-audit.py は実アセットを runner へコピーして使う。
 """
@@ -131,7 +131,7 @@ class LaunchCase(unittest.TestCase):
                 shutil.copy2(source, self.runner / source.name)
         self.assertTrue((self.runner / PREFLIGHT_OVERRIDE).is_file(), '固定 preflight override が同梱されていない')
         self.assertTrue((self.runner / 'codex-mcp-audit.py').is_file(), '審査 helper が同梱されていない')
-        self.launcher = self.runner / 'claude-container'
+        self.launcher = self.runner / 'c3c'
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.state_path = self.root / 'state.json'
@@ -248,9 +248,10 @@ class ParserTests(LaunchCase):
         self.assertIn('--read-only', result.stdout)
 
 
-class DefaultClaudeTests(LaunchCase):
-    def test_default_and_explicit_claude_keep_existing_argv_and_never_preflight(self):
-        for args in ([], ['--agent', 'claude'], ['--agent=claude']):
+class ExplicitClaudeTests(LaunchCase):
+    def test_explicit_claude_forms_keep_existing_argv_and_never_preflight(self):
+        # 無指定は記憶か初回選択（tests/test_c3c_launch.py）。ここは Claude 固定の 3 表記を検証する。
+        for args in (['claude'], ['--agent', 'claude'], ['--agent=claude']):
             with self.subTest(args=args):
                 result = self.run_launcher(*args, str(self.proj))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -267,8 +268,8 @@ class DefaultClaudeTests(LaunchCase):
         (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCC_AGENT=codex\nCC_CODEX_START_MODE=preflight\n'
                                        f'CC_CODEX_READ_ONLY=1\nCODEX_MCP_APPROVAL_FILE=/etc/passwd\n'
                                        f'MCP_APPROVAL_STORE={self.root}/evil\n')
-        result = self.run_launcher(str(self.proj), env_extra={'CC_AGENT': 'codex', 'CC_CODEX_READ_ONLY': '1',
-                                                              'CODEX_MCP_APPROVAL_FILE': '/etc/passwd'})
+        result = self.run_launcher('claude', str(self.proj), env_extra={'CC_AGENT': 'codex', 'CC_CODEX_READ_ONLY': '1',
+                                                                        'CODEX_MCP_APPROVAL_FILE': '/etc/passwd'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.preflight_calls(), [])
         (run,) = self.main_runs()
@@ -360,7 +361,7 @@ class ImageLabelTests(LaunchCase):
 
     def test_claude_path_ignores_codex_label(self):
         self.state = {'image_exists': True, 'label': '', 'preflight': {'stdout': protocol()}}
-        result = self.run_launcher(str(self.proj))
+        result = self.run_launcher('claude', str(self.proj))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(self.main_runs()), 1)
 

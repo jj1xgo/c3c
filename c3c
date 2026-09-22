@@ -1,1 +1,2663 @@
-claude-container
+#!/bin/bash
+
+set -euo pipefail
+trap 'exit 1' INT
+
+# 呼出名（c3c 第2a段階）。`c3c`（`claude-container` への symlink）で呼ばれたときだけ新 parser・
+# CLI 選択の記憶・dir 省略を使い、`claude-container` は従来の解釈のまま。シェルが渡した名前だけで
+# 決め（実体の解決 RUN_DIR とは独立）、env 読込より前に readonly にする。
+INVOKED_NAME="${0##*/}"
+C3C_INTERFACE=0
+[[ "$INVOKED_NAME" == c3c ]] && C3C_INTERFACE=1
+readonly INVOKED_NAME C3C_INTERFACE
+
+BUILD=0
+CLEAN=0
+CHECK=0
+CLEAN_MISSING=0
+
+# 起動する CLI（c3c 第1段階）。CLI 引数だけから決め、project env・シェル環境の CC_AGENT では
+# 選べない（許可リスト外なので export されず、finalize_agent() で readonly にする）。
+# 旧入口の無指定は従来どおり Claude。c3c の無指定は通常起動に限り記憶か初回選択で決める
+# （AGENT_SET=0 のまま select_c3c_agent() が埋める。--check/--clean は選択せず Claude）。
+AGENT=""
+AGENT_SET=0
+# 記憶から採用したときだけ非空。ガードで使えなかった際に既存の理由へ明示再選択の案内を添える。
+AGENT_RESELECT_HINT=""
+READ_ONLY=0
+READ_ONLY_SET=0
+# Codex の起動時 MCP 審査で対応する版と protocol（codex-mcp-audit.py・Dockerfile.claude の label と同期）。
+# 未知版・未知 protocol は同じ審査方式として黙認せず、対応確認が必要と診断する。
+CODEX_SUPPORTED_VERSION=0.155.1
+CODEX_AUDIT_PROTOCOL_VERSION=1
+CODEX_AUDIT_PROTOCOL_LABEL=io.c3c.codex-audit-protocol
+readonly CODEX_SUPPORTED_VERSION CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
+
+# --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
+# guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
+CHECK_MODE=0
+CHECK_HAS_ERROR=0
+CHECK_HAS_WARN=0
+
+# launcher が設定から選ぶ固定 Compose override の -f 引数列（compose.ipv6.yml・
+# compose.plugins-alias.yml・compose.shared-home.yml・compose.shared-host.yml・compose.agents.yml）。
+# guard_ipv6()・guard_plugins_alias()・guard_shared_home_alias()・guard_agents_dir() が += で積み、
+# dispatch の build と run の両方へ同じ配列を渡す（片方だけだと -b の build と直後の
+# run で構成が食い違う）。--check は check_one_project() の冒頭でプロジェクトごとに
+# リセットする。任意の podman 引数は受け付けない。
+COMPOSE_OVERRIDE_ARGS=()
+
+# fail-closed 終端の共通化。通常起動: 従来と同一（stderr へ全行出力し exit 1）。
+# --check: 出力して記録し return 1（呼び出し元はそこで打ち切り、ドライバは次のガードへ進む）。
+guard_fail() {
+  printf '%s\n' "$@" >&2
+  if [[ $CHECK_MODE -eq 1 ]]; then
+    CHECK_HAS_ERROR=1
+    return 1
+  fi
+  exit 1
+}
+
+# WARNING の共通化。通常起動: 従来どおり stderr 出力のみ。--check: 集計に反映。
+guard_warn() {
+  printf '%s\n' "$@" >&2
+  [[ $CHECK_MODE -eq 1 ]] && CHECK_HAS_WARN=1
+  return 0
+}
+
+# 旧入口の互換動作は残し、通常起動と診断で同じ移行案内を出す。
+guard_legacy_entry() {
+  if [[ $C3C_INTERFACE -eq 0 ]]; then
+    guard_warn "WARNING: 旧入口 claude-container は利用側移行後の次のメジャー版で廃止予定です。Claude 起動は c3c claude <dir>、Codex 起動は c3c codex <dir>、診断・清掃は c3c --check / --clean へ移行してください。"
+  fi
+  return 0
+}
+
+usage() {
+  if [[ $C3C_INTERFACE -eq 1 ]]; then
+    cat <<EOF
+使い方: c3c [claude|codex] [オプション] [<ディレクトリ>]
+        c3c [claude|codex] --check [<ディレクトリ>...]
+        c3c --clean [<ディレクトリ>]
+        c3c --check --clean-missing [<ディレクトリ>...]
+
+指定したディレクトリ（省略時は現在のディレクトリ）を作業ディレクトリにして、コンテナ化した
+Claude Code または Codex CLI を起動する。最初の位置引数が claude / codex ならサブコマンドとして
+CLI を指定する（同名のディレクトリは ./codex や -- codex と書く）。CLI を指定しない通常起動は、
+同じリポジトリ（Git common directory 単位）で前回正常終了した CLI を使い、記憶が無ければ
+端末で 1（Claude）か 2（Codex）を 1 回だけ尋ねる。--check / --clean は尋ねず記憶も変えない。
+旧入口 claude-container は廃止予定（現在は無指定で Claude、記憶を読まない・書かない）。
+
+サブコマンド:
+  claude                Claude Code を起動する
+  codex                 Codex CLI を起動する（CODEX_DIR と対応イメージが必要。起動前に
+                        設定済み MCP のローカル command 定義を検査し、初回・変更時に確認する）
+
+オプション:
+  -b, --build          コンテナイメージを強制的に再ビルドしてから起動する
+  --agent <claude|codex>
+                        サブコマンドと同じ意味の別表記。サブコマンドとの併用は同値でも不可
+  --read-only           Codex 専用。Codex を read-only sandbox で起動する（諮問用）。
+                        最終的に選ばれた CLI が Claude なら終了コード 2
+  --                    以降をすべてディレクトリ引数として扱う
+  --clean <ディレクトリ>
+                        そのプロジェクト分のイメージ・ネットワーク・
+                        ステージング済みビルドコンテキストを削除して終了する
+                        （CLI 選択の記憶は削除しない）。CLI の指定とは併用できない
+  --clean              （ディレクトリなし）全プロジェクト分を削除して終了する
+  --check [<ディレクトリ>...]
+                        起動せずに診断する（CLI 無指定は Claude の診断で、記憶による選択はしない）。
+                        旧入口 claude-container --check は各対象に廃止予告の WARN を加える
+  --check --clean-missing [<ディレクトリ>...]
+                        欠落パスの確認済みイメージだけを削除する
+  -h, --help            このヘルプを表示して終了する
+
+終了コード: 引数の誤り・選択の不成立は 2、初回選択の Ctrl-C は 130、それ以外は本起動の終了コード。
+EOF
+    return 0
+  fi
+  cat <<EOF
+使い方: $(basename "$0") [オプション] <ディレクトリ>
+
+指定したディレクトリを作業ディレクトリにして、コンテナ化した Claude Code（または Codex CLI）を起動する。
+
+旧入口 claude-container は利用側移行後の次のメジャー版で廃止予定です。
+Claude 起動は c3c claude <dir>、Codex 起動は c3c codex <dir> に移行してください。
+診断・清掃は c3c --check / --clean を使います。無指定の c3c は前回の CLI を選びます。
+
+オプション:
+  -b, --build          コンテナイメージを強制的に再ビルドしてから起動する
+  --agent <claude|codex>
+                        起動する CLI を選ぶ（無指定は claude）。codex は CODEX_DIR と
+                        Codex を導入した対応イメージが必要で、起動前に設定済み MCP の
+                        ローカル command 定義を検査用コンテナで取得し、初回・変更時に
+                        ここで確認する。--clean/--clean-missing とは併用できない
+  --read-only           --agent codex 専用。Codex を read-only sandbox で起動する（諮問用）
+  --clean <ディレクトリ>
+                        そのプロジェクト分のイメージ・ネットワーク・
+                        ステージング済みビルドコンテキストを削除して終了する
+                        削除済みのディレクトリも、起動台帳に同じ絶対パスがあれば対象にできる
+  --clean              （ディレクトリなし）全プロジェクト分のイメージ・
+                        ネットワーク・ビルドコンテキストを削除して終了する
+  --check [<ディレクトリ>...]
+                        起動せずに診断する: 再ビルド・起動に必要な対応
+                        （レガシー変数、SECRETS_DIR のレイアウト、MCP の承認状態
+                        など）を、指定したディレクトリについて、指定がなければ
+                        起動台帳（~/.local/state/claude-container/projects）の
+                        全プロジェクトについて報告する。非対話で、書き込みはしない。
+                        FAIL のプロジェクトが 1 つでもあれば終了コードは非 0。
+                        イメージ一覧や台帳の検査に失敗した場合も非 0。
+                        --check と併用した -b は無視される。
+  --check --clean-missing [<ディレクトリ>...]
+                        元パスの欠落・由来・未使用を確認したイメージだけを削除する。
+                        台帳・ネットワーク・ビルドコンテキスト・親イメージは保持する。
+                        名前なし・由来不明の候補は報告のみ。--clean との併用は不可。
+  -h, --help            このヘルプを表示して終了する
+EOF
+}
+
+# --agent の値の共通処理（両 parser から呼ぶ）。値欠落（末尾、または次が別オプション）・未知値・
+# 複数指定は exit 2。別 CLI へ fallback しない。
+set_agent_option() {
+  if [[ $AGENT_SET -eq 1 ]]; then
+    echo "ERROR: --agent は 1 回だけ指定してください。" >&2
+    exit 2
+  fi
+  case "$1" in
+    claude|codex) AGENT="$1" ;;
+    *)
+      echo "ERROR: --agent の値が不明です: '$1'（claude または codex）。" >&2
+      exit 2
+      ;;
+  esac
+  AGENT_SET=1
+}
+
+# 引数を解析する。旧入口（claude-container）の parser は据え置き、c3c だけ新 parser を使う。
+# 両 parser とも同じ BUILD/CLEAN/CHECK/CLEAN_MISSING/AGENT/READ_ONLY/POSITIONAL_ARGS へ渡す。
+POSITIONAL_ARGS=()
+if [[ $C3C_INTERFACE -eq 0 ]]; then
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -b|--build)
+      BUILD=1
+      shift
+      ;;
+    --clean)
+      CLEAN=1
+      shift
+      ;;
+    --check)
+      CHECK=1
+      shift
+      ;;
+    --clean-missing)
+      CLEAN_MISSING=1
+      shift
+      ;;
+    --agent|--agent=*)
+      if [[ "$1" == --agent ]]; then
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          echo "ERROR: --agent には claude または codex を指定してください。" >&2
+          exit 2
+        fi
+        agent_value="$2"
+        shift 2
+      else
+        agent_value="${1#--agent=}"
+        shift
+      fi
+      set_agent_option "$agent_value"
+      unset agent_value
+      ;;
+    --read-only)
+      if [[ $READ_ONLY_SET -eq 1 ]]; then
+        echo "ERROR: --read-only は 1 回だけ指定してください。" >&2
+        exit 2
+      fi
+      READ_ONLY=1
+      READ_ONLY_SET=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+else
+# c3c parser（c3c 第2a段階）。最初の位置引数の claude / codex だけをサブコマンド（agent の明示指定）
+# にする。`--` 以降はすべて位置引数。未知オプションは exit 2（旧入口の「位置引数として扱う」解釈は
+# 旧入口に残す）。同名ディレクトリは ./codex や -- codex と書く。
+C3C_SUBCOMMAND=""
+c3c_after_dashdash=0
+while [[ $# -gt 0 ]]; do
+  if [[ $c3c_after_dashdash -eq 1 ]]; then
+    POSITIONAL_ARGS+=("$1")
+    shift
+    continue
+  fi
+  case $1 in
+    --)
+      c3c_after_dashdash=1
+      shift
+      ;;
+    -b|--build)
+      BUILD=1
+      shift
+      ;;
+    --clean)
+      CLEAN=1
+      shift
+      ;;
+    --check)
+      CHECK=1
+      shift
+      ;;
+    --clean-missing)
+      CLEAN_MISSING=1
+      shift
+      ;;
+    --agent|--agent=*)
+      if [[ "$1" == --agent ]]; then
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          echo "ERROR: --agent には claude または codex を指定してください。" >&2
+          exit 2
+        fi
+        agent_value="$2"
+        shift 2
+      else
+        agent_value="${1#--agent=}"
+        shift
+      fi
+      set_agent_option "$agent_value"
+      unset agent_value
+      ;;
+    --read-only)
+      if [[ $READ_ONLY_SET -eq 1 ]]; then
+        echo "ERROR: --read-only は 1 回だけ指定してください。" >&2
+        exit 2
+      fi
+      READ_ONLY=1
+      READ_ONLY_SET=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "ERROR: 不明なオプションです: '$1'（c3c --help を参照。ディレクトリ名が - で始まる場合は -- の後に書いてください）。" >&2
+      exit 2
+      ;;
+    *)
+      if [[ ${#POSITIONAL_ARGS[@]} -eq 0 && -z "$C3C_SUBCOMMAND" && ( "$1" == claude || "$1" == codex ) ]]; then
+        C3C_SUBCOMMAND="$1"
+      else
+        POSITIONAL_ARGS+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+unset c3c_after_dashdash
+if [[ -n "$C3C_SUBCOMMAND" ]]; then
+  if [[ $AGENT_SET -eq 1 ]]; then
+    echo "ERROR: サブコマンド $C3C_SUBCOMMAND と --agent は併用できません（同じ値でも不可）。どちらか一方で指定してください。" >&2
+    exit 2
+  fi
+  set_agent_option "$C3C_SUBCOMMAND"
+fi
+readonly C3C_SUBCOMMAND
+# 通常起動と --clean のディレクトリは最大 1 件。通常起動だけ省略を `.` で補う（--check/--clean の
+# 引数なしは従来どおり「台帳全件」「全プロジェクト」の意味で `.` に置き換えない）。
+if [[ $CHECK -eq 0 ]]; then
+  if [[ ${#POSITIONAL_ARGS[@]} -gt 1 ]]; then
+    echo "ERROR: ディレクトリは 1 つだけ指定してください（${#POSITIONAL_ARGS[@]} 個: ${POSITIONAL_ARGS[*]}）。" >&2
+    exit 2
+  fi
+  if [[ $CLEAN -eq 0 && ${#POSITIONAL_ARGS[@]} -eq 0 ]]; then
+    POSITIONAL_ARGS=(.)
+  fi
+fi
+fi
+# -b の有無は引数解析で確定する。env からの上書き（BUILD=0）で利用者の -b が
+# 黙って無効化されるのを防ぐ（claude-container#39）
+readonly BUILD
+readonly CLEAN_MISSING
+# --agent と clean 系は意味が曖昧（清掃は両 agent の記録を対象にする）なので併用を拒否する。
+if [[ $AGENT_SET -eq 1 && ( $CLEAN -eq 1 || $CLEAN_MISSING -eq 1 ) ]]; then
+  echo "ERROR: --agent は --clean / --clean-missing と併用できません。" >&2
+  exit 2
+fi
+# --read-only の検証は最終的に選ばれた agent に対して行う（finalize_agent()）。明示指定なら
+# ここで確定できるので早く止める。c3c の無指定は記憶・初回選択の後に同じ検査を通す。
+if [[ $READ_ONLY -eq 1 && $AGENT_SET -eq 1 && "$AGENT" != codex ]]; then
+  echo "ERROR: --read-only は --agent codex と併用してください。" >&2
+  exit 2
+fi
+
+# agent の確定（両入口共通、各 dispatch 経路でちょうど 1 回）。無指定の既定は Claude。
+# Compose へは CLI 解析（c3c は記憶・初回選択を含む）から導出したこの値だけを明示して渡す。
+# project env の読込より前に freeze し、利用側 env の許可リストには加えない（container 側も
+# enum を検証する）。CC_CODEX_START_MODE は preflight/run の段階で launcher が都度設定する。
+finalize_agent() {
+  [[ -n "$AGENT" ]] || AGENT=claude
+  if [[ $READ_ONLY -eq 1 && "$AGENT" != codex ]]; then
+    if [[ $C3C_INTERFACE -eq 1 ]]; then
+      echo "ERROR: --read-only は Codex 専用です（選ばれた CLI: $AGENT）。c3c codex --read-only のように指定してください。" >&2
+    else
+      echo "ERROR: --read-only は --agent codex と併用してください。" >&2
+    fi
+    exit 2
+  fi
+  readonly AGENT READ_ONLY AGENT_RESELECT_HINT
+  CC_AGENT="$AGENT"
+  CC_CODEX_READ_ONLY="$READ_ONLY"
+  readonly CC_AGENT CC_CODEX_READ_ONLY
+  CC_CODEX_START_MODE=""
+  export CC_AGENT CC_CODEX_READ_ONLY CC_CODEX_START_MODE
+}
+# 旧入口は従来どおり引数解析の直後に確定する。c3c は dispatch の各経路で確定する
+# （通常起動は対象ディレクトリ解決→記憶/選択の後、--check/--clean はその直前）。
+if [[ $C3C_INTERFACE -eq 0 ]]; then
+  finalize_agent
+fi
+
+# 曖昧な併用を clean_all の判定より先に拒否する（#118）。
+if [[ $CLEAN -eq 1 && ( $CHECK -eq 1 || $CLEAN_MISSING -eq 1 ) ]] \
+    || [[ $CLEAN_MISSING -eq 1 && $CHECK -ne 1 ]]; then
+  echo "ERROR: --clean-missing は --check と併用してください。--clean とは併用できません。" >&2
+  exit 2
+fi
+
+# 自身の実体の親ディレクトリ（アセットの基点）。symlink インストール（絶対・相対・多段、PATH 経由、
+# `bash ./c3c`）のどれでも実ファイルまで辿ってから親を取る（かつては 1 段の readlink を cwd 基準で
+# cd していたため、相対リンクを別の cwd から呼ぶと別ディレクトリを基点にしていた）。
+# 解決できなければ明示エラーで止める（推測の基点でアセットを読まない）。
+resolve_launcher_path() {
+  local target="$1" link hops=0
+  while [[ -L "$target" ]]; do
+    hops=$((hops + 1))
+    if [[ $hops -gt 40 ]]; then
+      return 1
+    fi
+    link=$(readlink -- "$target") || return 1
+    if [[ "$link" == /* ]]; then
+      target="$link"
+    else
+      target="$(dirname -- "$target")/$link"
+    fi
+  done
+  [[ -f "$target" ]] || return 1
+  printf '%s\n' "$target"
+}
+if ! launcher_path=$(resolve_launcher_path "$0") \
+    || ! RUN_DIR=$(cd -- "$(dirname -- "$launcher_path")" >/dev/null 2>&1 && pwd -P); then
+  echo "ERROR: 起動スクリプトの実体を解決できません: $0（symlink のリンク先と権限を確認してください）。" >&2
+  exit 1
+fi
+unset launcher_path
+# readonly は代入と別文にする（readonly VAR="$( ... )" はコマンド置換の失敗を握り潰し、
+# set -e にも if ! にも伝わらないため fail-closed が無言で壊れる。claude-container#39）
+readonly RUN_DIR
+# CLI 選択記憶の helper（ホスト専用。project-images.py と同じく固定パスを python3 -I で呼び、
+# ビルドコンテキストへは COPY しない）。
+AGENT_PREFERENCE_HELPER="$RUN_DIR/agent-preference.py"
+readonly AGENT_PREFERENCE_HELPER
+
+# 起動台帳（内部運用issue参照）。通常起動のたびにホスト絶対パスを記録し、
+# --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
+# MCP_APPROVAL_STORE と同じ流儀で $HOME から直接算出し、readonly でプロジェクト側 env
+# からの上書きを封じる（claude-container#39。呼び出し順序だけでは env の直接代入を防げない）。
+CC_STATE_DIR="$HOME/.local/state/claude-container"
+CC_LEDGER_FILE="$CC_STATE_DIR/projects"
+readonly CC_STATE_DIR CC_LEDGER_FILE
+
+# ============================================================
+# 関数定義セクション（--check の dispatch がこれらより後にあるよう、
+# すべての関数をトップレベル実行文（下の dispatch セクション）より前に集約する）
+# ============================================================
+
+# 実在するプロジェクトイメージ（localhost/<project>_claude-auth-workspace）から
+# <project> を逆算し、イメージ・ネットワーク・ビルドコンテキストをまとめて削除する。
+# レガシー共有イメージ localhost/claude-container_claude-auth-workspace もこの
+# パターンに自然にマッチするため、移行用の特別処理は不要。
+clean_all() {
+  local repo project found=0
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    found=1
+    project="${repo#localhost/}"
+    project="${project%_claude-auth-workspace}"
+    echo "イメージを削除します: $repo"
+    podman rmi "$repo" 2>/dev/null && echo "削除しました。" || echo "失敗したのでスキップします。"
+    echo "ネットワークを削除します: ${project}_default"
+    podman network rm "${project}_default" 2>/dev/null && echo "削除しました。" || echo "ネットワークがないのでスキップします。"
+  done < <(podman images --format '{{.Repository}}' 2>/dev/null | grep -E '^localhost/.+_claude-auth-workspace$' || true)
+  [[ $found -eq 1 ]] || echo "claude-container のイメージが見つからないため、イメージ・ネットワークの削除をスキップします。"
+  echo "ステージング済みビルドコンテキストを削除します: $RUN_DIR/.build-context"
+  rm -rf "$RUN_DIR/.build-context" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  local approval_store="$HOME/.local/state/claude-container/mcp-approvals"
+  echo "MCP 承認記録を削除します: $approval_store"
+  rm -rf "$approval_store" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "起動台帳を削除します: $CC_LEDGER_FILE"
+  rm -f "$CC_LEDGER_FILE" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "dangling イメージを整理しています..."
+  podman image prune -f
+}
+
+# 現在のターゲットプロジェクト（$IMAGE_NAME / $PROJECT_NAME / $BUILD_CONTEXT_DIR）分のみを削除する。
+clean_project() {
+  echo "イメージを削除します: $IMAGE_NAME"
+  podman rmi "$IMAGE_NAME" 2>/dev/null && echo "削除しました。" || echo "イメージがないのでスキップします。"
+  echo "ネットワークを削除します: ${PROJECT_NAME}_default"
+  podman network rm "${PROJECT_NAME}_default" 2>/dev/null && echo "削除しました。" || echo "ネットワークがないのでスキップします。"
+  echo "ステージング済みビルドコンテキストを削除します: $BUILD_CONTEXT_DIR"
+  rm -rf "$BUILD_CONTEXT_DIR" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "MCP 承認記録を削除します: $MCP_APPROVAL_RECORD"
+  rm -f "$MCP_APPROVAL_RECORD" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  # Codex の承認記録はこのプロジェクトの subdirectory ごと（過去版を含む）削除し、他プロジェクトは残す。
+  echo "Codex MCP 承認記録を削除します: $CODEX_APPROVAL_DIR"
+  rm -rf "$CODEX_APPROVAL_DIR" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  if [[ -f "$CC_LEDGER_FILE" ]]; then
+    echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
+    # 一時台帳は毎回別名・生成時から所有者のみ。旧版の固定 .tmp は再利用しない。
+    # trap はこのサブシェルだけに閉じ、失敗時も今回作ったファイルだけを後始末する。
+    # || の左側では errexit に頼れないため、失敗する処理は個別に確認する。
+    (
+      umask 077
+      ledger_tmp=$(mktemp "$CC_LEDGER_FILE.tmp.XXXXXX") || {
+        echo "ERROR: 起動台帳の一時ファイルを作成できません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      }
+      trap 'if ! rm -f -- "$ledger_tmp"; then echo "WARNING: 起動台帳の一時ファイルを削除できません: $ledger_tmp" >&2; fi' EXIT
+      if ! chmod 600 "$ledger_tmp"; then
+        echo "ERROR: 起動台帳の一時ファイルの権限を600に設定できません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+      # 出力を開く失敗（rc1）を grep の「残す行なし」と混同しない。
+      if ! exec {ledger_fd}> "$ledger_tmp"; then
+        echo "ERROR: 起動台帳の一時ファイルを書き込み用に開けません。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+      # grep の1は残す行なしの正常系。2以上の読み取り・書き込み失敗は区別する。
+      if grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" >&"$ledger_fd"; then
+        :
+      else
+        grep_status=$?
+        if [[ $grep_status -ne 1 ]]; then
+          echo "ERROR: 起動台帳を更新できません（grep 終了コード $grep_status）。元の台帳は変更していません: $CC_LEDGER_FILE" >&2
+          exit 1
+        fi
+      fi
+      if ! mv -- "$ledger_tmp" "$CC_LEDGER_FILE"; then
+        echo "ERROR: 起動台帳を置き換えられません: $CC_LEDGER_FILE" >&2
+        exit 1
+      fi
+    ) || return 1
+  fi
+  echo "dangling イメージを整理しています..."
+  podman image prune -f
+}
+
+# 通常は cd + pwd の論理パスで識別する（symlink の綴りを保持する）。削除済みの
+# --clean だけは台帳の完全一致を条件に同じ識別を復元する。実体パスへ変換すると
+# symlink 経由で起動したプロジェクトとは別のハッシュになるため、realpath -ms を使う。
+# 相対引数は論理 cwd に連結してから正規化する（realpath に直接渡すと物理 cwd になる）。
+# 連結には $(pwd -L) でなく $PWD を使う — コマンド置換は末尾の改行を落とし、改行拒否をすり抜ける（#108）。
+# cwd が削除済みで環境にも PWD が無いと bash は PWD を初期化しない（空の PWD は空のまま保持する）。
+# PWD が無いか空のときに相対引数を
+# "/<引数>" に組み立てると台帳の別エントリに一致しうるため、候補を作らず止める（#110）。
+# cwd が削除済みだと bash は cd . / .. を成功させ、pwd -L が「.」「..」をそのまま返す。絶対パス
+# でない解決結果は幽霊名（「.」の sha256 由来）で清掃・台帳記録が走るため、進めずに止める（#122）。
+resolve_project_directory() {
+  local input="$1" candidate
+  if [[ -z "$input" ]]; then
+    guard_fail "ERROR: ディレクトリに空文字は指定できません。対象のパスを指定してください。"
+  fi
+  if WORKING_DIR=$(cd -- "$input" >/dev/null 2>&1 && pwd -L); then
+    if [[ "$WORKING_DIR" != /* ]]; then
+      guard_fail "ERROR: 現在のディレクトリを特定できないため、相対パスでは対象を解決できません: $input" \
+        "対象のディレクトリを絶対パスで指定してください。"
+    fi
+    return 0
+  fi
+  if [[ $CLEAN -eq 1 && ! -e "$input" ]]; then
+    candidate="$input"
+    if [[ "$candidate" != /* ]]; then
+      if [[ -z "${PWD:-}" ]]; then
+        guard_fail "ERROR: 現在のディレクトリを特定できないため、相対パスでは起動台帳を照合できません: $input" \
+          "起動時と同じ絶対パスを指定してください（台帳: $CC_LEDGER_FILE）。"
+      fi
+      candidate="$PWD/$candidate"
+    fi
+    # 台帳は1行1パス。改行を grep の複数パターンとして解釈させない。
+    if [[ "$candidate" != *$'\n'* ]] && candidate=$(realpath -ms -- "$candidate" 2>/dev/null) \
+        && [[ -f "$CC_LEDGER_FILE" ]] && grep -xF -- "$candidate" "$CC_LEDGER_FILE" >/dev/null; then
+      WORKING_DIR="$candidate"
+      echo "INFO: 削除済みディレクトリを起動台帳のパスで清掃します: $WORKING_DIR"
+      return 0
+    fi
+    guard_fail "ERROR: ディレクトリが存在せず、起動台帳で対象を確認できません: $input" \
+      "起動時と同じパスを指定してください（台帳: $CC_LEDGER_FILE）。"
+  fi
+  guard_fail "ERROR: ディレクトリを開けません: $input" \
+    "パスが存在するディレクトリか、アクセス権があるかを確認してください。"
+}
+
+# ターゲットプロジェクトごとにイメージ名・ビルドコンテキストを分離するためのキー。
+# サニタイズ済み basename + 絶対パスの sha256 先頭8文字（衝突回避）。同名だが別パスの
+# プロジェクト同士がイメージ・ビルドコンテキストを共有してしまう事故を、可読性より
+# 安全性を優先して防ぐ。
+compute_project_name() {
+  local base hash
+  base=$(basename "$WORKING_DIR" | tr '[:upper:]' '[:lower:]')
+  base=$(printf '%s' "$base" | LC_ALL=C sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//')
+  base=${base:0:40}
+  [[ -n "$base" ]] || base="project"
+  hash=$(printf '%s' "$WORKING_DIR" | sha256sum | cut -c1-8)
+  PROJECT_NAME="${base}-${hash}"
+  IMAGE_NAME="localhost/${PROJECT_NAME}_claude-auth-workspace"
+  readonly PROJECT_NAME IMAGE_NAME
+}
+
+# プロジェクトごとの固定パス群（MCP承認記録・ビルドコンテキスト）を freeze する。
+# load_env_file() より前に呼んだうえで readonly にすることで、プロジェクト側の設定 env が
+# 同名キーを直接書いても readonly で拒否され、HOME 等は許可リスト外で export されない
+# （claude-container#39、#44）ため、これらのパスは一切影響を受けない。
+# --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化（readonly は
+# ( check_one_project ) サブシェル内に閉じるためプロジェクト間で衝突しない）。
+# 設定ディレクトリ（PROJECT_CONF_DIR）はここでは決めない — 清掃（--clean <dir>）が設定の状態に
+# 依らず既存対象を消せるよう、select_project_conf_dir() で cleanup 分岐より後に解決する。
+freeze_project_paths() {
+  # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
+  MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
+  MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
+  # Codex の起動時 MCP 審査の承認記録（c3c 第1段階）。既存の Claude 記録とは別に、agent 固定の
+  # subdirectory と対応版だけを採用したキーへ hash を保存する。同じく env 読込前に freeze する。
+  CODEX_APPROVAL_DIR="$MCP_APPROVAL_STORE/codex/$PROJECT_NAME"
+  CODEX_APPROVAL_RECORD="$CODEX_APPROVAL_DIR/$CODEX_SUPPORTED_VERSION.json"
+  # ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
+  # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
+  # クリーンアップも不要にする。
+  BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
+  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD BUILD_CONTEXT_DIR
+  # compose へはコマンド前置代入でなく export で渡す（readonly 変数への前置代入は
+  # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
+  # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
+  export BUILD_CONTEXT_DIR
+
+  # ホストの論理パスを最終イメージに記録する。設定ファイルによる上書きは不可。
+  # 台帳形式に載らないパスでは由来情報を付けず、清掃を推測で行わせない。
+  CC_PROJECT_METADATA=""
+  CC_PROJECT_PATH=""
+  CC_PROJECT_NAME=""
+  if [[ "$WORKING_DIR" != *$'\n'* && "$WORKING_DIR" != //* ]]; then
+    CC_PROJECT_METADATA=1
+    CC_PROJECT_PATH="$WORKING_DIR"
+    CC_PROJECT_NAME="$PROJECT_NAME"
+  fi
+  export CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
+  readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
+}
+
+# プロジェクト設定ディレクトリの選択（c3c 第2b-1段階）。起動 checkout 直下の新名 .c3c と旧名
+# .claude-container.d を次の表で解決し、採用パスを PROJECT_CONF_DIR に返してから readonly にする。
+# 入口名（c3c / claude-container）では結果を変えない。
+#   .c3c   旧名   → なし/なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
+#                 → 片方だけ: それを採用（旧名だけなら移行推奨 WARNING、--check は WARN 集計）
+#                 → 両方: ERROR（内容や実体が同じでも混ぜない・勝手に移動しない）
+#   採用側が directory へ解決できない（file・リンク先の無い symlink・file への symlink）: ERROR
+# 存在判定は -e だけでなく -L でも行う（dangling link や同じ実体への 2 本の symlink も「配置あり」）。
+# directory への symlink は既存互換のため許容する（-d は追従する）。
+# 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後（清掃は設定の状態に
+# 依らず既存対象を消す。清掃に要るパスは freeze_project_paths() が担う）。--check では失敗時に呼び出し元が
+# return 20 し、env・resolver・hash・ガードへ進まない。readonly は結果を返した後に置く（claude-container#39）。
+PROJECT_CONF_NEW_NAME=.c3c
+PROJECT_CONF_LEGACY_NAME=.claude-container.d
+readonly PROJECT_CONF_NEW_NAME PROJECT_CONF_LEGACY_NAME
+select_project_conf_dir() {
+  local new_path="$WORKING_DIR/$PROJECT_CONF_NEW_NAME" legacy_path="$WORKING_DIR/$PROJECT_CONF_LEGACY_NAME"
+  local new_present=0 legacy_present=0 chosen kind warn_prefix=""
+  [[ -e "$new_path" || -L "$new_path" ]] && new_present=1
+  [[ -e "$legacy_path" || -L "$legacy_path" ]] && legacy_present=1
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
+  if [[ $new_present -eq 1 && $legacy_present -eq 1 ]]; then
+    guard_fail "ERROR: 設定ディレクトリが二重配置です: $new_path と $legacy_path の両方があります（内容や実体が同じでも混ぜません）。" \
+      "  移行済みなら旧名 $PROJECT_CONF_LEGACY_NAME を設定探索の対象外（プロジェクト外のバックアップ先等）へ移し、未移行なら $PROJECT_CONF_NEW_NAME 側を取り除いてください（README「利用側プロジェクトの設定」節）。起動を中止します。" || return 1
+  fi
+  if [[ $new_present -eq 1 ]]; then
+    chosen="$new_path"
+  elif [[ $legacy_present -eq 1 ]]; then
+    chosen="$legacy_path"
+  else
+    PROJECT_CONF_DIR="$new_path"
+    readonly PROJECT_CONF_DIR
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] 設定ディレクトリ: なし（$PROJECT_CONF_NEW_NAME を参照元にし、同梱の既定値を使います）"
+    return 0
+  fi
+  if [[ ! -d "$chosen" ]]; then
+    kind="ディレクトリではありません"
+    if [[ -L "$chosen" && ! -e "$chosen" ]]; then
+      kind="リンク先の無い symlink です"
+    elif [[ -L "$chosen" ]]; then
+      kind="ディレクトリ以外を指す symlink です"
+    fi
+    guard_fail "ERROR: 設定ディレクトリ $chosen は$kind。ディレクトリ（またはディレクトリへの symlink）に直すか取り除いてください。起動を中止します。" || return 1
+  fi
+  PROJECT_CONF_DIR="$chosen"
+  readonly PROJECT_CONF_DIR
+  if [[ "$chosen" == "$legacy_path" ]]; then
+    guard_warn "${warn_prefix}WARNING: $legacy_path は旧名です。起動していない状態で $PROJECT_CONF_NEW_NAME へ改名してください（mv $PROJECT_CONF_LEGACY_NAME $PROJECT_CONF_NEW_NAME。追跡対象なら git mv、ローカル設定の .gitignore も更新。両方を並べて置くと起動を拒否します。README「利用側プロジェクトの設定」節）。"
+  elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+    echo "[OK]   設定ディレクトリ: $PROJECT_CONF_DIR"
+  fi
+  return 0
+}
+
+# 起動台帳への記録（内部運用issue参照）。--clean/--check では記録しない。
+# fail-closed ガードで停止する起動でも記録する（--check で診断したいのはまさに
+# そのプロジェクトのため）。台帳は補助台帳であり、記録失敗は起動を止めない
+# （fail-soft）。成功時は無出力（通常起動の出力を変えないため）。
+record_project_in_ledger() {
+  if ! mkdir -p "$CC_STATE_DIR" 2>/dev/null; then
+    echo "WARNING: 起動台帳ディレクトリ $CC_STATE_DIR を作成できません。--check での一括診断に使う起動台帳への記録をスキップします。" >&2
+    return 0
+  fi
+  chmod 700 "$CC_STATE_DIR" 2>/dev/null || true
+  if [[ -f "$CC_LEDGER_FILE" ]] && grep -qxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" 2>/dev/null; then
+    return 0
+  fi
+  if ! printf '%s\n' "$WORKING_DIR" >> "$CC_LEDGER_FILE" 2>/dev/null; then
+    echo "WARNING: 起動台帳 $CC_LEDGER_FILE に記録できません。" >&2
+    return 0
+  fi
+  chmod 600 "$CC_LEDGER_FILE" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------
+# c3c の CLI 選択記憶（c3c 第2a段階）。記憶は「同じリポジトリで最後に正常終了した CLI」の利便設定で、
+# 承認記録ではない。キーは agent-preference.py が Git common directory（非 Git はパス）から算出し、
+# 保存先は $CC_STATE_DIR/agent-preferences/<key>.json（$HOME 由来、load_env_file() より前に freeze）。
+# 通常起動の c3c だけが読み書きし、旧入口・--check・--clean は読まない・書かない・消さない。
+# ------------------------------------------------------------
+
+# 記憶のキーを確定する（env 読込前に呼び、結果を readonly にする）。使えない場合は空のまま理由を残す。
+# 明示 CLI なら WARNING 付きで記憶を省略して起動、無指定なら select_c3c_agent() が明示指定を求めて止まる。
+C3C_PREF_KEY=""
+C3C_PREF_UNAVAILABLE_REASON=""
+freeze_agent_preference_key() {
+  local key="" rc=0
+  if ! command -v python3 >/dev/null 2>&1; then
+    C3C_PREF_UNAVAILABLE_REASON="python3 が見つからない"
+  elif [[ ! -f "$AGENT_PREFERENCE_HELPER" ]]; then
+    C3C_PREF_UNAVAILABLE_REASON="helper が無い: $AGENT_PREFERENCE_HELPER"
+  else
+    key=$(python3 -I "$AGENT_PREFERENCE_HELPER" key "$WORKING_DIR") || rc=$?
+    if [[ $rc -eq 0 && "$key" =~ ^[0-9a-f]{64}$ ]]; then
+      C3C_PREF_KEY="$key"
+    else
+      C3C_PREF_UNAVAILABLE_REASON="対象の Git 構成を診断できない（agent-preference.py key rc=$rc）"
+    fi
+  fi
+  readonly C3C_PREF_KEY C3C_PREF_UNAVAILABLE_REASON
+}
+
+# 初回選択。/dev/tty から 1 行だけ読む（stdin は消費しない）。端末が無い・EOF・不正値は exit 2、
+# Ctrl-C は exit 130。失敗後の連続プロンプトや自動 fallback は設けない。
+prompt_c3c_agent() {
+  local answer="" tty_fd
+  # exec に直接 2>/dev/null を付けると stderr の付け替えまで恒久化する（exec の redirect は残る）ため、
+  # 開けない場合のエラー抑止はグループ側に付ける。
+  if ! { exec {tty_fd}<>/dev/tty; } 2>/dev/null; then
+    echo "ERROR: 対話可能な TTY がないため CLI を選択できません。c3c claude $WORKING_DIR または c3c codex $WORKING_DIR のように明示指定してください。" >&2
+    exit 2
+  fi
+  {
+    echo "起動する CLI を選んでください（正常終了後に記憶し、次回の c3c $WORKING_DIR の既定にします）:"
+    echo "  1) Claude Code"
+    echo "  2) Codex CLI"
+    printf '番号 [1/2]: '
+  } >&2
+  trap 'exit 130' INT
+  if ! read -r answer <&"$tty_fd"; then
+    trap 'exit 1' INT
+    exec {tty_fd}<&-
+    echo >&2
+    echo "ERROR: 入力が無いため CLI を選択できません。c3c claude $WORKING_DIR または c3c codex $WORKING_DIR のように明示指定してください。" >&2
+    exit 2
+  fi
+  trap 'exit 1' INT
+  exec {tty_fd}<&-
+  case "$answer" in
+    1) AGENT=claude ;;
+    2) AGENT=codex ;;
+    *)
+      echo "ERROR: 不正な入力です: '$answer'（1 か 2 を入力）。c3c claude $WORKING_DIR または c3c codex $WORKING_DIR のように明示指定もできます。" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# c3c の通常起動で agent を決める: 明示指定 → そのまま（記憶が使えなければ WARNING で省略）、
+# 無指定 → 記憶（採用時は INFO 表示）→ 無ければ初回選択。不正な記憶は WARNING の後に初回選択。
+select_c3c_agent() {
+  if [[ $AGENT_SET -eq 1 ]]; then
+    if [[ -z "$C3C_PREF_KEY" ]]; then
+      echo "WARNING: CLI 選択の記憶を使えません（$C3C_PREF_UNAVAILABLE_REASON）。今回の選択は記憶しません。" >&2
+    fi
+    return 0
+  fi
+  if [[ -z "$C3C_PREF_KEY" ]]; then
+    echo "ERROR: CLI 選択の記憶を使えないため（$C3C_PREF_UNAVAILABLE_REASON）、CLI を明示指定してください: c3c claude $WORKING_DIR または c3c codex $WORKING_DIR" >&2
+    exit 2
+  fi
+  local saved="" rc=0
+  saved=$(python3 -I "$AGENT_PREFERENCE_HELPER" read "$CC_STATE_DIR" "$C3C_PREF_KEY") || rc=$?
+  case "$rc" in
+    0)
+      case "$saved" in
+        claude | codex)
+          AGENT="$saved"
+          AGENT_RESELECT_HINT="前回の選択（$AGENT）を使えない場合は、c3c claude $WORKING_DIR または c3c codex $WORKING_DIR のように明示して選び直してください（正常終了後に記憶を更新します）。"
+          echo "INFO: 前回の選択: $AGENT" >&2
+          return 0
+          ;;
+        *)
+          echo "WARNING: 前回の CLI 選択の記録を読み取れないため、改めて選択します。" >&2
+          ;;
+      esac
+      ;;
+    3)
+      ;;
+    *)
+      echo "WARNING: 前回の CLI 選択の記録が不正か読めないため（agent-preference.py read rc=$rc）、改めて選択します。" >&2
+      ;;
+  esac
+  prompt_c3c_agent
+}
+
+# 本起動が終了コード 0 で戻った後だけ呼ぶ（呼び出し元の分岐が契約）。保存失敗は WARNING に留め、
+# launcher の終了コードには影響させない（本 run の終了コードを保持する）。
+write_agent_preference() {
+  [[ -n "$C3C_PREF_KEY" ]] || return 0
+  if ! python3 -I "$AGENT_PREFERENCE_HELPER" write "$CC_STATE_DIR" "$C3C_PREF_KEY" "$AGENT" >/dev/null; then
+    echo "WARNING: CLI の選択（$AGENT）を記憶できませんでした。次回も選択が必要です。" >&2
+  fi
+  return 0
+}
+
+# 本起動（従来の最終 compose run をそのまま包む）。環境代入と Compose 引数列は変えない。
+# BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は
+# compose の暗黙ビルドで焼かれるため、run 側に渡し忘れると初回だけ既定値でビルド
+# され、以後 -b するまで設定が効かないという無言バグになる（ASSET_HASH を両方に
+# 渡している理由と同型）。
+#
+# --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
+# カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（claude-container#60）。
+# リポジトリ同梱の .env が CODEX_DIR・EXTRA_MOUNT・CLAUDE_CONTAINER_NO_FIREWALL 等を
+# 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env、旧 .claude-container.d/env）だけにする。
+# dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
+# compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
+run_main_compose() {
+  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace
+}
+
+# プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば、許可リストのキーだけを環境変数として
+# 取り込む。source だとシェル構文がホスト上で即時解釈され任意コード実行になりうるため、変数代入以外の
+# 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
+#
+# 許可リスト（claude-container#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
+# 影響しないものと、コンテナのモードに使うキー（TZ・CLAUDE_CONTAINER_NO_FIREWALL・CLAUDE_CONTAINER_IPV6）。一方 PATH・HOME・
+# LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
+# ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
+# ことを実測）。拒否リストは列挙が閉じないので、許可リストで受け付けるキーを固定し、それ以外は
+# WARNING を出して無視する（export しなければ無害なので ERROR にはしない。--check では [WARN]）。
+# 新しいキーを compose.yml へ足したら、この配列と README「環境変数」節の表を同時に更新する
+# （両者の一致は test-build.sh の E7 が検査する）。compose.yml が補間するキーでも
+# CLAUDE_CODE_VERSION は意図的に除外している — 値は Dockerfile.claude の
+# `install.sh | bash -s ${CLAUDE_CODE_VERSION}` へクォートなしで展開され、リポジトリ側から
+# 書けるとビルド時 root でのコマンド注入経路になる（claude-container#62）。シェル環境から
+# 渡す経路は従来どおり有効。
+# 保護変数（readonly）は許可リストに含まれないので上書きされない。readonly 宣言自体は
+# スクリプト内部の直接代入に対する防御として残す（claude-container#39）。許可リストのキーを
+# readonly にしないこと — 下の export は無条件なので、readonly だと set -euo pipefail 下で
+# bash の生エラーのまま起動が落ちる。
+# ローカル変数名を _lef_ で名前空間化しているのは、bash の動的スコープにより関数内ローカルと同名の
+# キーが export してもグローバルへ出ないため（許可リストのキーをこの名前にしないこと）。
+ENV_FILE_ALLOWED_KEYS=(
+  CLAUDE_CONFIG_DIR
+  EXTRA_MOUNT
+  SHARED_MOUNT
+  SHARED_MOUNT_HOME_ALIAS
+  AGENTS_DIR
+  TZ
+  CLAUDE_CONTAINER_NO_FIREWALL
+  CLAUDE_CONTAINER_IPV6
+  GITCONFIG_FILE
+  SECRETS_DIR
+  CODEX_DIR
+)
+readonly -a ENV_FILE_ALLOWED_KEYS
+load_env_file() {
+  local _lef_file="$1" _lef_line _lef_key _lef_ignored=0
+  while IFS= read -r _lef_line || [[ -n "$_lef_line" ]]; do
+    [[ "$_lef_line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    _lef_key="${_lef_line%%=*}"
+    if [[ " ${ENV_FILE_ALLOWED_KEYS[*]} " != *" $_lef_key "* ]]; then
+      # 受け付けるキーの一覧は行ごとに繰り返さず、末尾で 1 回だけ出す（無関係なキーが数個あると
+      # 一覧の反復でログが埋まり、後続の専用ガードの具体的な案内が埋もれるため）。
+      guard_warn "WARNING: $_lef_file のキー $_lef_key は claude-container が解釈しないため無視します。"
+      _lef_ignored=1
+      continue
+    fi
+    # shellcheck disable=SC2163  # 変数名でなく KEY=VALUE 文字列の export が意図
+    export "$_lef_line"
+  done < "$_lef_file"
+  if [[ $_lef_ignored -eq 1 ]]; then
+    guard_warn "  受け付けるキー: ${ENV_FILE_ALLOWED_KEYS[*]}（README「環境変数」節）。ホスト側で使う変数はシェル環境から渡してください。"
+  fi
+}
+
+# 設定から固定の Compose override を選ぶ。任意の podman 引数は受け付けない。
+guard_ipv6() {
+  case "${CLAUDE_CONTAINER_IPV6:-0}" in
+    ''|0) ;;
+    1) COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.ipv6.yml") ;;
+    *) guard_fail "ERROR: CLAUDE_CONTAINER_IPV6 は0または1で指定してください。"; return 1 ;;
+  esac
+  if [[ "${CHECK_MODE:-0}" == 1 ]]; then
+    echo "[OK]   IPv6 設定: ${CLAUDE_CONTAINER_IPV6:-0}"
+  fi
+  [[ "${CLAUDE_CONTAINER_IPV6:-0}" == 1 ]] || return 0
+  # 対応前の entrypoint はモードを無視する。既存イメージを使う場合だけ拒否する。
+  [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]] && return 0
+  command -v podman >/dev/null 2>&1 || return 0
+  podman image exists "$IMAGE_NAME" 2>/dev/null || return 0
+  local support
+  support=$(podman image inspect --format '{{index .Labels "claude-container.ipv6-support"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  if [[ "$support" != 1 ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は IPv6 対応を確認できません。-b でリビルドしてください。"
+    return 1
+  fi
+  return 0
+}
+
+# ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
+# 渡さない設計（トークンを podman inspect に露出させないため）。直書きに気づかず
+# 「動かない」で詰まるのを防ぐ誤用ガード。
+guard_env_gh_token() {
+  if [[ -n "$ENV_FILE" ]] && grep -qE '^GH_TOKEN=' "$ENV_FILE"; then
+    guard_warn "WARNING: $ENV_FILE の GH_TOKEN=... はコンテナに渡されません。SECRETS_DIR 配下にトークンファイルを置いてください（README「GitHub トークンの配線」節）。"
+  fi
+}
+
+# legacy トークン変数（GH_TOKEN_FILE / GH_TOKEN_SECONDARY_FILE）は v4 で撤廃した
+# （claude-container#24）。後方互換エイリアスは持たないため、設定されていたら黙って
+# 無視せず fail-closed で起動を中止し、新レイアウトへの移行手順を案内する（検出した
+# 変数をまとめて1回で提示し、複数回起動してもう1個見つかる体験を避ける）。
+guard_legacy_vars() {
+  local _legacy_vars_found=() _lv
+  # シェル環境の export 済み変数と、env ファイルの行の両方を見る。後者は許可リスト外なので
+  # export されず（claude-container#44）、変数を見るだけでは移行案内が汎用 WARNING に格下げされる。
+  for _lv in GH_TOKEN_FILE GH_TOKEN_SECONDARY_FILE; do
+    if [[ -n "${!_lv:-}" ]] || { [[ -n "$ENV_FILE" ]] && grep -qE "^${_lv}=" "$ENV_FILE" 2>/dev/null; }; then
+      _legacy_vars_found+=("$_lv")
+    fi
+  done
+  if [[ ${#_legacy_vars_found[@]} -gt 0 ]]; then
+    guard_fail \
+      "ERROR: 次の変数は廃止されました（後方互換なし、claude-container#24）: ${_legacy_vars_found[*]}" \
+      "移行手順:" \
+      "  1. $ENV_FILE（およびシェル環境）から上記変数の行を削除する" \
+      "  2. push・PR 用のメイン PAT は SECRETS_DIR 直下に GITHUB_MAIN_PAT として置く（chmod 600）。" \
+      "     コンテナ内で export されず、git push（askpass 自動配線）と" \
+      "     gh CLI への明示読みで使う（読み取り失敗時に実行しない手順は README を参照）" \
+      "  3. Issues 用 PAT を gh CLI の明示読みだけで使う場合は SECRETS_DIR/GITHUB_ISSUES_PAT として置く（chmod 600）。" \
+      "     MCP・hook 等が環境変数を必要とする場合だけ export/GITHUB_MCP_PAT に置く（chmod 600。値が export される）" \
+      "  4. $ENV_FILE に SECRETS_DIR=<ディレクトリ> を書く（chmod 700 推奨）" \
+      "注意: GH_TOKEN の自動 export は撤廃されました。gh は既定で未認証になります。" \
+      "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" || return 1
+  fi
+}
+
+# ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）。任意設定のため未設定時は何もしない。
+# 設定済みでファイルが無い場合のみ起動を中止する（不存在パスを bind mount すると podman が
+# ホスト側に空ディレクトリを誤作成し、コンテナ内 ~/.gitconfig もディレクトリになって
+# git が壊れるため）。
+guard_gitconfig_file() {
+  if [[ -n "${GITCONFIG_FILE:-}" ]]; then
+    GITCONFIG_FILE="${GITCONFIG_FILE/#\~\//$HOME/}"
+    export GITCONFIG_FILE
+    if [[ ! -f "$GITCONFIG_FILE" ]]; then
+      guard_fail "ERROR: GITCONFIG_FILE=$GITCONFIG_FILE が見つかりません(存在しないか通常ファイルではありません)。起動を中止します。" || return 1
+    fi
+  fi
+}
+
+# 汎用シークレットディレクトリの参照（SECRETS_DIR）。任意設定のため未設定時は何もしない。
+# 設計原則（exposure 軸、claude-container#24）: 直下のファイルは export されない
+# （メインPATや、gh の明示読みだけで使う Issues 用PAT等）。export/ サブディレクトリのファイルのみ、コンテナ内で
+# 「ファイル名＝環境変数名」として export される（issues 限定PAT等、entrypoint.sh 参照）。
+# v3 以前とは直下/export の意味が逆転している。設定済みでディレクトリが無い場合は
+# 起動を中止する（GITCONFIG_FILE と同じ理由: 不存在パスを bind mount すると podman が
+# ホスト側に空ディレクトリを誤作成するため）。
+guard_secrets_dir() {
+  if [[ -n "${SECRETS_DIR:-}" ]]; then
+    SECRETS_DIR="${SECRETS_DIR/#\~\//$HOME/}"
+    export SECRETS_DIR
+    if [[ ! -d "$SECRETS_DIR" ]]; then
+      guard_fail "ERROR: SECRETS_DIR=$SECRETS_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+    fi
+    # v3 以前のレイアウト（noexport/ サブディレクトリ）が残っていたら fail-closed で
+    # 停止する。新レイアウトでは直下が非export（旧 noexport/ 相当）になったため、残存
+    # させると設計意図が伝わらないまま、あるいは意図せず export 側に倒れるのを防ぐ。
+    if [[ -d "$SECRETS_DIR/noexport" ]]; then
+      guard_fail \
+        "ERROR: $SECRETS_DIR/noexport が見つかりました。v4 で SECRETS_DIR のレイアウトが変わりました（claude-container#24）:" \
+        "  旧: 直下=export される / noexport/=export されない" \
+        "  新: 直下=export されない / export/=export される" \
+        "移行手順: noexport/ 配下のファイルを SECRETS_DIR 直下へ移動し（GIT_PUSH_TOKEN は GITHUB_MAIN_PAT へ改名）、" \
+        "  従来 SECRETS_DIR 直下にあった export 用ファイルは export/ サブディレクトリへ移動してください。" \
+        "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" || return 1
+    fi
+    local secrets_dir_perm
+    secrets_dir_perm=$(stat -c '%a' "$SECRETS_DIR" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR" 2>/dev/null || echo "")
+    if [[ -n "$secrets_dir_perm" && "$secrets_dir_perm" != "700" ]]; then
+      guard_warn "WARNING: SECRETS_DIR=$SECRETS_DIR のパーミッションが $secrets_dir_perm です。chmod 700 を推奨します。"
+    fi
+    local secret_file secret_file_perm
+    for secret_file in "$SECRETS_DIR"/*; do
+      [[ -f "$secret_file" ]] || continue
+      secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
+      if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
+        guard_warn "WARNING: SECRETS_DIR 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。"
+      fi
+      # 直下は export されない（新レイアウト）。MCP 向けのファイル名が直下に
+      # 置かれている場合は、環境変数を必要とする消費者の有無を確認するよう案内する
+      # （ブロックはしない — 直下＝非exportは有効な選択でもあるため）。
+      if [[ "$(basename "$secret_file")" == "GITHUB_MCP_PAT" ]]; then
+        guard_warn "WARNING: SECRETS_DIR/GITHUB_MCP_PAT は直下に置かれているため export されません（v4〜）。MCP・hook 等が環境変数を必要とする場合は export/GITHUB_MCP_PAT へ移動してください。gh CLI でファイルを明示読みする場合は直下のまま利用できます（gh 専用なら GITHUB_ISSUES_PAT 等へ改名すると本警告は出ません）。"
+      fi
+    done
+    # export/ サブディレクトリ（コンテナ内で export されるファイル秘密の規約、
+    # README「SECRETS_DIR」節参照）も同じ検証を行う。上のループは [[ -f ]] 判定で
+    # サブディレクトリ自体を黙ってスキップするため、ここで個別に確認する。
+    if [[ -d "$SECRETS_DIR/export" ]]; then
+      local export_dir_perm
+      export_dir_perm=$(stat -c '%a' "$SECRETS_DIR/export" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR/export" 2>/dev/null || echo "")
+      if [[ -n "$export_dir_perm" && "$export_dir_perm" != "700" ]]; then
+        guard_warn "WARNING: SECRETS_DIR/export のパーミッションが $export_dir_perm です。chmod 700 を推奨します。"
+      fi
+      for secret_file in "$SECRETS_DIR/export"/*; do
+        [[ -f "$secret_file" ]] || continue
+        secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
+        if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
+          guard_warn "WARNING: SECRETS_DIR/export 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。"
+        fi
+      done
+    fi
+  fi
+}
+
+# Codex CLI の認証情報ディレクトリの参照（CODEX_DIR）。任意設定のため未設定時は何もしない。
+# auth.json はセッション中にトークンが自動リフレッシュされホストへ書き戻される必要があるため
+# rw マウント（compose.yml 側で :ro を付けない）。実ホストの ~/.codex を直接指すと、コンテナ側
+# コードが config.toml（notify フック・MCPサーバー定義）を汚染し、ホストで codex 起動時に
+# 任意コマンドが実行される経路が生じるため、専用ディレクトリ（例: ~/.codex-container）を
+# 前提とする（README「利用側プロジェクトの設定」節参照）。設定済みでディレクトリが無い場合は
+# 起動を中止する（GITCONFIG_FILE/SECRETS_DIR と同じ理由: 不存在パスを bind mount すると
+# podman がホスト側に空ディレクトリを誤作成するため）。詳細は内部運用issue参照。
+guard_codex_dir() {
+  if [[ -n "${CODEX_DIR:-}" ]]; then
+    CODEX_DIR="${CODEX_DIR/#\~\//$HOME/}"
+    CODEX_DIR="${CODEX_DIR%/}"
+    export CODEX_DIR
+    local codex_real_msg="ERROR: CODEX_DIR が実ホストの \$HOME/.codex を指しています。コンテナ側のコードが config.toml（notify フック・MCP サーバー定義）を汚染し、ホストで codex 実行時に任意コマンドが実行される経路になるため、専用ディレクトリ（例: ~/.codex-container）を指定してください。起動を中止します。"
+    # 文字列比較（claude-container#36）。~/.codex が存在しない状態での誤指定もここで捕まえる。
+    if [[ "$CODEX_DIR" == "$HOME/.codex" ]]; then
+      guard_fail "$codex_real_msg" || return 1
+    fi
+    # 相対パスは拒否する（CLAUDE_CONFIG_DIR と同じ理由: compose は相対 bind source を
+    # compose.yml のディレクトリ基準で解決し、ランチャーの解釈と食い違う。加えて相対パスの
+    # cd は CDPATH — env から export できる — の影響を受ける）。claude-container#48
+    if [[ "$CODEX_DIR" != /* ]]; then
+      guard_fail "ERROR: CODEX_DIR=$CODEX_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1
+    fi
+    if [[ ! -d "$CODEX_DIR" ]]; then
+      guard_fail "ERROR: CODEX_DIR=$CODEX_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+    fi
+    # 実体で比較する（claude-container#48）。`~/.codex//`・`~/./.codex`・`~/.codex/.`・
+    # `//home/...`・実 ~/.codex への symlink は文字列比較をすり抜け、podman 側で解決されて
+    # 実 ~/.codex が rw マウントされるため、-ef（同じ device と inode か）で比べる。
+    # パス文字列の正規化（pwd -P）では先頭の `//` が残り（POSIX で意味が実装定義のため
+    # bash は保持する）、文字列比較に戻ると同じ穴が開く。$HOME/.codex 側が存在しない・
+    # 辿れない場合は -ef が偽になるだけで起動は止めず、上の文字列比較だけに委ねる
+    # （運用者が指していないディレクトリの事情で止めない）。
+    if [[ "$CODEX_DIR" -ef "$HOME/.codex" ]]; then
+      guard_fail "$codex_real_msg" || return 1
+    fi
+    # 正規化済みの絶対パスを compose へ渡す（CLAUDE_CONFIG_DIR と同じ扱い。bind source に
+    # `.`・`..`・symlink・先頭 `//` を含めない）。CDPATH='' は cd の検索経路を断ち、
+    # >/dev/null は CDPATH 経由時に cd が出力するパスを捨てる。
+    local codex_dir_real
+    if ! codex_dir_real="$(CDPATH='' cd -- "$CODEX_DIR" >/dev/null 2>&1 && pwd -P)"; then
+      guard_fail "ERROR: CODEX_DIR=$CODEX_DIR を解決できません（ディレクトリに入れません）。起動を中止します。" || return 1
+    fi
+    while [[ "$codex_dir_real" == //* ]]; do codex_dir_real="${codex_dir_real#/}"; done
+    CODEX_DIR="$codex_dir_real"
+    export CODEX_DIR
+    local codex_dir_perm
+    codex_dir_perm=$(stat -c '%a' "$CODEX_DIR" 2>/dev/null || stat -f '%Lp' "$CODEX_DIR" 2>/dev/null || echo "")
+    if [[ -n "$codex_dir_perm" && "$codex_dir_perm" != "700" ]]; then
+      guard_warn "WARNING: CODEX_DIR=$CODEX_DIR のパーミッションが $codex_dir_perm です。chmod 700 を推奨します。"
+    fi
+    if [[ -f "$CODEX_DIR/auth.json" ]]; then
+      local auth_json_perm
+      auth_json_perm=$(stat -c '%a' "$CODEX_DIR/auth.json" 2>/dev/null || stat -f '%Lp' "$CODEX_DIR/auth.json" 2>/dev/null || echo "")
+      if [[ -n "$auth_json_perm" && "$auth_json_perm" != "600" ]]; then
+        guard_warn "WARNING: $CODEX_DIR/auth.json のパーミッションが $auth_json_perm です。chmod 600 を推奨します。"
+      fi
+    fi
+  fi
+}
+
+# Node.js / Codex のビルド入力（node-version.txt・codex-version.txt）の採用元を、通常起動と --check の
+# 両方で表示する（c3c 第2b-2段階）。採用元は resolve_asset_source() の結果（project / 同梱 default）と
+# 内容（空 = 明示 opt-out）から決め、ここで別の解決規則を持たない。Node が opt-out で Codex が有効な
+# 組合せは、ベースイメージや packages.txt で npm が入るかをホスト側では判定できない（断定しない）ため
+# ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。値の妥当性（書式・対応版）は
+# Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。
+guard_build_input_defaults() {
+  local name label value origin_text
+  local node_value="" codex_value="" info_prefix="INFO: "
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && info_prefix="[INFO] "
+  for name in node-version.txt codex-version.txt; do
+    resolve_asset_source "$name"
+    value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
+      guard_fail "ERROR: $ASSET_PATH を読めません。起動を中止します。" || return 1
+    }
+    label="Node.js"
+    [[ "$name" == codex-version.txt ]] && label="Codex"
+    if [[ "$ASSET_ORIGIN" == "project" ]]; then
+      if [[ -z "$value" ]]; then
+        origin_text="なし（$ASSET_PATH が空 = opt-out、$label を導入しません）"
+      else
+        origin_text="$value（採用元: project $ASSET_PATH）"
+      fi
+    else
+      origin_text="$value（採用元: 同梱 default）"
+    fi
+    if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+      echo "${info_prefix}$label 版: $origin_text"
+    else
+      echo "${info_prefix}$label 版: $origin_text" >&2
+    fi
+    if [[ "$name" == node-version.txt ]]; then
+      node_value="$value"
+    else
+      codex_value="$value"
+    fi
+  done
+  if [[ -z "$node_value" && -n "$codex_value" ]]; then
+    local warn_prefix=""
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
+    guard_warn "${warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに codex-version.txt は有効（$codex_value）です。Codex CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Codex を使わないなら $PROJECT_CONF_DIR/codex-version.txt も空にして無効化できます。"
+  fi
+  return 0
+}
+
+# --agent codex の静的前提（c3c 第1段階）。専用 home（CODEX_DIR）と Codex の版指定
+# （codex-version.txt。c3c 第2b-2段階から同梱 default が対応版で、project 側の空ファイルは opt-out）を、
+# 通常起動と --check の両方で診断する。イメージ内の実際の版は起動時に codex-mcp-audit.py が
+# `codex --version` で厳密に照合するため、ここは静的診断に留める。
+# 記憶した CLI が使えない場合は既存の理由に加えて明示再選択の案内（AGENT_RESELECT_HINT、memory 由来の
+# ときだけ非空）を添える。自動 fallback はしない。
+guard_codex_agent() {
+  [[ "$AGENT" == codex ]] || return 0
+  if [[ -z "${CODEX_DIR:-}" ]]; then
+    guard_fail "ERROR: --agent codex には Codex 専用の認証ディレクトリ CODEX_DIR が必要です。$PROJECT_CONF_DIR/env に CODEX_DIR=~/.codex-container のように設定してください（ホストの実 ~/.codex は指定できません。README「Codex CLI を対話で使う」節）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+  fi
+  resolve_asset_source codex-version.txt
+  local value origin_text="同梱 default"
+  [[ "$ASSET_ORIGIN" == "project" ]] && origin_text="project"
+  value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
+    guard_fail "ERROR: $ASSET_PATH を読めません。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+  }
+  case "$value" in
+    "")
+      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です（Codex の opt-out。このイメージには Codex CLI を導入しません）。Codex を使うには対応版 $CODEX_SUPPORTED_VERSION を書くか、ファイルを削除して同梱 default（$CODEX_SUPPORTED_VERSION）を使い、-b で再ビルドしてください（npm が必要なため node-version.txt も空にしないでください）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      ;;
+    "$CODEX_SUPPORTED_VERSION")
+      [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（対応版、採用元: $origin_text）"
+      ;;
+    latest)
+      guard_warn "WARNING: $ASSET_PATH が latest です。起動時 MCP 審査の対応版は $CODEX_SUPPORTED_VERSION で、イメージ内の版が異なると検査で拒否されます。固定版の指定を推奨します。"
+      ;;
+    *)
+      guard_fail "ERROR: $ASSET_PATH の $value は起動時 MCP 審査の対応版（$CODEX_SUPPORTED_VERSION）ではありません。未知版を同じ審査方式として扱わないため起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      ;;
+  esac
+  return 0
+}
+
+# 対応 image の確認。固定 label io.c3c.codex-audit-protocol が対応 protocol と一致するイメージでだけ
+# 検査用コンテナと本起動を行う。label 欠落・未知値（旧イメージ）では preflight 自体を起動しない。
+# 通常起動では必要な明示ビルドの後に呼び、--check では既存イメージの静的診断として呼ぶ。
+guard_codex_image_support() {
+  local label
+  if ! label=$(podman image inspect --format "{{index .Labels \"$CODEX_AUDIT_PROTOCOL_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null); then
+    guard_fail "ERROR: イメージ $IMAGE_NAME を inspect できないため Codex 対応を確認できません。起動を中止します。" || return 1
+  fi
+  if [[ "$label" != "$CODEX_AUDIT_PROTOCOL_VERSION" ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は Codex 起動時 MCP 審査（protocol $CODEX_AUDIT_PROTOCOL_VERSION）に対応していません（label $CODEX_AUDIT_PROTOCOL_LABEL=${label:-なし}）。-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 審査 protocol: $CODEX_AUDIT_PROTOCOL_LABEL=$label"
+  return 0
+}
+
+# 承認記録の正本の形。launcher が書き、コンテナ内の codex-mcp-audit.py verify が :ro で読む。
+codex_record_content() {
+  printf '{"protocol_version":%s,"codex_version":"%s","hash":"%s"}\n' \
+    "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" "$1"
+}
+
+# 承認記録の静的検証（--check 用）。JSON 1 文書・重複 key 拒否・key 集合の完全一致・int の protocol・
+# 固定 version・小文字 hash を python3 -I で検証する（grep の正規表現では前後の garbage や
+# `.` の任意一致を通してしまう）。通常起動は codex_record_content() との完全一致で照合する。
+validate_codex_record_file() {
+  python3 -I - "$1" "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" <<'PYTHON' 2>/dev/null
+import json
+import re
+import sys
+
+path, protocol_version, codex_version = sys.argv[1:4]
+
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError('duplicate key')
+        result[key] = value
+    return result
+
+
+def reject(_name):
+    raise ValueError('non-standard constant')
+
+
+try:
+    with open(path, 'rb') as handle:
+        doc = json.loads(handle.read().decode('utf-8'), object_pairs_hook=pairs, parse_constant=reject)
+except (OSError, ValueError):
+    sys.exit(1)
+ok = (isinstance(doc, dict) and set(doc) == {'protocol_version', 'codex_version', 'hash'}
+      and type(doc['protocol_version']) is int and doc['protocol_version'] == int(protocol_version)
+      and isinstance(doc['codex_version'], str) and doc['codex_version'] == codex_version
+      and isinstance(doc['hash'], str) and re.fullmatch(r'[0-9a-f]{64}', doc['hash']) is not None)
+sys.exit(0 if ok else 1)
+PYTHON
+}
+
+# 承認記録を dir 0700 / file 0600、同一 dir の一時ファイルからの atomic replace で書く。
+write_codex_record() {
+  local hash="$1" tmp
+  (
+    umask 077
+    mkdir -p "$CODEX_APPROVAL_DIR" || exit 1
+    chmod 700 "$MCP_APPROVAL_STORE" "$MCP_APPROVAL_STORE/codex" "$CODEX_APPROVAL_DIR" || exit 1
+    tmp=$(mktemp "$CODEX_APPROVAL_DIR/.tmp.XXXXXX") || exit 1
+    trap 'rm -f -- "$tmp"' EXIT
+    chmod 600 "$tmp" || exit 1
+    codex_record_content "$hash" > "$tmp" || exit 1
+    mv -f -- "$tmp" "$CODEX_APPROVAL_RECORD" || exit 1
+    trap - EXIT
+  ) || {
+    echo "ERROR: Codex MCP 承認記録を書けません: $CODEX_APPROVAL_RECORD。起動を中止します" >&2
+    exit 1
+  }
+}
+
+# 検査用コンテナ（非 TTY、stdin は /dev/null）を起動し、stdout の protocol 1 文書だけを厳密に検証する。
+# 結果は CODEX_HASH / CODEX_COUNT / CODEX_DISPLAY[] に入れる。protocol には利用者が埋め込んだ秘密が
+# command/args に含まれうるため永続ログへ保存せず、0700 の一時 dir に置いて終了時に削除する。
+CODEX_PREFLIGHT_TMP=""
+cleanup_codex_preflight() {
+  [[ -n "$CODEX_PREFLIGHT_TMP" ]] && rm -rf -- "$CODEX_PREFLIGHT_TMP"
+  CODEX_PREFLIGHT_TMP=""
+  return 0
+}
+run_codex_preflight() {
+  CODEX_HASH=""
+  CODEX_COUNT=""
+  CODEX_DISPLAY=()
+  local override="$RUN_DIR/compose.codex-preflight.yml" rc=0
+  if [[ ! -f "$override" ]]; then
+    echo "ERROR: 検査用の固定 Compose override がありません: $override。起動を中止します" >&2
+    exit 1
+  fi
+  CODEX_PREFLIGHT_TMP=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/cc-codex-preflight.XXXXXX") || {
+    echo "ERROR: 検査用の一時ディレクトリを作成できません。起動を中止します" >&2
+    exit 1
+  }
+  trap 'cleanup_codex_preflight' EXIT
+  chmod 700 "$CODEX_PREFLIGHT_TMP"
+  ( umask 077; : > "$CODEX_PREFLIGHT_TMP/protocol" ) || exit 1
+  echo "INFO: Codex 起動時 MCP 審査: 設定済み MCP の実行定義を検査用コンテナで取得します（agent と MCP command は起動しません）" >&2
+  CC_CODEX_START_MODE=preflight
+  export CC_CODEX_START_MODE
+  # 検査と本起動で同じ mount・working directory・固定引数を使う。preflight 専用 override は
+  # tty/stdin_open だけを上書きし、-T と </dev/null でホスト側の TTY も要求しない。
+  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
+    run --rm -T claude-auth-workspace </dev/null >"$CODEX_PREFLIGHT_TMP/protocol" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: Codex 起動時 MCP 審査: 検査用コンテナが終了コード $rc で失敗しました。本起動は行いません" >&2
+    exit 1
+  fi
+  # stdout 全体が対応 protocol の JSON 1 文書であることを python3 -I で検証する（shell で再解釈しない）。
+  # summary は 1 行目 hash、2 行目件数、以降が表示用行（制御文字は除去済み）。
+  if ! python3 -I - "$CODEX_PREFLIGHT_TMP/protocol" "$CODEX_PREFLIGHT_TMP/summary" \
+      "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" <<'PYTHON'
+import json
+import re
+import sys
+
+source, summary, protocol_version, codex_version = sys.argv[1:5]
+CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def fail(message):
+    print('ERROR: Codex 起動時 MCP 審査: ' + message + '。本起動は行いません', file=sys.stderr)
+    sys.exit(1)
+
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            fail('protocol に重複 key があります')
+        result[key] = value
+    return result
+
+
+def is_str(value):
+    return isinstance(value, str)
+
+
+def is_str_list(value):
+    return isinstance(value, list) and all(is_str(item) for item in value)
+
+
+def is_env_var(item):
+    # codex-mcp-audit.py と同じ受理範囲: 文字列名か {name, source?}（source は null/local/remote）。
+    if is_str(item):
+        return True
+    return (isinstance(item, dict) and 'name' in item and set(item) <= {'name', 'source'}
+            and is_str(item['name']) and item.get('source') in (None, 'local', 'remote'))
+
+
+try:
+    with open(source, 'rb') as handle:
+        text = handle.read().decode('utf-8')
+except (OSError, UnicodeDecodeError):
+    fail('検査用コンテナの stdout を UTF-8 として読めません')
+try:
+    doc = json.loads(text, object_pairs_hook=pairs, parse_constant=lambda name: fail('protocol に非標準の定数があります'))
+except ValueError:
+    fail('検査用コンテナの stdout が protocol の JSON 1 文書ではありません（余分な出力・破損・欠落）')
+if not isinstance(doc, dict) or set(doc) != {'protocol_version', 'codex_version', 'hash', 'count', 'servers'}:
+    fail('protocol の形式が対応版と異なります')
+if type(doc['protocol_version']) is not int or doc['protocol_version'] != int(protocol_version):
+    fail('protocol version が対応版と異なります')
+if not is_str(doc['codex_version']) or doc['codex_version'] != codex_version:
+    fail('Codex 版が対応版（%s）と異なります' % codex_version)
+if not is_str(doc['hash']) or not re.fullmatch(r'[0-9a-f]{64}', doc['hash']):
+    fail('hash の形式が不正です')
+if type(doc['count']) is not int or doc['count'] < 0:
+    fail('count の形式が不正です')
+servers = doc['servers']
+if not isinstance(servers, list) or doc['count'] != len(servers):
+    fail('servers と count が一致しません')
+lines = []
+for server in servers:
+    if not isinstance(server, dict) or set(server) != {'name', 'command', 'args', 'cwd', 'env_keys', 'env_vars'}:
+        fail('servers の要素の形式が対応版と異なります')
+    if not (is_str(server['name']) and is_str(server['command']) and is_str_list(server['args'])
+            and (server['cwd'] is None or is_str(server['cwd'])) and is_str_list(server['env_keys'])
+            and isinstance(server['env_vars'], list) and all(is_env_var(item) for item in server['env_vars'])):
+        fail('servers の要素の型が対応版と異なります')
+    env_vars = []
+    for item in server['env_vars']:
+        if is_str(item):
+            env_vars.append(item)
+        else:
+            env_vars.append(item['name'] + ('[' + item['source'] + ']' if item.get('source') else ''))
+    line = '  - %s: %s%s（cwd: %s、env: %s、env_vars: %s）' % (
+        server['name'], server['command'], ''.join(' ' + arg for arg in server['args']),
+        server['cwd'] if server['cwd'] is not None else '-',
+        ', '.join(server['env_keys']) or '-', ', '.join(env_vars) or '-')
+    lines.append(CONTROL.sub('', line))
+# 一時ファイルは umask に依らず 0600 で作る（表示行に command/args が含まれるため）。
+import os
+fd = os.open(summary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+    handle.write(doc['hash'] + '\n' + str(doc['count']) + '\n')
+    for line in lines:
+        handle.write(line + '\n')
+PYTHON
+  then
+    exit 1
+  fi
+  local -a summary_lines=()
+  mapfile -t summary_lines < "$CODEX_PREFLIGHT_TMP/summary"
+  CODEX_HASH="${summary_lines[0]:-}"
+  CODEX_COUNT="${summary_lines[1]:-}"
+  if [[ ! "$CODEX_HASH" =~ ^[0-9a-f]{64}$ || ! "$CODEX_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: Codex 起動時 MCP 審査: 検証結果を読み取れません。本起動は行いません" >&2
+    exit 1
+  fi
+  CODEX_DISPLAY=("${summary_lines[@]:2}")
+  cleanup_codex_preflight
+  trap - EXIT
+  return 0
+}
+
+# Codex の独立承認（TOFU＋変更検知）。既存 Claude の check_mcp_approval() と同じ人間ゲートだが、
+# 拒否・TTY 無し・EOF ではコンテナ内のゲートへ委ねず Codex を起動しない。count=0 も空定義の
+# hash として記録し、本起動へ :ro で渡す（人間への確認は省略できる）。
+# CODEX_MCP_APPROVAL_FILE は全分岐の末尾で無条件 export する（env 由来の値を信用しない）。
+check_codex_approval() {
+  local expected recorded=""
+  expected=$(codex_record_content "$CODEX_HASH")
+  if [[ -f "$CODEX_APPROVAL_RECORD" ]]; then
+    recorded=$(cat "$CODEX_APPROVAL_RECORD" 2>/dev/null || echo "")
+  fi
+  if [[ -n "$recorded" && "$recorded" == "$expected" ]]; then
+    echo "INFO: Codex MCP 審査: ローカル command 定義（$CODEX_COUNT 件）は承認済み（ハッシュ一致）。確認を省略します" >&2
+  elif [[ "$CODEX_COUNT" -eq 0 ]]; then
+    echo "INFO: Codex MCP 審査: 対象のローカル command 定義は 0 件です。空定義として記録し、本起動でも照合します" >&2
+    write_codex_record "$CODEX_HASH"
+  else
+    echo "WARNING: Codex の設定済み MCP に、前回の承認から変わっている（または未承認の）ローカル command 定義があります。そのコードは Codex のセッション中に実行され、export された全ての秘密を読めます:" >&2
+    if [[ -n "$recorded" ]]; then
+      echo "  （注: 前回のホスト側承認から定義が変わっています）" >&2
+    fi
+    # 各値の制御文字は protocol 検証時に除去済み。表示用の改行は残し、定義ごとに区切る。
+    printf '%s\n' "${CODEX_DISPLAY[@]}" >&2
+    printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
+    local codex_confirm=""
+    if ! read -r codex_confirm </dev/tty 2>/dev/null; then
+      echo "ERROR: 対話可能な TTY がないため Codex の MCP 実行定義を確認できません。Codex は起動しません" >&2
+      exit 1
+    fi
+    case "$codex_confirm" in
+      y | Y | yes | YES | Yes)
+        write_codex_record "$CODEX_HASH"
+        ;;
+      *)
+        echo "ERROR: Codex の MCP 実行定義の確認が拒否されました。Codex は起動しません" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  CODEX_MCP_APPROVAL_FILE="$CODEX_APPROVAL_RECORD"
+  export CODEX_MCP_APPROVAL_FILE
+}
+
+# -b のビルド、および Codex 経路の image 不在時の明示ビルド。`run --build` はビルド失敗時に既存の
+# 古いイメージで起動してしまう（fail-open）ため、build を独立させ set -e で失敗時に起動へ進ませない。
+run_explicit_build() {
+  # codex-version.txt が "latest" のプロジェクトだけ Codex レイヤーのキャッシュを
+  # 破棄する（Dockerfile.claude の ARG CODEX_CACHEBUST 参照箇所と対）。固定バージョン
+  # 指定・未使用（空ファイル）のプロジェクトは "pinned" のまま変えず、既存のビルド
+  # キャッシュ効率を壊さない。
+  local codex_cachebust=pinned
+  if [[ -f "$BUILD_CONTEXT_DIR/codex-version.txt" ]] \
+     && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
+    codex_cachebust="$(date +%s)"
+  fi
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
+}
+
+# ホスト ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、compose.yml が
+# rw マウントの内側に :ro で重ねる 12 項目（compose.yml の volumes と test-build.sh の
+# CONFIG_RO_DIRS/FILES と同期すること）。侵害されたセッションがここへ hook/skill/plugin 等を
+# 書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file
+# watcher で稼働中セッションにも反映）ため、この経路をマウント層で閉じる。
+# 認証（.credentials.json）・transcript・memory 等の状態は対象外（rw のまま）。
+# .git は ~/.claude 自体を git リポジトリにしているホスト向け（claude-container#129）。.git/hooks と
+# .git/config はホストで git を打った時点でホスト権限で実行・参照されるため、hook と同じ扱いにする。
+CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
+CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
+
+# 上記 12 項目のマウント先をホスト側に用意する。マウント先が無いと podman がサブ uid
+# 所有・0700 の実体をホストの ~/.claude 内に作り、ユーザー権限で消せない残骸になるため、
+# ランチャーがユーザー権限で明示的に空で作る（空ディレクトリ・空ファイル・`{}` は
+# Claude Code にとって不活性）。基点は compose.yml の親マウントと同じ ${CLAUDE_CONFIG_DIR:-~}。
+# 呼び出し位置は全 guard と MCP 承認の後（起動を拒否する経路ではホストに何も書かない）。
+# --check（CHECK_MODE=1）では何も作らず報告だけ行う（--check は書き込みをしない契約）。
+prepare_claude_config_ro() {
+  local base cfg name path created=0 host_base
+  # plugin 別名（guard_plugins_alias()、claude-container#98）用に、基点の「~ 展開済み・
+  # 実体未解決」の綴りを残す。plugin のメタデータはホストの Claude Code が見た綴りを
+  # 記録するため、下の pwd -P で実体解決した値では symlink 経由の HOME と食い違う。
+  # 基点の検証に失敗した経路では空のまま（別名の判定を行わない）。
+  CLAUDE_CONFIG_HOST_BASE=""
+  if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+    base="${CLAUDE_CONFIG_DIR}"
+    [[ "$base" == "~" ]] && base="$HOME"
+    base="${base/#\~\//$HOME/}"
+    host_base="$base"
+    # 相対パスは拒否する。compose は相対 bind source を compose.yml のディレクトリ基準で
+    # 解決し、ランチャーの解釈と食い違って親マウントと 12 項目が別実体を指しうるため。
+    if [[ "$base" != /* ]]; then
+      guard_fail "ERROR: CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1
+    fi
+    if [[ ! -d "$base" ]]; then
+      guard_fail "ERROR: CLAUDE_CONFIG_DIR=$base が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+    fi
+    if ! base="$(cd "$base" 2>/dev/null && pwd -P)"; then
+      guard_fail "ERROR: CLAUDE_CONFIG_DIR=$base を解決できません（ディレクトリに入れません）。起動を中止します。" || return 1
+    fi
+    # 親マウント（compose.yml の ${CLAUDE_CONFIG_DIR:-~}/.claude）と同じ実体を指すよう、
+    # 展開・正規化済みの絶対パスを渡す。
+    CLAUDE_CONFIG_DIR="$base"
+    export CLAUDE_CONFIG_DIR
+    CLAUDE_CONFIG_HOST_BASE="$host_base"
+  else
+    base="$HOME"
+    CLAUDE_CONFIG_HOST_BASE="$HOME"
+  fi
+  cfg="$base/.claude"
+
+  if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+    echo "[INFO] ~/.claude 読み取り専用保護: $(( ${#CLAUDE_CONFIG_RO_DIRS[@]} + ${#CLAUDE_CONFIG_RO_FILES[@]} )) 項目（基点 $cfg）"
+  fi
+
+  if [[ ! -d "$cfg" ]]; then
+    if [[ -e "$cfg" || -L "$cfg" ]]; then
+      guard_fail "ERROR: $cfg がディレクトリではありません。起動を中止します。" || return 1
+    fi
+    if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+      guard_warn "[WARN] $cfg が無い（通常起動時に空で作成。12 項目もその際に作成）"
+      return 0
+    fi
+    mkdir -p "$cfg" || { guard_fail "ERROR: $cfg を作成できません。起動を中止します。" || return 1; }
+    echo "INFO: $cfg を読み取り専用保護のため空で作成しました" >&2
+  fi
+
+  # symlink は有効・無効を問わず拒否する。:ro の子マウントはリンク先に付くが、リンク自体は
+  # rw の親マウント内に残るため、コンテナ内で rm + mkdir すれば書き込み可能な実体へ
+  # 置き換えられ、保護を迂回できる。実ディレクトリ／実ファイルに置き換えてもらう。
+  for name in "${CLAUDE_CONFIG_RO_DIRS[@]}"; do
+    path="$cfg/$name"
+    if [[ -L "$path" ]]; then
+      guard_fail "ERROR: $path が symlink です（読み取り専用保護はコンテナ内から rm + mkdir で迂回されるため、実ディレクトリに置き換えてください）。起動を中止します。" || return 1
+    elif [[ -d "$path" ]]; then
+      continue
+    elif [[ -e "$path" ]]; then
+      guard_fail "ERROR: $path がディレクトリではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
+    elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+      guard_warn "[WARN] $path が無い（通常起動時に空で作成）"
+    else
+      mkdir -p "$path" || { guard_fail "ERROR: $path を作成できません。起動を中止します。" || return 1; }
+      echo "INFO: $path を読み取り専用保護のため空で作成しました" >&2
+      created=$((created + 1))
+    fi
+  done
+  for name in "${CLAUDE_CONFIG_RO_FILES[@]}"; do
+    path="$cfg/$name"
+    if [[ -L "$path" ]]; then
+      guard_fail "ERROR: $path が symlink です（読み取り専用保護はコンテナ内から rm + 再作成で迂回されるため、実ファイルに置き換えてください）。起動を中止します。" || return 1
+    elif [[ -f "$path" ]]; then
+      continue
+    elif [[ -e "$path" ]]; then
+      guard_fail "ERROR: $path が通常ファイルではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
+    elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+      guard_warn "[WARN] $path が無い（通常起動時に空で作成）"
+    else
+      # noclobber（set -C）で作る: 存在確認と作成の間に別プロセスがファイルを置いた場合に
+      # 上書き（切り詰め）せず失敗させる。
+      if [[ "$name" == "settings.json" ]]; then
+        ( set -C; printf '{}\n' > "$path" ) 2>/dev/null || { guard_fail "ERROR: $path を作成できません（同時に作成された可能性があります。再実行してください）。起動を中止します。" || return 1; }
+      else
+        ( set -C; : > "$path" ) 2>/dev/null || { guard_fail "ERROR: $path を作成できません（同時に作成された可能性があります。再実行してください）。起動を中止します。" || return 1; }
+      fi
+      echo "INFO: $path を読み取り専用保護のため空で作成しました" >&2
+      created=$((created + 1))
+    fi
+  done
+
+  # 別の rw マウント（/workspace・/data・/shared）が同じ実体を含んでいれば、:ro 重ねは
+  # その経路からは効かない。起動は止めず警告する（運用者が意図して選べる構成のため）。
+  # 別の rw マウント（/workspace・/data・/shared）が同じ実体を含む、または同じ実体に含まれる
+  # （保護対象そのものを /data に載せる等）場合、:ro 重ねはその経路からは効かない。
+  # 起動は止めず警告する（運用者が意図して選べる構成のため）。
+  local cfg_real other other_real
+  if ! cfg_real="$(cd "$cfg" 2>/dev/null && pwd -P)"; then
+    guard_fail "ERROR: $cfg に入れません（パーミッションを確認してください）。起動を中止します。" || return 1
+  fi
+  for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}"; do
+    [[ -n "$other" ]] || continue
+    other="${other/#\~\//$HOME/}"
+    [[ -d "$other" ]] || continue
+    other_real="$(cd "$other" 2>/dev/null && pwd -P)" || continue
+    other_real="${other_real%/}"   # "/" は "" になり、次の "$other_real"/* が "/*" として全パスに一致する
+    if [[ "$cfg_real" == "$other_real" || "$cfg_real" == "$other_real"/* || "$other_real" == "$cfg_real"/* ]]; then
+      guard_warn "WARNING: $other が $cfg_real を含む（または含まれる）ため、別の rw マウント経由で書けます。~/.claude 設定の読み取り専用保護はこの経路には効きません。"
+    fi
+  done
+  return 0
+}
+
+# plugin 別名マウント（claude-container#98）の destination を判定する。副作用なし（ファイル
+# システムにも触れない。存在確認は prepare_claude_config_ro() が済ませている）。
+# 引数: $1=基点の綴り（~ 展開済み・実体未解決）、$2=$HOME の綴り。stdout に destination を
+# 出力し、終了コードで結果を返す:
+#   0 = 別名を付ける（stdout が destination）
+#   1 = 別名不要（コンテナ内の /home/node/.claude/plugins と一致し、既存の :ro マウントで足りる）
+#   2 = 対応範囲外（stdout は空。メッセージ化は呼び出し元）
+# 対応範囲は「基点がホストの $HOME と一致するかその配下」に限る。plugin のメタデータは
+# ホストの Claude Code が見た綴りを記録するので、実体パスや別基点の綴りで指定された
+# CLAUDE_CONFIG_DIR はメタデータと一致する保証が無い。またコンテナ内の固定マウント先
+# （/workspace・/data・/shared・/home/node）と一致または配下の destination は、対象
+# プロジェクトや他マウントの内容を隠すため付けない。
+# 関数定義は test-build.sh が `sed -n '/^plugins_alias_target()/,/^}/p'` で抽出して単独実行
+# する（開始行と終了行の形を変えない。他の関数を呼ばない）。
+plugins_alias_target() {
+  local base="$1" home="$2" candidate p v fixed
+  # 正規化: // を / に圧縮し、末尾の / と /. の連なりを除去する。正規化後も /./ や /..
+  # を含む、または絶対パスでなくなる（/ 単体・空）ものは不正（空文字にする）。
+  for p in base home; do
+    v="${!p}"
+    while [[ "$v" == *//* ]]; do v="${v//\/\//\/}"; done
+    while [[ "$v" == */. || "$v" == */ ]]; do v="${v%/.}"; v="${v%/}"; done
+    [[ "$v" == /* ]] || v=""
+    [[ "$v" == */./* || "$v" == */../* || "$v" == */.. ]] && v=""
+    printf -v "$p" '%s' "$v"
+  done
+  # 規則 1: base が正規化できなければ範囲外。
+  [[ -n "$base" ]] || return 2
+  candidate="$base/.claude/plugins"
+  # 規則 2: コンテナ内パスと一致なら別名不要。$HOME の検証（規則 3）より先に判定する
+  # （$HOME が不正でも、既存の :ro マウントで足りる状況に誤警告を出さない）。
+  [[ "$candidate" == /home/node/.claude/plugins ]] && return 1
+  # 規則 3: base が $HOME と一致するかその配下でなければ範囲外。
+  [[ -n "$home" ]] || return 2
+  [[ "$base" == "$home" || "$base" == "$home"/* ]] || return 2
+  # 規則 4: コンテナ内の固定マウント先と一致または配下なら範囲外。
+  for fixed in /workspace /data /shared /home/node; do
+    [[ "$candidate" == "$fixed" || "$candidate" == "$fixed"/* ]] && return 2
+  done
+  printf '%s\n' "$candidate"
+  return 0
+}
+
+# plugin 別名マウント（claude-container#98）。ホストで install した plugin のメタデータ
+# （~/.claude/plugins/known_marketplaces.json・installed_plugins.json）はホストの絶対パスを
+# 記録しており、コンテナ内（HOME=/home/node）では解決できない。かつて entrypoint.sh が
+# JSON をコンテナ内パスへ sed で書き換えていたが、plugins/ を :ro で保護した時点で書けなく
+# なった（書けてはいけない）。代わりに、同じ実体をホストと同じ絶対パスにも :ro で重ねる
+# 固定 override（compose.plugins-alias.yml）を選ぶ。起動可否には影響しない（範囲外なら
+# WARNING を出して plugin が読めないだけ）ため guard_fail は使わない。通常起動と --check の
+# 両方で prepare_claude_config_ro() の直後に呼ぶ（plugins/ が存在する前提。--check は
+# 変数操作だけで何も作らない）。
+guard_plugins_alias() {
+  local target rc=0
+  # 「別名を付けないなら未 export」を保つ。シェル環境から注入された値は override が選ばれない
+  # 限り不活性だが、compose の環境に残さない（プロジェクト設定の env は許可リスト外なので
+  # 元々通らない）。適用分岐では算出値で上書きする。
+  unset CLAUDE_PLUGINS_HOST_PATH
+  # 基点の検証に失敗した経路（CLAUDE_CONFIG_HOST_BASE が空）では判定しない。
+  [[ -n "${CLAUDE_CONFIG_HOST_BASE:-}" ]] || return 0
+  target=$(plugins_alias_target "$CLAUDE_CONFIG_HOST_BASE" "$HOME") || rc=$?
+  case "$rc" in
+    0)
+      export CLAUDE_PLUGINS_HOST_PATH="$target"
+      COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.plugins-alias.yml")
+      [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[OK]   plugin 別名: $target"
+      ;;
+    1)
+      [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[INFO] plugin 別名: 不要（コンテナ内パスと一致）"
+      ;;
+    *)
+      guard_warn "WARNING: ホストの plugins/ の綴り ${CLAUDE_CONFIG_HOST_BASE}/.claude/plugins はコンテナ内で別名にできません（基点が \$HOME の配下でないか、コンテナ内の固定マウント先 /workspace・/data・/shared・/home/node と重なります）。ホストで install した plugin はコンテナ内で読み込めません。"
+      ;;
+  esac
+  return 0
+}
+
+# 第2の追加マウント（SHARED_MOUNT）の参照。任意設定のため未設定時は何もしない。
+# 複数プロジェクトから同一ホストディレクトリ（共有ノート置き場等）を固定名 /shared で
+# 参照するための opt-in（claude-container#46）。EXTRA_MOUNT（/data）と独立したスロット。
+# 秘密情報を置く前提のディレクトリではないためパーミッション警告は行わない（EXTRA_MOUNT と
+# 同様）。設定済みでディレクトリが無い場合は起動を中止する（GITCONFIG_FILE/SECRETS_DIR/
+# CODEX_DIR と同じ理由: 不存在パスを bind mount すると podman がホスト側に空ディレクトリを
+# 誤作成するため）。
+guard_shared_mount() {
+  if [[ -n "${SHARED_MOUNT:-}" ]]; then
+    SHARED_MOUNT="${SHARED_MOUNT/#\~\//$HOME/}"
+    export SHARED_MOUNT
+    if [[ ! -d "$SHARED_MOUNT" ]]; then
+      guard_fail "ERROR: SHARED_MOUNT=$SHARED_MOUNT が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+    fi
+  fi
+}
+
+# SHARED_MOUNT の別名マウント（claude-container#99）。SHARED_MOUNT_HOME_ALIAS=1 のとき、
+# SHARED_MOUNT の実体をコンテナ内の ~（/home/node）配下の同じ相対位置と、ホストと同じ
+# 絶対パスにも :ro で重ねる固定 override を選ぶ。/shared は rw のままなので境界ではない。
+# HOME 直下の隠し項目（.claude・.codex 等）は設定・認証・実行環境のため別名にしない。
+# ホストで使う綴りは symlink 解決前に保存し、/shared の source は実体に解決する。
+normalize_instruction_path() {
+  local value="$1"
+  [[ "$value" == /* && "$value" != *:* && ! "$value" =~ [[:cntrl:]] ]] || return 1
+  while [[ "$value" == *//* ]]; do value="${value//\/\//\/}"; done
+  value="${value%/}"
+  [[ -n "$value" && "$value" != */. && "$value" != */.. && "$value" != */./* && "$value" != */../* ]] || return 1
+  printf '%s\n' "$value"
+}
+
+instruction_paths_overlap() {
+  [[ "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]
+}
+
+guard_shared_home_alias() {
+  unset CLAUDE_SHARED_HOME_PATH CLAUDE_SHARED_HOST_PATH
+  case "${SHARED_MOUNT_HOME_ALIAS:-0}" in
+    ''|0) return 0 ;;
+    1) ;;
+    *) guard_fail "ERROR: SHARED_MOUNT_HOME_ALIAS は 0 または 1 を指定してください。" || return 1 ;;
+  esac
+  local source_path host_home relative home_target fixed
+  if ! source_path=$(normalize_instruction_path "${SHARED_MOUNT:-}") ||
+     ! host_home=$(normalize_instruction_path "$HOME") ||
+     [[ "$source_path" != "$host_home"/* || ! -d "$source_path" ]]; then
+    guard_fail "ERROR: SHARED_MOUNT_HOME_ALIAS=1 は HOME 配下の存在する SHARED_MOUNT（HOME 自体を除く）が必要です。..・相対パス・コロン・制御文字は使えません。" || return 1
+  fi
+  relative="${source_path#"$host_home"/}"
+  home_target="/home/node/$relative"
+  # HOME 直下の隠し項目は設定・認証・実行環境のため予約する。
+  if [[ "$relative" == .* ]]; then
+    guard_fail "ERROR: SHARED_MOUNT の別名が HOME の設定領域と重なります: $home_target" || return 1
+  fi
+  # ホストとコンテナの HOME が同じならマウントは1本。その他のホスト別名が
+  # 既存の固定マウントやシステム領域へ入る場合は拒否する。
+  if [[ "$source_path" != "$home_target" ]]; then
+    for fixed in /workspace /data /shared /home/node /bin /sbin /lib /lib64 /usr /etc /proc /sys /dev /run /var /opt /root; do
+      if instruction_paths_overlap "$source_path" "$fixed"; then
+        guard_fail "ERROR: SHARED_MOUNT のホスト別名がコンテナの予約領域と重なります: $source_path" || return 1
+      fi
+    done
+    if instruction_paths_overlap "$source_path" "$home_target"; then
+      guard_fail "ERROR: SHARED_MOUNT の2つの別名が重なります。" || return 1
+    fi
+  fi
+  if ! SHARED_MOUNT=$(cd "$source_path" 2>/dev/null && pwd -P); then
+    guard_fail "ERROR: SHARED_MOUNT=$source_path を解決できません。" || return 1
+  fi
+  export SHARED_MOUNT CLAUDE_SHARED_HOME_PATH="$home_target"
+  COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.shared-home.yml")
+  if [[ "$source_path" != "$home_target" ]]; then
+    export CLAUDE_SHARED_HOST_PATH="$source_path"
+    COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.shared-host.yml")
+  fi
+  [[ "$CHECK_MODE" == 1 ]] && echo "[OK]   共有別名 (ro): $home_target / $source_path（/shared は rw）"
+  return 0
+}
+
+# エージェント共通のスキル置き場（AGENTS_DIR、通常 ~/.agents）を /home/node/.agents に :ro で
+# 付ける opt-in（claude-container#99）。~/.claude/agents/（Claude Code の subagent 定義、
+# :ro 保護 12 項目の一つ）とは別物。
+guard_agents_dir() {
+  [[ -n "${AGENTS_DIR:-}" ]] || return 0
+  local agents_path other other_real
+  agents_path="${AGENTS_DIR/#\~\//$HOME/}"
+  if [[ "$agents_path" != /* || ! -d "$agents_path" || "$agents_path" =~ [[:cntrl:]] ]] ||
+     ! agents_path=$(cd "$agents_path" 2>/dev/null && pwd -P); then
+    guard_fail "ERROR: AGENTS_DIR=$AGENTS_DIR は存在するディレクトリを絶対パス（または ~/ 始まり）で指定してください。" || return 1
+  fi
+  export AGENTS_DIR="$agents_path"
+  COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.agents.yml")
+  [[ "$CHECK_MODE" == 1 ]] && echo "[OK]   AGENTS_DIR: $AGENTS_DIR -> /home/node/.agents (ro)"
+  # 指定した source と別の rw source の包含を調べる。リンク先は正規化するが、
+  # ディレクトリ内部の symlink・別マウントまでは探索しない。
+  for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}" "${CODEX_DIR:-}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude"; do
+    other="${other/#\~\//$HOME/}"
+    [[ -d "$other" ]] || continue
+    other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
+    other_real="${other_real%/}"
+    if instruction_paths_overlap "$agents_path" "$other_real"; then
+      guard_warn "WARNING: AGENTS_DIR=$agents_path と $other の範囲が重なるため、別の rw マウント経由で書けます。"
+    fi
+  done
+  return 0
+}
+
+# プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`claude-container#29`）。
+# ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
+# 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
+# （ホスト固有パスを含みうる）は出力せず、キー名のみ列挙する。
+guard_env_boundary_keys() {
+  [[ -n "$ENV_FILE" ]] || return 0
+  if grep -qE '^CLAUDE_CONTAINER_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null; then
+    guard_warn "WARNING: $ENV_FILE で CLAUDE_CONTAINER_NO_FIREWALL=1 が設定されています。エグレスファイアウォールは無効化されます。"
+  fi
+  local key
+  local -a boundary_keys_found=()
+  for key in EXTRA_MOUNT SHARED_MOUNT SHARED_MOUNT_HOME_ALIAS AGENTS_DIR SECRETS_DIR GITCONFIG_FILE CODEX_DIR CLAUDE_CONFIG_DIR; do
+    if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      boundary_keys_found+=("$key")
+    fi
+  done
+  if [[ ${#boundary_keys_found[@]} -gt 0 ]]; then
+    echo "INFO: $ENV_FILE が境界に影響するキーを設定しています: ${boundary_keys_found[*]}（値は表示しません。詳細は README「環境変数」節）" >&2
+  fi
+  return 0
+}
+
+# ベースイメージの検証（内部運用issue参照）。BASE_IMAGE は env 由来の値を
+# 一切信用しない — load_env_file() の許可リスト外なので env からは export されない
+# （claude-container#44）が、シェル環境から渡された値も信用しないよう、ここで無条件に
+# 既定値から開始する（MCP_APPROVAL_FILE を全分岐末尾で
+# 無条件 export しているのと同じ流儀）。正しい指定先は
+# プロジェクト設定ディレクトリ（$PROJECT_CONF_DIR）の base-image.txt のみ。
+#
+# 許容範囲は docker.io の debian 公式イメージのみ（タグは自由、digest pin 可）。
+# 後続のビルドレイヤー（apt/dpkg・PEP 668・uid 1000 の node ユーザー作成）が
+# すべて Debian 前提のため。この制限は「セキュリティ境界」ではなく「サポート範囲の
+# 宣言・互換性ガード」と位置づける — プロジェクト設定ディレクトリを書き換えられる攻撃者は
+# packages.txt 経由で apt の maintainer script を既にビルド時 root で実行でき、
+# requirements.txt 経由の任意 PyPI 名指定でも sdist の setup.py がビルド時 root で
+# 実行される経路が原理的に残る（PyPI は open publishing のため）。いずれもベース
+# イメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、
+# 内部運用issue参照）。タグを許可リスト化せず自由にしているのは、fail-closed
+# は「恒久条件で永久に閉じ続けない逃げ道」を持つべきという設計原則のため（新しい
+# Debian スイート名が出るたびに拒否され続けるゲートを作らない）。実際の互換性は
+# Dockerfile.claude 側の能力アサーション（setpriv・apt sources 等）が担保する。
+guard_base_image() {
+  BASE_IMAGE="debian:stable"
+
+  if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]] \
+     && grep -qE '^[[:space:]]*BASE_IMAGE=' "$ENV_FILE"; then
+    guard_warn "WARNING: $ENV_FILE の BASE_IMAGE=... は無視されます。正しい指定先は $PROJECT_CONF_DIR/base-image.txt です。"
+  fi
+
+  resolve_asset_source base-image.txt
+  if [[ "$ASSET_ORIGIN" == "missing" ]]; then
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE（base-image.txt なし、既定値）"
+    return 0
+  fi
+
+  # 最初の有効行を読む（claude-container#50）。grep の終了コードは 0（有効行あり）／
+  # 1（有効行なし）／2 以上（読めない等）で、set -e 下では 1 でも代入式ごと関数が
+  # 落ちるため || で受ける。--check は guard_* を `|| true` で呼ぶので set -e が
+  # 効かず、素呼びの通常起動だけが無言停止する乖離になっていた。`grep | head -1` は
+  # 有効行が多いと head の早期終了で grep が SIGPIPE（rc=141）を受けるため、grep 自身が
+  # 最初の一致で止まる -m1 を使う（pipefail 下で rc が grep の 0/1/2 に確定する）。
+  local value grep_rc=0
+  value="$(grep -m1 -vE '^[[:space:]]*(#|$)' "$ASSET_PATH" | tr -d '[:space:]')" || grep_rc=$?
+  if (( grep_rc > 1 )); then
+    guard_fail "ERROR: $PROJECT_CONF_DIR/base-image.txt を読めません（grep rc=$grep_rc）。起動を中止します。" || return 1
+  fi
+  if [[ -z "$value" ]]; then
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE（base-image.txt は空、既定値）"
+    return 0
+  fi
+
+  if [[ ! "$value" =~ ^(docker\.io/(library/)?)?debian:[A-Za-z0-9][A-Za-z0-9._-]*(@sha256:[0-9a-f]{64})?$ ]]; then
+    guard_fail "ERROR: $PROJECT_CONF_DIR/base-image.txt の値が許容範囲外です: $value" \
+      "docker.io の debian 公式イメージのみ許可されます（タグは自由、digest pin 可）。" \
+      "例: debian:testing, debian:trixie-20260701, debian:stable@sha256:<64桁hex>" || return 1
+  fi
+
+  BASE_IMAGE="$value"
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] ベースイメージ: $BASE_IMAGE"
+  return 0
+}
+
+# MCP監査ゲートの状態判定（読み取り専用部分。内部運用issue対応で check_mcp_approval()
+# から分離）。書き込み・TTY確認・export は一切行わない。--check モードの診断とTOFU承認の
+# 実処理が同一ロジックを共有するために分離した。
+# 迂回防止の設計:
+#   - ハッシュの正規化 jq フィルタは entrypoint.sh の照合ロジックと同一でなければ
+#     ならない（変更時は両ファイルを同期すること）。
+compute_mcp_state() {
+  MCP_STATE=""
+  MCP_CURRENT_HASH=""
+  MCP_STDIO_JSON=""
+
+  if ! command -v jq >/dev/null 2>&1; then
+    MCP_STATE="nojq"
+    return 0
+  fi
+
+  local mcp_config="$WORKING_DIR/.mcp.json"
+  if [[ ! -f "$mcp_config" ]]; then
+    MCP_STATE="nofile"
+    return 0
+  fi
+
+  local stdio_json
+  if ! stdio_json=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$mcp_config" 2>/dev/null); then
+    MCP_STATE="parsefail"
+    return 0
+  fi
+
+  if [[ "$stdio_json" == "[]" ]]; then
+    MCP_STATE="none"
+    return 0
+  fi
+
+  local current_hash recorded_hash=""
+  # entrypoint.sh 側は `jq ... | sha256sum`（jqの出力に末尾改行あり）で直接計算するため、
+  # ここも printf '%s\n' で末尾改行を復元してから計算する（'%s' だと $() の改行除去により
+  # 同一入力でも異なるハッシュになり、TOFU照合が常に不一致になるバグを検証中に発見した）。
+  current_hash=$(printf '%s\n' "$stdio_json" | sha256sum | cut -c1-64)
+  if [[ -f "$MCP_APPROVAL_RECORD" ]]; then
+    recorded_hash=$(cat "$MCP_APPROVAL_RECORD" 2>/dev/null || echo "")
+  fi
+
+  MCP_CURRENT_HASH="$current_hash"
+  MCP_STDIO_JSON="$stdio_json"
+  if [[ -n "$recorded_hash" && "$recorded_hash" == "$current_hash" ]]; then
+    MCP_STATE="approved"
+  else
+    MCP_STATE="pending"
+  fi
+}
+
+# MCP監査ゲートのTOFU（Trust On First Use）＋変更検知（claude-container#28）。
+# .mcp.json のstdio型サーバー定義（entrypoint.sh側のTTY確認対象）が前回承認時から
+# 変化していなければ、承認記録のハッシュをコンテナへ渡して entrypoint.sh 側の
+# TTY確認をスキップさせる。不一致・記録なしの場合はここで（-b のビルドより前に）
+# TTY確認を行い、拒否時の無駄なビルドを避ける。
+#
+# 迂回防止の設計:
+#   - 承認記録の格納パス（MCP_APPROVAL_STORE/RECORD）は load_env_file() より前に
+#     $HOME から直接算出し readonly にしてある。プロジェクト側 env が同名キーを
+#     書いても無視され警告が出る（claude-container#39）。
+#   - MCP_APPROVAL_FILE は本関数の全分岐の末尾で必ず export する。呼び出し元
+#     （compose.yml の ${MCP_APPROVAL_FILE:-/dev/null}）は env 経由の値を一切
+#     参照しないため、プロジェクト側が env に MCP_APPROVAL_FILE を書いても無視される。
+#   - 記録ファイルは compose.yml 側で :ro マウントする。コンテナ内から改変不可。
+check_mcp_approval() {
+  MCP_APPROVAL_FILE=""
+  compute_mcp_state
+
+  case "$MCP_STATE" in
+    nojq | nofile | none)
+      export MCP_APPROVAL_FILE
+      return 0
+      ;;
+    parsefail)
+      echo "WARNING: $WORKING_DIR/.mcp.json の解析に失敗しました。事前承認をスキップします（コンテナ内のMCP監査ゲートが起動可否を判定します）。" >&2
+      export MCP_APPROVAL_FILE
+      return 0
+      ;;
+    approved)
+      echo "INFO: MCP 監査: stdio 型サーバーは承認済み（ハッシュ一致）。確認を省略します" >&2
+      MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
+      export MCP_APPROVAL_FILE
+      return 0
+      ;;
+    pending)
+      echo "WARNING: $WORKING_DIR/.mcp.json の stdio 型 MCP サーバーの定義が前回の承認から変わっている（または未承認の）ものがあります。そのコードはセッション開始時に即座に実行され、export された全ての秘密を読めます:" >&2
+      # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
+      # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
+      # 「ターミナル・スプーフィング」に無防備になる（claude-container#35）。entrypoint.sh 側の同種の
+      # 表示ロジックと同一のサニタイズ方式（LC_ALL=C tr -d '\000-\037\177'）を使うこと（同期必須）。
+      echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' | LC_ALL=C tr -d '\000-\037\177' >&2
+      printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
+      local mcp_confirm=""
+      if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
+        echo "INFO: 対話可能な TTY がないため、確認はコンテナ内の MCP 監査ゲートに委ねます。" >&2
+        export MCP_APPROVAL_FILE
+        return 0
+      fi
+      case "$mcp_confirm" in
+        y | Y | yes | YES | Yes)
+          mkdir -p "$MCP_APPROVAL_STORE"
+          chmod 700 "$MCP_APPROVAL_STORE"
+          printf '%s' "$MCP_CURRENT_HASH" > "$MCP_APPROVAL_RECORD"
+          chmod 600 "$MCP_APPROVAL_RECORD"
+          MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
+          export MCP_APPROVAL_FILE
+          ;;
+        *)
+          echo "ERROR: MCP stdio 型サーバーの確認が拒否されました。起動を中止します" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# 境界アセット・ビルド時設定ファイルの解決規則（`claude-container#30`）。2種類ある:
+#   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
+#                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
+#                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
+#                    codex-mcp-audit.py・固定 Compose override 群）
+#   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
+#                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
+#                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
+#                  同梱 default（24.18.0 / 対応版 Codex）を持ち、project 側の空ファイルは
+#                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
+#   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
+#                  （allowed-ports.txt・base-image.txt）
+# stage_build_context() と compute_asset_hash() の双方がこの関数を通すことで、
+# 2箇所が別々に解決規則を持ってドリフトするのを防ぐ。副作用は持たない（WARNING等の出力は
+# 呼び出し側が ASSET_ORIGIN を見て行う）。
+resolve_asset_source() {
+  local name="$1"
+  ASSET_PATH=""
+  ASSET_ORIGIN=""
+  case "$name" in
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-preflight.yml)
+      ASSET_PATH="$RUN_DIR/$name"
+      ASSET_ORIGIN="fixed"
+      ;;
+    packages.txt | requirements.txt | allowed-domains.txt | node-version.txt | codex-version.txt)
+      if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
+        ASSET_PATH="$PROJECT_CONF_DIR/$name"
+        ASSET_ORIGIN="project"
+      else
+        ASSET_PATH="$RUN_DIR/$name"
+        ASSET_ORIGIN="default"
+      fi
+      ;;
+    allowed-ports.txt | base-image.txt)
+      if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
+        ASSET_PATH="$PROJECT_CONF_DIR/$name"
+        ASSET_ORIGIN="project"
+      else
+        ASSET_ORIGIN="missing"
+      fi
+      ;;
+    *)
+      echo "ERROR: resolve_asset_source: 未知のアセット名です: $name" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# 境界アセットのドリフト検知（`claude-container#30`）対象。固定順の配列で持つ
+# （glob 順序はロケール・実装依存で非決定的なため）。github-meta.json は毎ビルド
+# 変わるため意図的に対象外（含めると恒久的にドリフトした状態になってしまう）。
+ASSET_HASH_TARGETS=(
+  entrypoint.sh
+  init-firewall.sh
+  ipv6-firewall.py
+  firewall-refresh.py
+  codex-mcp-audit.py
+  compose.ipv6.yml
+  compose.plugins-alias.yml
+  compose.shared-home.yml
+  compose.shared-host.yml
+  compose.agents.yml
+  compose.codex-preflight.yml
+  git-askpass.sh
+  Dockerfile.claude
+  validate-build-input.sh
+  packages.txt
+  requirements.txt
+  allowed-domains.txt
+  node-version.txt
+  codex-version.txt
+  allowed-ports.txt
+  base-image.txt
+)
+# env の同名 export は配列の要素0へ代入されドリフト検知対象を偽装できるため readonly（claude-container#39）
+readonly -a ASSET_HASH_TARGETS
+
+# 対象アセットの内容のみをハッシュする（sha256sum "$file" ではなくリダイレクトで
+# 読ませる — 前者は出力にパスを含むため、同一内容のリポジトリを別パスへ clone
+# しただけで誤警告になる）。失敗時は空文字でなく非ゼロで返す。空文字を返すと
+# 「ラベル未設定の旧イメージ」（inspect が返す空文字列）と区別が付かなくなり、
+# 計算失敗が「一致」と誤判定されてしまうため。
+compute_asset_hash() {
+  ASSET_HASH=""
+  local name content_hash combined=""
+  for name in "${ASSET_HASH_TARGETS[@]}"; do
+    resolve_asset_source "$name"
+    if [[ "$ASSET_ORIGIN" == "missing" ]]; then
+      content_hash=$(printf '' | sha256sum | cut -d' ' -f1)
+    elif ! content_hash=$(sha256sum < "$ASSET_PATH" 2>/dev/null | cut -d' ' -f1) || [[ -z "$content_hash" ]]; then
+      echo "ERROR: compute_asset_hash: $name（$ASSET_PATH）のハッシュ計算に失敗しました" >&2
+      return 1
+    fi
+    combined+="${name}:${content_hash}"$'\n'
+  done
+  ASSET_HASH=$(printf '%s' "$combined" | sha256sum | cut -d' ' -f1)
+}
+
+# entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh（fixed）・
+# packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt
+# （overridable）・allowed-ports.txt（optional）をビルドコンテキストへ集約する。
+# packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
+# （$PROJECT_CONF_DIR）にあればそちらを、なければ claude-container 同梱のデフォルト
+# （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
+# 同梱 default は空ではなく固定版（c3c 第2b-2段階）で、project 側の空ファイルは明示 opt-out
+# としてそのまま（空のまま）ステージする。allowed-ports.txt は無ければ静かに空ファイルを生成する。
+# 注意: 設定ディレクトリの env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
+# 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
+stage_build_context() {
+  mkdir -p "$BUILD_CONTEXT_DIR"
+
+  local name
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py git-askpass.sh validate-build-input.sh; do
+    resolve_asset_source "$name"
+    cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
+  done
+
+  for name in packages.txt requirements.txt allowed-domains.txt; do
+    resolve_asset_source "$name"
+    if [[ "$ASSET_ORIGIN" == "default" ]]; then
+      # プロジェクト側の設定が無いプロジェクトは汎用の空フォールバックに
+      # 静かに切り替わる。かつて claude-container 本体の packages.txt に直接
+      # 書かれていたプロジェクト固有パッケージ（gcc/python3等）が、汎用化リファクタ
+      # リング（2026-07-01）後にプロジェクト側の設定へ移行されないまま消失した
+      # 実障害（python3-missing インシデント、2026-07-02）があるため、フォール
+      # バック使用時は必ず気づけるよう警告を出す。
+      echo "WARNING: $PROJECT_CONF_DIR/$name がありません。claude-container 同梱の空のフォールバック（$name）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$name を作成してください。" >&2
+    fi
+    cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
+  done
+
+  # node-version.txt / codex-version.txt は同梱 default が固定版のため WARNING を出さない
+  # （採用元の表示は guard_build_input_defaults() が両モードで行う）。project 側の空ファイルは
+  # 明示 opt-out で、default で埋めずに空のままステージする（計画 §8-5: 空を missing と同一視して
+  # Codex を勝手に導入しない）。allowed-ports.txt は任意機能で移行元が無く、無ければ静かに
+  # 空ファイルを生成する。空の意味（既定値 443,22 の適用）は init-firewall.sh 自身が解釈する
+  # （`claude-container#31`）。
+  for name in node-version.txt codex-version.txt allowed-ports.txt; do
+    resolve_asset_source "$name"
+    if [[ "$ASSET_ORIGIN" == "missing" ]]; then
+      : > "$BUILD_CONTEXT_DIR/$name"
+    else
+      cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
+    fi
+  done
+
+  # base-image.txt は意図的にここでステージしない（内部運用issue参照）。他の
+  # optional ファイルと違い、Dockerfile.claude の FROM は COPY より先に評価されるため
+  # ビルドコンテキストへ置いても読めない。値は guard_base_image() がホスト側で検証し、
+  # build arg（BASE_IMAGE）として compose 経由で渡す。resolve_asset_source() と
+  # ASSET_HASH_TARGETS には登録済み（ドリフト検知・--check 診断の対象にするため）。
+
+  # 防御的アサーション: env（ランタイム設定）が万一ビルドコンテキストに紛れ込んでいたら
+  # 即座にビルドを止める。将来上記ループがワイルドカードコピーに書き換えられた場合の
+  # リグレッション（ホスト固有パスのイメージ焼き込み）を防ぐための安全網。
+  if [[ -e "$BUILD_CONTEXT_DIR/env" ]]; then
+    echo "ERROR: env がビルドコンテキストに紛れ込んでいます（ランタイム設定はビルド時に焼き込まない設計です）。stage_build_context() の実装を確認してください。" >&2
+    exit 1
+  fi
+
+  # GitHub meta スナップショット。init-firewall.sh のファイアウォール許可リストが使う
+  # GitHub IP レンジの取得元。未認証 GitHub API のレート制限（60 req/h/IP）を消費するのは
+  # ここ1箇所のみ（起動時にはライブ取得しない）。失敗時は (1) このプロジェクトの前回
+  # ステージング分（.build-context/<project>/ は --clean まで永続する）、(2) それも無ければ
+  # 他プロジェクトの最新スナップショット（GitHub IP レンジは変更頻度が低いため実用上問題ない）
+  # を警告付きで再利用し、いずれも無ければビルドを止める。
+  local gh_meta sibling fetch_rc
+  gh_meta=$(mktemp "$BUILD_CONTEXT_DIR/github-meta.XXXXXX") || return 1
+  # curl の --max-time は試行ごとにリセットされる。Retry-After の待機も含め
+  # timeout で全体を制限する。-q は利用者の curlrc による再試行等の上書きを避ける。
+  # -o なら再試行時に部分応答が巻き戻される（stdout の連結では JSON が壊れる）。
+  # --foreground は端末の Ctrl-C を curl にも届ける。一時ファイルは中断時も清掃。
+  if (
+    trap 'rm -f "$gh_meta"' EXIT
+    timeout --foreground --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
+      --retry 2 --retry-connrefused --retry-max-time 60 \
+      --output "$gh_meta" https://api.github.com/meta \
+      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1 \
+      && mv "$gh_meta" "$BUILD_CONTEXT_DIR/github-meta.json"
+  ); then
+    return 0
+  else
+    fetch_rc=$?
+  fi
+  echo "WARNING: GitHub meta の取得・検証に失敗しました（rc=$fetch_rc、接続10秒・1試行30秒・再試行2回・全体90秒上限）。通信・レート制限・応答形式を確認してください" >&2
+  # shellcheck disable=SC2012 # ls は下の elif のみ。パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
+  if [[ -f "$BUILD_CONTEXT_DIR/github-meta.json" ]]; then
+    echo "WARNING: 前回ステージングした GitHub meta スナップショットを再利用します" >&2
+  elif sibling=$(ls -t "$RUN_DIR"/.build-context/*/github-meta.json 2>/dev/null | head -1) && [[ -n "$sibling" ]]; then
+    echo "WARNING: GitHub meta の取得に失敗し、このプロジェクトのスナップショットもありません。別プロジェクトのスナップショットを再利用します（$sibling）" >&2
+    cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json"
+  else
+    echo "ERROR: GitHub meta を取得できず、過去のスナップショットもありません。上記の原因を確認して再試行してください" >&2
+    exit 1
+  fi
+}
+
+# 境界アセットのドリフト検知（`claude-container#30`）。通常起動時・--check の
+# 両方から呼ぶ（IMAGE_NAME は compute_project_name()、PROJECT_CONF_DIR は
+# freeze_project_paths() が先に設定している前提）。fail-open: 不一致は guard_warn
+# に留め、起動は止めない。理由: ドリフトは「古いが過去に承認された状態」であって
+# 進行中の攻撃ではない。fail-closed にすると claude-container 自身をセルフホストで
+# 開発する際（本リポジトリを編集した瞬間に必ずドリフトする）に起動できなくなり、
+# 警告以上の安全性の利得なく開発フローを壊す。
+guard_asset_drift() {
+  if ! command -v podman >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! podman image exists "$IMAGE_NAME" 2>/dev/null; then
+    return 0
+  fi
+  local recorded_hash recorded_base_image
+  recorded_hash=$(podman image inspect --format '{{index .Labels "claude-container.asset-hash"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  recorded_base_image=$(podman image inspect --format '{{index .Labels "claude-container.base-image"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  if ! compute_asset_hash; then
+    guard_warn "WARNING: 境界アセットのハッシュ計算に失敗したため、ドリフト確認をスキップしました。"
+    return 0
+  fi
+  if [[ -z "$recorded_hash" ]]; then
+    guard_warn "WARNING: イメージ $IMAGE_NAME に境界アセットのハッシュラベルがありません（このドリフト検知機能の導入前にビルドされたイメージです）。-b でのリビルドを推奨します。"
+  elif [[ "$recorded_hash" != "$ASSET_HASH" ]]; then
+    guard_warn "WARNING: 境界アセット（entrypoint.sh・init-firewall.sh 等）がイメージのビルド後に変更されています。-b でのリビルドを推奨します。"
+  fi
+  # base-image.txt を変更 → -b → 元の値に戻して -b 忘れ、という順序では
+  # compute_asset_hash() の内容ハッシュが一致してしまい上記の比較では検知できない。
+  # 実ビルド値を記録したラベル（Dockerfile.claude の claude-container.base-image）と
+  # 現在の解決結果 $BASE_IMAGE（guard_base_image() が先に設定している前提）を
+  # 直接比較することで、この場合も検知する。
+  if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_base_image" != "$BASE_IMAGE" ]]; then
+    guard_warn "WARNING: ベースイメージの設定（$BASE_IMAGE）が、イメージの実ビルド値（$recorded_base_image）と異なります。-b でのリビルドを推奨します。"
+  fi
+  return 0
+}
+
+# --check モード（内部運用issue参照）。1プロジェクトを診断する。呼び出し元
+# （run_check_mode）がサブシェル内で呼ぶことを前提とする（`local` の効かない
+# グローバル変数の書き換え — WORKING_DIR・PROJECT_NAME・ENV_FILE 等 — がこの
+# プロセス内に閉じ、他プロジェクトの診断や親シェルの状態を汚染しないため）。
+check_one_project() {
+  set -e
+  CHECK_MODE=1
+  CHECK_HAS_ERROR=0
+  CHECK_HAS_WARN=0
+  COMPOSE_OVERRIDE_ARGS=()
+  # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（claude-container#39）
+  readonly CHECK_MODE
+  local dir="$1" from_ledger="$2"
+  guard_legacy_entry
+
+  if ! WORKING_DIR=$(cd -- "$dir" >/dev/null 2>&1 && pwd -L); then
+    echo "[FAIL] ディレクトリを開けません: $dir"
+    if [[ "$from_ledger" -eq 1 ]]; then
+      echo "  (起動台帳に記録があります。存在・種別・アクセス権を確認してください。欠落パスのイメージは --check --clean-missing で検査して清掃できます。台帳は保持します: $dir)"
+    fi
+    return 20
+  fi
+  # cwd が削除済みだと cd . / .. が成功し pwd -L が「.」「..」を返す（#122）。幽霊名で診断しない。
+  if [[ "$WORKING_DIR" != /* ]]; then
+    echo "[FAIL] 現在のディレクトリを特定できないため、相対パスでは対象を解決できません: $dir"
+    echo "  (対象のディレクトリを絶対パスで指定してください)"
+    return 20
+  fi
+  readonly WORKING_DIR
+  cd "$WORKING_DIR"
+  echo "[OK]   プロジェクトディレクトリ実在: $WORKING_DIR"
+
+  compute_project_name
+  echo "  PROJECT_NAME: $PROJECT_NAME"
+  freeze_project_paths
+
+  # 設定ディレクトリの選択に失敗した対象は、env・ガード・resolver・hash の診断へ進まず FAIL で終える
+  # （不正な配置から部分的に読んだ結果で診断しない）。ドライバは次の対象へ進む。
+  if ! select_project_conf_dir; then
+    echo "[FAIL] 設定ディレクトリを解決できないため、env・ガード・ビルド入力の診断は行いません"
+    echo "→ 結果: FAIL"
+    return 20
+  fi
+
+  ENV_FILE=""
+  if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
+    ENV_FILE="$PROJECT_CONF_DIR/env"
+    # readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（claude-container#39）。
+    # この経路は load_env_file が if ブロックの内側にあるため、ブロックの外へ出すと load の後になり
+    # --check だけ env の上書きを素通しする。else 分岐は load を呼ばないため露出しない。
+    readonly ENV_FILE
+    echo "[OK]   ${PROJECT_CONF_DIR##*/}/env あり"
+    load_env_file "$ENV_FILE"
+  else
+    echo "[INFO] ${PROJECT_CONF_DIR##*/}/env なし（ランタイム設定なしで起動されます）"
+  fi
+
+  guard_env_gh_token || true
+  guard_legacy_vars || true
+  guard_gitconfig_file || true
+  guard_secrets_dir || true
+  guard_codex_dir || true
+  guard_build_input_defaults || true
+  guard_codex_agent || true
+  guard_shared_mount || true
+  guard_shared_home_alias || true
+  guard_agents_dir || true
+  guard_env_boundary_keys || true
+  guard_base_image || true
+  guard_ipv6 || true
+  prepare_claude_config_ro || true
+  guard_plugins_alias || true
+
+  local file
+  local vbi_path vbi_target vbi_kind vbi_rc
+  for file in packages.txt requirements.txt allowed-domains.txt; do
+    if [[ -f "$PROJECT_CONF_DIR/$file" ]]; then
+      echo "[OK]   $file: プロジェクト側設定あり"
+    else
+      CHECK_HAS_WARN=1
+      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file がありません。claude-container 同梱の空のフォールバック（$file）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$file を作成してください。"
+    fi
+
+    # packages.txt/requirements.txt の内容診断（validate-build-input.sh を
+    # outfile なしで dry-run 呼び出し）。allowed-domains.txt はスコープ外
+    # （ドメイン名に packages 用 regex を当てると誤検知するため、claude-container#34）。
+    # スクリプトのパスは resolve_asset_source() の fixed 解決（RUN_DIR 起点）を使う
+    # — check_one_project() は上で $WORKING_DIR（利用側プロジェクトのルート）へ
+    # cd 済みのため、相対パスで呼ぶと利用側の同名ファイルが実行され fixed の意味が消える。
+    # 終了コードの解釈は validate-build-input.sh の契約（中核設計2）に一本化し、
+    # --check 側で grep 等の終了コードを独自に解釈しない。
+    case "$file" in
+      packages.txt | requirements.txt)
+        resolve_asset_source "validate-build-input.sh"
+        vbi_path="$ASSET_PATH"
+        resolve_asset_source "$file"
+        vbi_target="$ASSET_PATH"
+        vbi_kind="${file%.txt}"
+        # set -e 下で validate-build-input.sh は正常時（不正行なし）以外に
+        # rc 1/2 を返しうるため、必ず || で握る（素の "; rc=$?" は set -e により
+        # 到達前にシェルが終了する）。
+        vbi_rc=0
+        sh "$vbi_path" "$vbi_kind" "$vbi_target" || vbi_rc=$?
+        case "$vbi_rc" in
+          0) echo "[OK]   $file: 内容診断 OK" ;;
+          1) guard_warn "[WARN] $file に仕様外の行があります（詳細は上記の標準エラー出力を参照）" ;;
+          2) guard_warn "[WARN] $file の内容診断ができませんでした" ;;
+          *) guard_warn "[WARN] $file の内容診断ができませんでした（終了コード: $vbi_rc）" ;;
+        esac
+        ;;
+    esac
+  done
+
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "[SKIP] podman が見つからないためイメージ確認をスキップ"
+  elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+    echo "[OK]   イメージ既ビルド: $IMAGE_NAME"
+  else
+    echo "[INFO] イメージ未ビルド: $IMAGE_NAME（初回起動時に自動ビルドされます。破壊的変更後は -b を推奨）"
+  fi
+
+  guard_asset_drift || true
+
+  # --agent codex の静的診断（起動・書込みなし）。対応 label と承認記録の存在・形式だけを見る。
+  # 実効 MCP の動的照合は検査用コンテナが必要なので not run とし、承認済みとは報告しない。
+  if [[ "$AGENT" == codex ]]; then
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "[SKIP] podman が見つからないため Codex 対応イメージの確認をスキップ"
+    elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+      guard_codex_image_support || true
+    else
+      echo "[INFO] Codex 対応イメージ: 未ビルド（初回の --agent codex 起動時に明示ビルドしてから $CODEX_AUDIT_PROTOCOL_LABEL を確認します）"
+    fi
+    if [[ -f "$CODEX_APPROVAL_RECORD" ]]; then
+      if validate_codex_record_file "$CODEX_APPROVAL_RECORD"; then
+        echo "[OK]   Codex MCP 承認記録: あり（形式 OK、$CODEX_APPROVAL_RECORD）"
+      else
+        guard_warn "[WARN] Codex MCP 承認記録の形式が不正です（$CODEX_APPROVAL_RECORD）。起動時に改めて確認します"
+      fi
+    else
+      echo "[INFO] Codex MCP 承認記録: なし。初回起動時に確認プロンプトが出ます"
+    fi
+    echo "[INFO] Codex 実効 MCP の動的照合: not run（--check は検査用コンテナを起動しないため、記録が現在の定義と一致するかは判定しません）"
+  fi
+
+  # Claude の .mcp.json ゲートの診断は Claude 経路だけ。Codex 経路では Codex の審査（上）を使い、
+  # Claude 側の承認状態を Codex の承認として表示しない（通常起動の分岐と同じ）。
+  if [[ "$AGENT" == codex ]]; then
+    echo "[INFO] Claude の .mcp.json ゲート: Codex 経路では使用しない（Claude の診断は --agent claude で行う）"
+    MCP_STATE="skipped-codex"
+  else
+    compute_mcp_state
+  fi
+  case "$MCP_STATE" in
+    skipped-codex)
+      ;;
+    nojq)
+      echo "[SKIP] jq が見つからないため MCP 監査ゲートの事前承認確認をスキップ"
+      ;;
+    nofile | none)
+      echo "[OK]   MCP監査ゲート: 対象の stdio 型サーバーなし"
+      ;;
+    parsefail)
+      CHECK_HAS_WARN=1
+      echo "[WARN] WARNING: $WORKING_DIR/.mcp.json の解析に失敗しました。"
+      ;;
+    approved)
+      echo "[OK]   MCP監査ゲート: stdio 型サーバー承認済み（ハッシュ一致）"
+      ;;
+    pending)
+      echo "[INFO] MCP監査ゲート: stdio 型サーバーが未承認/変更あり。初回起動時に確認プロンプトが出ます"
+      ;;
+  esac
+
+  if [[ $CHECK_HAS_ERROR -eq 1 ]]; then
+    echo "→ 結果: FAIL"
+    return 20
+  elif [[ $CHECK_HAS_WARN -eq 1 ]]; then
+    echo "→ 結果: WARN"
+    return 10
+  else
+    echo "→ 結果: PASS"
+    return 0
+  fi
+}
+
+# --check のドライバ。引数があれば各ディレクトリを、なければ起動台帳
+# （$CC_LEDGER_FILE）の全プロジェクトを診断する。非対話。対象リポジトリと
+# `.build-context/` は変更しない（`/tmp` の一時ファイルは除く）。
+run_check_mode() (
+  # 一時ファイルと後始末の trap をこの診断プロセスだけに閉じる。
+  umask 077
+  local -a targets=()
+  local -a from_ledger_flags=()
+  if [[ $# -gt 0 ]]; then
+    local d
+    for d in "$@"; do
+      targets+=("$d")
+      from_ledger_flags+=(0)
+    done
+  else
+    if [[ ! -s "$CC_LEDGER_FILE" ]]; then
+      echo "起動台帳が空です（$CC_LEDGER_FILE）。まだ通常起動が記録されていません。--check <directory> で個別指定できます。"
+    else
+      local line
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        targets+=("$line")
+        from_ledger_flags+=(1)
+      done < "$CC_LEDGER_FILE"
+    fi
+  fi
+
+  # 入口以外の呼び出し経路は走査しない。
+  echo "[INFO] 入口移行: 外部スクリプト・alias・PATH の旧入口利用は未確認です。Claude 固定の呼び出しは c3c claude に移行してください（c3c 無指定は前回の CLI を選択）。"
+
+  local image_rc=0 image_check_tmp d normalized
+  local -a image_args=(--ledger "$CC_LEDGER_FILE")
+  if command -v python3 >/dev/null 2>&1 && [[ -f "$RUN_DIR/project-images.py" ]]; then
+    image_check_tmp=$(mktemp -d /tmp/cc-project-images.XXXXXX) || return 1
+    trap 'rm -rf -- "$image_check_tmp"' EXIT
+    if [[ $CLEAN_MISSING -eq 1 ]]; then
+      image_args+=(--clean-missing --result-file "$image_check_tmp/result.json")
+    fi
+    # 明示した引数だけをヘルパーへ渡す。引数なしは台帳外の由来ラベルも探索する。
+    for d in "$@"; do
+      normalized="$d"
+      if [[ -n "$d" && "$d" != *$'\n'* && "$d" != //* ]]; then
+        # 終端を付けてコマンド置換によるパス末尾の改行消失を防ぐ。
+        # cd 後の論理絶対パスをそのまま渡し、改行はヘルパーで拒否する。
+        if normalized=$(cd -- "$d" >/dev/null 2>&1 && printf '%s.' "$PWD"); then
+          normalized=${normalized%.}
+        elif [[ "$d" == /* ]]; then
+          normalized=$(realpath -ms -- "$d") || return 1
+        elif [[ -n ${PWD:-} && "$PWD" != *$'\n'* ]]; then
+          normalized=$(realpath -ms -- "$PWD/$d") || return 1
+        fi
+      fi
+      image_args+=("--project=$normalized")
+    done
+    python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}" || image_rc=1
+    if [[ $CLEAN_MISSING -eq 1 ]]; then
+      # process substitution で Python の失敗を失わないよう、先にファイルへ確定する。
+      if [[ -f "$image_check_tmp/result.json" ]] && python3 -I -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    data = json.load(source)
+for row in data["paths"]:
+    path, state = row["path"], row["state"]
+    if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
+        raise ValueError("不正な診断パス")
+    if state not in ("directory", "missing", "unverifiable"):
+        raise ValueError("不正な診断結果")
+    if state == "directory":
+        sys.stdout.buffer.write(path.encode(sys.getfilesystemencoding(), "surrogateescape") + b"\0")
+' "$image_check_tmp/result.json" > "$image_check_tmp/directories"; then
+        mapfile -d '' -t targets < "$image_check_tmp/directories"
+        from_ledger_flags=()
+        for d in "${targets[@]}"; do from_ledger_flags+=(0); done
+      else
+        echo "[FAIL] 清掃診断の結果を読み取れません。"
+        image_rc=1
+      fi
+    fi
+  else
+    echo "[INFO] Python 3 または project-images.py がないためイメージ診断をスキップします。"
+    if [[ $CLEAN_MISSING -eq 1 ]]; then
+      echo "[FAIL] 清掃に必要なヘルパーを実行できません。"
+      image_rc=1
+    fi
+  fi
+
+  # 清掃診断で対象が再構成された後に判定し、最終対象0件でも旧入口の利用を案内する。
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    guard_legacy_entry
+  fi
+
+  local pass=0 warn=0 fail=0
+  local -a fail_names=()
+  local i dir from_ledger rc
+  for i in "${!targets[@]}"; do
+    dir="${targets[$i]}"
+    from_ledger="${from_ledger_flags[$i]}"
+    echo "=== $dir ==="
+    set +e
+    ( check_one_project "$dir" "$from_ledger" ) 2>&1
+    rc=$?
+    set -e
+    case "$rc" in
+      0) pass=$((pass + 1)) ;;
+      10) warn=$((warn + 1)) ;;
+      20) fail=$((fail + 1)); fail_names+=("$dir") ;;
+      *) fail=$((fail + 1)); fail_names+=("$dir (unexpected exit $rc)") ;;
+    esac
+    echo
+  done
+
+  echo "==== サマリ ===="
+  echo "検査対象: ${#targets[@]} プロジェクト（起動台帳: $CC_LEDGER_FILE）"
+  echo "PASS: $pass   WARN: $warn   FAIL: $fail"
+  [[ $image_rc -eq 0 ]] || echo "イメージ診断・清掃: FAIL"
+  if [[ ${#fail_names[@]} -gt 0 ]]; then
+    echo "リビルド前に対応が必要:"
+    local n
+    for n in "${fail_names[@]}"; do
+      echo "  - $n"
+    done
+    return 1
+  fi
+  return "$image_rc"
+)
+
+# ============================================================
+# dispatch（トップレベル実行文。相対順序は関数化前と同一に保つ）
+# ============================================================
+
+set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+
+if [[ $CHECK -eq 0 ]]; then
+  guard_legacy_entry
+fi
+
+# --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
+# （c3c の agent 確定はこの経路では選択せず既定の Claude。記憶は読まない・消さない）
+if [[ $CLEAN -eq 1 && $# -eq 0 ]]; then
+  if [[ $C3C_INTERFACE -eq 1 ]]; then
+    finalize_agent
+  fi
+  clean_all
+  exit 0
+fi
+
+# --check（内部運用issue参照）: 引数なしでも起動台帳を全件診断できる必要が
+# あるため、「引数なし→usage」判定より前で dispatch する。
+# c3c でも選択待ちをせず記憶を読まない（agent 無指定は現行どおり Claude の診断）。
+if [[ $CHECK -eq 1 ]]; then
+  if [[ $C3C_INTERFACE -eq 1 ]]; then
+    finalize_agent
+  fi
+  run_check_mode ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+  exit $?
+fi
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+echo "RUN DIR: $RUN_DIR"
+
+resolve_project_directory "$1"
+readonly WORKING_DIR
+
+compute_project_name
+echo "PROJECT: $PROJECT_NAME"
+
+freeze_project_paths
+
+# --clean <directory>: このプロジェクト分のみ削除して終了（記憶は削除しない — image/承認とは寿命が異なる）
+if [[ $CLEAN -eq 1 ]]; then
+  if [[ $C3C_INTERFACE -eq 1 ]]; then
+    finalize_agent
+  fi
+  clean_project
+  exit 0
+fi
+
+# c3c の通常起動: 対象ディレクトリの解決後・env 読込前に、記憶のキー（$HOME 由来の保存先）を
+# freeze してから agent を確定する（明示指定 → 記憶 → 初回選択）。--read-only の検証は
+# finalize_agent() 内で最終的な agent に対して行う。
+if [[ $C3C_INTERFACE -eq 1 ]]; then
+  freeze_agent_preference_key
+  select_c3c_agent
+  finalize_agent
+fi
+
+cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開けません: $WORKING_DIR" \
+  "パスが存在するディレクトリか、アクセス権があるかを確認してください。"
+
+record_project_in_ledger
+
+# 設定ディレクトリ（.c3c / 旧 .claude-container.d）の選択。--clean の分岐より後・env 読込より前。
+# 二重配置・型不正はここで fail-closed に止まる（ビルドや env 読込へ進まない）。
+select_project_conf_dir
+
+ENV_FILE=""
+if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
+  ENV_FILE="$PROJECT_CONF_DIR/env"
+fi
+# readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（claude-container#39）。
+# この2行を load の後ろへ動かすと、env が ENV_FILE/CHECK_MODE を上書きしてガードを沈黙させられる。
+readonly ENV_FILE
+readonly CHECK_MODE
+[[ -n "$ENV_FILE" ]] && load_env_file "$ENV_FILE"
+
+guard_env_gh_token
+guard_legacy_vars
+guard_gitconfig_file
+guard_secrets_dir
+guard_codex_dir
+guard_build_input_defaults
+guard_codex_agent
+guard_shared_mount
+guard_shared_home_alias
+guard_agents_dir
+guard_env_boundary_keys
+guard_base_image
+guard_ipv6
+guard_asset_drift
+
+# 選択した CLI 側のゲートだけを通す。Claude の .mcp.json ゲートは従来どおり、Codex は
+# 検査用コンテナの結果に対する独立承認（下の check_codex_approval）を使い、互いに代用しない。
+# CODEX_MCP_APPROVAL_FILE も MCP_APPROVAL_FILE と同じく、全経路で launcher の値だけを export する。
+CODEX_MCP_APPROVAL_FILE=""
+export CODEX_MCP_APPROVAL_FILE
+if [[ "$AGENT" == claude ]]; then
+  check_mcp_approval
+else
+  MCP_APPROVAL_FILE=""
+  export MCP_APPROVAL_FILE
+fi
+
+# Claude 経路では MCP 承認後にホストの Claude 設定へ placeholder を作る。
+# Codex 経路では同じ mount を使う検査のため、placeholder・必要な build が承認より先行する。
+# Codex 承認を拒否しても、これらや native CLI による専用 home への書込みは残りうる。
+prepare_claude_config_ro
+guard_plugins_alias
+
+# compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
+mkdir -p "$BUILD_CONTEXT_DIR"
+
+# -b 指定時、またはイメージが未ビルドのときのみステージングを実行する
+# （podman image exists が使えない古い podman では `podman images -q` ベースの判定に読み替える）
+IMAGE_PRESENT=1
+podman image exists "$IMAGE_NAME" 2>/dev/null || IMAGE_PRESENT=0
+if [[ $BUILD -eq 1 || $IMAGE_PRESENT -eq 0 ]]; then
+  stage_build_context
+fi
+
+# 境界アセットのハッシュ（`claude-container#30`）。ビルドの有無に関わらず常に
+# 現在のソース（$RUN_DIR・$PROJECT_CONF_DIR）から計算し、build と run 両方の env
+# プレフィックスへ渡す（下記）。build ブロック内だけに限定すると、-b 無しの初回
+# 起動（compose の暗黙ビルド）でラベルが空になり、直後の通常起動で必ず誤警告が出る。
+if ! compute_asset_hash; then
+  echo "ERROR: 境界アセットのハッシュを計算できませんでした。起動を中止します" >&2
+  exit 1
+fi
+
+# ホストのタイムゾーンを自動検出（プロジェクト設定の env またはシェル環境で TZ が設定済みでなければ）
+if [[ -z "${TZ:-}" ]]; then
+  if [[ -f /etc/timezone ]]; then
+    TZ=$(cat /etc/timezone)
+  elif [[ -L /etc/localtime ]]; then
+    TZ=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
+  else
+    TZ=UTC
+  fi
+  export TZ
+fi
+
+# -b のビルドは run と分離して実行する（run_explicit_build() 参照、fail-closed）。
+# Codex 経路は image 不在なら -b なしでも明示ビルドする（compose の暗黙ビルドでは、続く
+# label 確認の前に本起動へ進んでしまうため）。image があり -b なしならビルドしない。
+if [[ $BUILD -eq 1 || ( "$AGENT" == codex && $IMAGE_PRESENT -eq 0 ) ]]; then
+  run_explicit_build
+fi
+
+if [[ "$AGENT" == codex ]]; then
+  # 実際に起動する image（-b 後は再ビルド後のもの）を inspect し、対応 label でだけ先へ進む。
+  guard_codex_image_support
+  run_codex_preflight
+  check_codex_approval
+  CC_CODEX_START_MODE=run
+  export CC_CODEX_START_MODE
+fi
+
+# 本起動（run_main_compose() の説明を参照）。終了コードは常に本 run のものを保持する。
+# c3c の通常起動では、本 run が終了コード 0 で戻った後だけ CLI 選択を記憶する（「最後に正常終了した
+# CLI」。preflight・build・承認拒否・中断・CLI の非ゼロ終了では旧値を保持し、保存失敗は WARNING）。
+run_rc=0
+run_main_compose || run_rc=$?
+if [[ $run_rc -eq 0 && $C3C_INTERFACE -eq 1 ]]; then
+  write_agent_preference || true
+fi
+exit "$run_rc"

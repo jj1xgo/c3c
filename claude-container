@@ -2389,10 +2389,7 @@ run_check_mode() (
     fi
   fi
 
-  # 入口以外の呼び出し経路は走査しない。対象0件でも旧入口の利用を案内する。
-  if [[ ${#targets[@]} -eq 0 ]]; then
-    guard_legacy_entry
-  fi
+  # 入口以外の呼び出し経路は走査しない。
   echo "[INFO] 入口移行: 外部スクリプト・alias・PATH の旧入口利用は未確認です。Claude 固定の呼び出しは c3c claude に移行してください（c3c 無指定は前回の CLI を選択）。"
 
   local image_rc=0 image_check_tmp d normalized
@@ -2449,6 +2446,11 @@ for row in data["paths"]:
       echo "[FAIL] 清掃に必要なヘルパーを実行できません。"
       image_rc=1
     fi
+  fi
+
+  # 清掃診断で対象が再構成された後に判定し、最終対象0件でも旧入口の利用を案内する。
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    guard_legacy_entry
   fi
 
   local pass=0 warn=0 fail=0

@@ -570,6 +570,22 @@ class LegacyRetirementTests(LaunchCase):
         self.assertEqual(result.stdout.count('WARNING: 旧入口 claude-container'), 2)
         self.assert_no_containers()
 
+    def test_clean_missing_reports_retirement_after_all_targets_are_filtered(self):
+        missing = self.root / 'missing'
+        self.set_pref('codex')
+        (self.state_dir / 'projects').write_text(str(missing) + '\n')
+        before = self.snapshot(self.home), self.snapshot(self.proj)
+        for entry in (self.launcher, self.c3c):
+            for args in ((), (str(missing),)):
+                with self.subTest(entry=entry.name, explicit=bool(args)):
+                    result = self.run_entry(entry, '--check', '--clean-missing', *args)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('検査対象: 0 プロジェクト', result.stdout)
+                    expected = 1 if entry == self.launcher else 0
+                    self.assertEqual((result.stdout + result.stderr).count('WARNING: 旧入口 claude-container'), expected)
+                    self.assert_no_containers()
+                    self.assertEqual((self.snapshot(self.home), self.snapshot(self.proj)), before)
+
 
 class SelectionTests(LaunchCase):
     def test_first_launch_prompts_on_tty_and_answer_selects_claude(self):

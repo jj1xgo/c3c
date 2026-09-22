@@ -80,7 +80,7 @@ git fetch origin
 ./c3c --check --clean-missing /path/to/deleted-project
 ```
 
-同じ実装を `c3c` という名前でも呼べる（`c3c` は `claude-container` への symlink）。`c3c` で呼んだときだけ、サブコマンドで CLI を選ぶ・無指定なら前回の CLI を使う・ディレクトリ省略で現在のディレクトリを使う、という新しい引数解釈になる（詳細は後述「[c3c 入口（CLI の選択と記憶）](#c3c-入口cli-の選択と記憶)」）。`claude-container` の名前で呼んだときの解釈は従来どおり変わらない。
+同じ実装を `c3c` という名前でも呼べる（`c3c` は `claude-container` への symlink）。`c3c` で呼んだときだけ、サブコマンドで CLI を選ぶ・無指定なら前回の CLI を使う・ディレクトリ省略で現在のディレクトリを使う、という新しい引数解釈になる（詳細は後述「[c3c 入口（CLI の選択と記憶）](#c3c-入口cli-の選択と記憶)」）。`claude-container` の名前で呼んだときの解釈は従来どおり変わらないが、廃止予定である（後述「[旧コマンドからの移行](#旧コマンドからの移行)」）。
 
 ```bash
 # インストール例（PATH 上に symlink を置く。相対・絶対・多段のどれでもよい）
@@ -122,7 +122,7 @@ c3c --clean /path/to/project
 
 従来の Claude 固定の呼び出しは **`c3c claude` と明示する**。`c3c` 無指定は前回の CLI を使うため、単なるコマンド名の置換では同じ動作にならない。`claude` / `codex` という相対ディレクトリは `./claude` / `./codex`、先頭が `-` のパスは `--` の後に指定する。通常起動のディレクトリは最大1件で、未知オプションは拒否する。
 
-旧入口の `--check` は廃止予告を表示し、各対象の WARN に集計する（FAIL は優先、WARN のみなら終了コード0）。対象0件でも予告を表示する。両入口の `--check` は外部のスクリプト・alias・PATH が未確認であることも表示する。これらを自動走査する機能ではなく、警告がないことは利用側すべての移行完了を意味しない。
+旧入口の `--check` は廃止予告を表示し、各対象の WARN に集計する（FAIL は優先、WARN のみなら終了コード0）。対象0件でも予告を stderr に表示する（対象ごとの WARN 集計には入らない）。両入口の `--check` は外部のスクリプト・alias・PATH が未確認であることも表示する。これらを自動走査する機能ではなく、警告がないことは利用側すべての移行完了を意味しない。
 
 切替後は `c3c --check` と各 CLI の起動を確認する。問題があれば、入口を記録した互換版の checkout に戻す。新しい `c3c claude` / `c3c codex` は互換版でも利用できる。設定・認証・承認記録の削除や再作成は不要。旧設定 `.claude-container.d/` の互換読込や内部の保存先は今回のコマンド廃止とは別で、引き続き維持する。
 
@@ -195,7 +195,7 @@ claude-container 自身を対象プロジェクトとして自己ホスト起動
 CLAUDE_CONTAINER_IPV6=1
 ```
 
-初回は `./claude-container -b /path/to/project` で新しい境界アセットを含むイメージを作る。対応ラベルのない旧イメージでの有効化は、起動と `--check` で再ビルドを案内して停止する。その後の0/1の切り替えはランタイム設定なので、コンテナを終了して起動し直せば反映される。IPv4/IPv6 で `allowed-domains.txt` と `allowed-ports.txt` を共用し、IPv6 でも未許可の宛先・ポートを遮断する。IPv6-only ホストは初期対応の対象外で、IPv4 も使用できることが前提。
+初回は `./c3c claude -b /path/to/project` で新しい境界アセットを含むイメージを作る。対応ラベルのない旧イメージでの有効化は、起動と `--check` で再ビルドを案内して停止する。その後の0/1の切り替えはランタイム設定なので、コンテナを終了して起動し直せば反映される。IPv4/IPv6 で `allowed-domains.txt` と `allowed-ports.txt` を共用し、IPv6 でも未許可の宛先・ポートを遮断する。IPv6-only ホストは初期対応の対象外で、IPv4 も使用できることが前提。
 
 有効時は launcher が固定の `compose.ipv6.yml` を追加し、単独 pasta と仮想 IPv6 ゲートウェイ `fe80::1` を使う。Podman/pasta、ホストの IPv6 外向き通信と、ip6tables の hop-limit / REJECT 機能を使えるカーネルが必要。これらが使えない場合は初期化を失敗として停止する。今回確認した環境は rootless Podman 5.8.6 / podman-compose 1.6.0。ホストに IPv6 があっても rootless bridge の外側へ経路が渡らない場合があるため、コンテナ単位に閉じた pasta を使う。ホスト・ルーター・WARP の設定は自動変更しない。起動時には経路、IPv6 有効状態、ip6tables、`api.anthropic.com` の IPv6 HTTPS 接続と禁止先の遮断を検査し、失敗したら起動を止める。`--check` は設定値だけを検査し、ネットワーク作成や実疎通は行わない。
 
@@ -553,11 +553,11 @@ IPv4 起動時の HTTPS 自己検証は、禁止先 `example.com` が接続5秒�
 
 プロジェクトの移動・削除後に残るイメージは、前述の「欠落パスのイメージ清掃」で診断・限定清掃できる。
 
-`Dockerfile.claude` を編集して `./claude-container -b /path/to/project` でリビルドする。`-b` を付けると GitHub meta スナップショットの再取得（上記）が試みられ、あわせて `CACHEBUST` にその時点のエポック秒が渡されて install レイヤーのキャッシュが必ず破棄される。これにより、`-b` のたびに `install.sh` が再実行されて最新版の Claude Code が取得される（apt パッケージ等の上位レイヤーはキャッシュを流用するため高速）。再現性が必要な場合は `CLAUDE_CODE_VERSION=1.2.3 ./claude-container -b /path/to/project` のようにシェル環境で固定する（`.c3c/env` は許可リスト外のため無視される。理由は [`#62`](https://github.com/jj1xgo/claude-container/issues/62)）。
+`Dockerfile.claude` を編集して `./c3c claude -b /path/to/project` でリビルドする。`-b` を付けると GitHub meta スナップショットの再取得（上記）が試みられ、あわせて `CACHEBUST` にその時点のエポック秒が渡されて install レイヤーのキャッシュが必ず破棄される。これにより、`-b` のたびに `install.sh` が再実行されて最新版の Claude Code が取得される（apt パッケージ等の上位レイヤーはキャッシュを流用するため高速）。再現性が必要な場合は `CLAUDE_CODE_VERSION=1.2.3 ./c3c claude -b /path/to/project` のようにシェル環境で固定する（`.c3c/env` は許可リスト外のため無視される。理由は [`#62`](https://github.com/jj1xgo/claude-container/issues/62)）。
 
 `.c3c/` のパッケージ一覧・許可ドメイン（`allowed-domains.txt`）・許可ポート（`allowed-ports.txt`）・Node バージョン指定（`node-version.txt`）・Codex バージョン指定（`codex-version.txt`）・ベースイメージ指定（`base-image.txt`）を変更した場合も、イメージへ反映するには `-b` での再ビルドが必要。claude-container 側の同梱 default（`node-version.txt`・`codex-version.txt`）が変わった場合も同様で、既存イメージには境界アセットのドリフト診断（起動時の `WARNING` と `--check`）が再ビルドを案内する（旧イメージを自動では削除しない）。`entrypoint.sh`・`init-firewall.sh`・`ipv6-firewall.py`・`firewall-refresh.py`・`codex-mcp-audit.py`・`git-askpass.sh`・`validate-build-input.sh`・`Dockerfile.claude` 自体などビルドコンテキストへステージされるスクリプトの変更も同様（前述「アーキテクチャ」節参照）。
 
-`.build-context/` は claude-container リポジトリ直下に生成されるビルドコンテキストの生成物（`.gitignore` 対象）で、プロジェクトごとに `.build-context/<PROJECT_NAME>/` のサブディレクトリへ分離される。`./claude-container --clean /path/to/project` でそのプロジェクト分のみ、`./claude-container --clean`（引数なし）で全プロジェクト分をまとめて削除できる。
+`.build-context/` は claude-container リポジトリ直下に生成されるビルドコンテキストの生成物（`.gitignore` 対象）で、プロジェクトごとに `.build-context/<PROJECT_NAME>/` のサブディレクトリへ分離される。`./c3c --clean /path/to/project` でそのプロジェクト分のみ、`./c3c --clean`（引数なし）で全プロジェクト分をまとめて削除できる。
 
 Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATER: "1"` で無効化している。コンテナは `--rm` で起動するためアップデートを取得しても終了時に消えるためで、バージョン更新は `-b` でのリビルドで行う。
 

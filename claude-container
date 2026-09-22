@@ -106,8 +106,8 @@ CLI を指定する（同名のディレクトリは ./codex や -- codex と書
                         （CLI 選択の記憶は削除しない）。CLI の指定とは併用できない
   --clean              （ディレクトリなし）全プロジェクト分を削除して終了する
   --check [<ディレクトリ>...]
-                        起動せずに診断する（claude-container --check と同じ。CLI 無指定は
-                        Claude の診断で、記憶による選択はしない）
+                        起動せずに診断する（CLI 無指定は Claude の診断で、記憶による選択はしない）。
+                        旧入口 claude-container --check は各対象に廃止予告の WARN を加える
   --check --clean-missing [<ディレクトリ>...]
                         欠落パスの確認済みイメージだけを削除する
   -h, --help            このヘルプを表示して終了する

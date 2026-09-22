@@ -563,6 +563,7 @@ class LegacyRetirementTests(LaunchCase):
         self.assert_no_containers()
 
     def test_retirement_warning_does_not_hide_failure_or_skip_next_project(self):
+        # WARN の帰属は test_check_reports_retirement_without_mutating_projects_or_home の対比で検証する。
         result = self.run_legacy('--check', str(self.root / 'missing'), str(self.proj))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('PASS: 0   WARN: 1   FAIL: 1', result.stdout)

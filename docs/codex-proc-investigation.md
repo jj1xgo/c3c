@@ -1,6 +1,6 @@
 # Codex の /proc マウント失敗（#140）
 
-2026-09-22 の調査記録。対象は [#140](https://github.com/jj1xgo/c3c/issues/140)。製品の起動設定は未変更。システム版 bubblewrap の追加を戻して再ビルドした利用側から、通常起動と境界の受入完了が報告され、issue はクローズ済み（後述「利用側の受入結果」）。
+2026-09-22 の調査記録。対象は [#140](https://github.com/jj1xgo/c3c/issues/140)。#140 の時点では製品の起動設定を変更していない（#145 の変更は後述「#145: 同梱版の優先」）。システム版 bubblewrap の追加を戻して再ビルドした利用側から、通常起動と境界の受入完了が報告され、issue はクローズ済み（後述「利用側の受入結果」）。
 
 ## 確認できたこと
 
@@ -65,9 +65,59 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 
 起動後は `command -v bwrap` でシステム版が残っていないこと、Codex の通常のサンドボックス付きコマンド実行で `pwd` / `git status` が成功することを確認する。今回の2ケース比較は成立したので、HOME 警告だけのために同じ診断を繰り返す必要はない。同様の環境へ適用する場合の受入は、製品の通常起動で行う。
 
+以上は #140 当時の回避策で、記録として残す。[#145](https://github.com/jj1xgo/c3c/issues/145) 以降は、システム版が間接依存で残るイメージでも Codex 経路で同梱版を選ぶ（次節）。
+
 上流の失敗検出修正も候補として残す。独自の stderr 書き換えラッパーや sandbox 無効化は導入しない。
 
 `unmask=/proc/*` は解消条件として報告されているが、本件では既定へ追加しない。[Podman の仕様](https://docs.podman.io/en/v4.4/markdown/options/security-opt.html)では unmask は既定のマスクと読み取り専用保護に関わる設定であり、`/proc/sys` 等への影響も評価が必要。個別パスの最小化も未検証。既存 `/proc` を継承する方式も新規 PID namespace に対応する procfs とは異なるため、保護範囲が同じとは扱わない。
+
+## #145: 同梱版の優先
+
+画像ライブラリ等の間接依存でシステム版 bubblewrap が入るプロジェクトでは、依存パッケージを外すと別の機能が壊れる。そこで c3c は依存パッケージを削除せず、Codex の選択だけを同梱版へ向ける。ビルド時に同梱実体への固定 symlink `/usr/local/libexec/c3c/codex-bwrap/bwrap` を作り、`entrypoint.sh` の Codex 経路でこのディレクトリを PATH の先頭へ加える。設計の詳細と対象外の条件は README「Codex CLI を対話で使う」節を参照する。
+
+この修正で使われるのは、Codex 自身の proc fallback である。同梱版は新しい procfs のマウントに失敗し、Codex が失敗を認識して `mount_proc=false` で再実行する。sandbox は外側コンテナの procfs を引き継ぐ。システム版 0.12.0 は失敗の表記が一致しないので fallback が働かない（上記「確認できたこと」）。新しい procfs とは保護範囲が異なるので、外側プロセスの見え方を受入で確かめる（次節）。
+
+### #145 の受入
+
+2026-09-23、ホスト（x86_64、Podman）で確認した。修正版の c3c はブランチ `fix/issue145-codex-bundled-bwrap` の `be92aa6`、Codex は 0.156.0。対象は隔離した fixture プロジェクトで、`.c3c/packages.txt` に `glycin-loaders` と `libgdk-pixbuf2.0-bin` を入れた。利用側 repo の設定と持ち主の認証ディレクトリは使っていない。
+
+**修正前**: SOTLAS の既存イメージ（image `e49bc3f57f82`、Codex 0.155.1、`/usr/bin/bwrap` 0.12.0）に `tests/diagnose-codex-proc.sh` を実行した。システム版のままでは read-only の `pwd` と workspace-write の `git status` がともに rc 1、`Can't mount proc on /proc` で失敗した。システム版を外した比較では、両方とも rc 0 だった。修正版の `c3c --check --agent codex` は、このイメージの境界アセットのドリフトを WARNING で報告した。
+
+**修正後の通常起動**: `c3c codex -b <fixture>` で再ビルドした（image `86609e5ec220`）。イメージには glycin-loaders の依存として `/usr/bin/bwrap` 0.12.0 が残っている。TTY 無しで起動すると、製品 ENTRYPOINT が firewall の自己検証、MCP 審査の snapshot、承認（対象 0 件）、verify、Codex の exec まで進んだ。稼働中のコンテナでは、Codex の node ラッパーとネイティブ本体の PATH の先頭が `/usr/local/libexec/c3c/codex-bwrap` だった。`podman exec` のシェルとイメージ既定の PATH は従来のままで、Claude 経路で名前解決される bwrap は `/usr/bin/bwrap` だった。未承認・変更された stdio MCP（`command = "bwrap"`）を足すと、TTY 無しでは Codex を起動せずに拒否した。
+
+**sandbox の診断**: ChatGPT 認証なしでは agent に通常ツールを実行させられない。そこで同じ稼働コンテナで、Codex と同じ PATH と ENTRYPOINT と同じ `setpriv` の剥奪を与え、`codex sandbox` を実行した。これは診断で、通常ツールの受入の代わりにはならない。
+
+| 確認 | 結果 |
+| --- | --- |
+| read-only / workspace-write の `pwd` | 両方 rc 0、`/workspace` |
+| sandbox 実行中の bwrap の実体（sandbox 外の同 uid から `/proc/<pid>/exe`） | npm の `codex-resources/bwrap`（同梱版） |
+| `git status --short --branch` | rc 128。fixture は `GITCONFIG_FILE` 未設定で `~/.gitconfig` が `/dev/null` の bind（デバイス）になり、sandbox 内で読めない。`GIT_CONFIG_GLOBAL=/dev/null`（sandbox 内の `/dev`）では両モード rc 0。#145 とは別の要因 |
+| PID namespace と `/proc` | sandbox の PID namespace は外側と別だが、`/proc` には外側の PID（tini・Codex の node ラッパー・ネイティブ本体・firewall-refresh 等）が見える。fallback で外側の procfs を引き継いでいる |
+| 外側プロセスの `environ` / `cmdline`（O_RDONLY の open だけ） | node ラッパーと Codex 本体の `environ` は両方拒否、`cmdline` は open できる |
+| 書込の open（write・truncate なし） | read-only で `/workspace/README.md` は EROFS。両モードで `/proc/sys/kernel/hostname`・`/proc/sysrq-trigger` は EACCES。workspace-write で `~/.codex/config.toml` は EROFS、固定リンクは EACCES |
+| プロセス制限 | CapInh/Prm/Eff/Bnd/Amb=0、NoNewPrivs=1、Seccomp=2 |
+| `shell_environment_policy.set.PATH="/usr/bin:/bin"` を指定 | 元の `Can't mount proc on /proc` で rc 1（文書化した対象外条件が実在する） |
+
+コンテナ側では、非特権の `iptables -S` が拒否され、Codex プロセスの capability は 0 だった。HTTPS は `api.github.com` が 200、`example.com` と `http://api.github.com` は接続できなかった。node は固定リンク・その親・同梱実体とその親のいずれにも書き込めない（root:root、755）。
+
+**認証済み対話セッションでの受入**: 2026-09-23、`537fd32` で同じ fixture を `c3c codex -b` により再ビルドした（image `2a5a27e481f5`）。このイメージには `/usr/bin/bwrap` 0.12.0 が残っている。固定リンクは npm の `codex-linux-x64` の `codex-resources/bwrap`（`bubblewrap built for Codex`）を指す。
+
+準備として、持ち主の許可を得て、fixture の `.c3c/env` に Codex 専用の認証ディレクトリ（`CODEX_DIR`）と `GITCONFIG_FILE=~/.gitconfig` を設定した。`.c3c/allowed-domains.txt` には `chatgpt.com` と `auth.openai.com` を加えた。この 2 つが無いと、TUI の起動時に `account/read failed ... workspace routing discovery failed` で終了する。
+
+起動は通常の `c3c codex <fixture>` と `c3c codex --read-only <fixture>` の 2 通りで、どちらも MCP 審査（対象 0 件）を経て TUI に入った。TUI で agent に `pwd` と `git status --short --branch` を通常のシェルツールで実行させ、結果を Codex のセッション記録（`sessions/…/rollout-*.jsonl`、originator `codex-tui`、Codex 0.156.0）で確認した。
+
+| sandbox（approval は `on-request`） | `pwd` | `git status --short --branch` |
+| --- | --- | --- |
+| `workspace-write`（`network_access=false`） | rc 0、`/workspace` | rc 0、`## master` と fixture の設定変更 2 件 |
+| `read-only` | rc 0、`/workspace` | rc 0、同上 |
+
+どちらのモードでも、承認の要求と `Can't mount proc on /proc` は出なかった。TUI への入力は `expect` で TTY を与えて自動化した。人が画面を見て操作したものではない。
+
+**not run と限界**:
+
+- glycin の画像処理は、この image の gdk-pixbuf が libglycin にリンクしておらず、glycin を通る入口を用意できなかった。PNG のサムネイル生成は、既定 PATH と Codex の PATH の両方で成功した（gdk-pixbuf 内蔵のローダー）。Codex の子プロセスからの glycin の互換は主張しない。
+- arm64 は fixture の単体試験だけで、実機は未確認。IPv6 の実通信も未確認。
+- 外側プロセスの `environ` が読めないという結果は、上記 2 プロセスとこの版に限る。全プロセスが不可視とは主張しない。
 
 ## ホストでの切り分け
 

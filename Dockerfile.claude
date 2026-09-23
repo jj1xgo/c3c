@@ -159,7 +159,8 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
 # キャッシュだけを破棄するので、`-b` の再ビルドのたびに実際に再インストールが起きる。
 COPY codex-version.txt /tmp/codex-version.txt
 ARG CODEX_CACHEBUST=pinned
-RUN echo "codex-cachebust=${CODEX_CACHEBUST}" && \
+RUN set -e; \
+    echo "codex-cachebust=${CODEX_CACHEBUST}" && \
     CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)" && \
     if [ -n "$CODEX_VERSION" ]; then \
       echo "$CODEX_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
@@ -183,6 +184,97 @@ RUN mkdir -p /workspace /home/node/.claude && \
 # それを保持するディレクトリの不変性以上にはならない。上の任意の Node.js tarball が
 # 独自の uid を /usr/local に持ち込みうるので、ここで明示的に root へ固定し直す。
 RUN chown root:root /usr/local/bin /usr/local/lib /usr/local/share
+
+# >>> c3c codex-bwrap（tests/test_codex_bwrap.py が下の node -e の中身を抽出して試験する）
+# Codex 同梱の bubblewrap を専用ディレクトリの固定 symlink にする（#145）。entrypoint.sh の Codex 分岐が
+# このディレクトリを PATH の先頭へ加え、Codex の PATH 探索がシステム版（画像ライブラリの間接依存等）
+# より先に同梱版を選ぶ。実体は npm ラッパー（codex.js）と同じ順で解決する: optional package が
+# 解決できればその vendor、MODULE_NOT_FOUND のときだけ旧配置の vendor（上流は全例外で旧配置へ
+# 進むが、ここは安全側に限定する）。help に System launcher が Bundled 経路と同じ argv を組む
+# 4 項目が無い版は拒否する。上の chown で /usr/local を root に固定し直した後に置き、リンク・実体・
+# その全親が root 所有かつ group/other 書込不可であることを検査する（不適合なら直さずビルドを
+# 止める）。opt-out（空の codex-version.txt）では何も作らない。
+RUN set -e; \
+    CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)"; \
+    if [ -z "$CODEX_VERSION" ]; then \
+      echo "INFO: Codex は opt-out のため同梱 bubblewrap の固定リンクを作りません"; \
+    else \
+      install -d -o root -g root -m 0755 /usr/local/libexec/c3c /usr/local/libexec/c3c/codex-bwrap; \
+      node -e ' \
+        const fs = require("node:fs"); \
+        const path = require("node:path"); \
+        const { createRequire } = require("node:module"); \
+        const { execFileSync } = require("node:child_process"); \
+        const out = "/usr/local/libexec/c3c/codex-bwrap"; \
+        const arch = process.arch; \
+        const targets = { \
+          x64: ["@openai/codex-linux-x64", "x86_64-unknown-linux-musl"], \
+          arm64: ["@openai/codex-linux-arm64", "aarch64-unknown-linux-musl"], \
+        }; \
+        const run = (file, args) => execFileSync(file, args, \
+          { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }); \
+        try { \
+          if (process.platform !== "linux" || !Object.hasOwn(targets, arch)) { \
+            throw new Error("対応していない Codex のアーキテクチャです: " + arch); \
+          } \
+          const cli = fs.realpathSync("/usr/local/bin/codex"); \
+          const req = createRequire(cli); \
+          const [pkg, triple] = targets[arch]; \
+          let vendor; \
+          try { \
+            vendor = path.join(path.dirname(req.resolve(pkg + "/package.json")), "vendor"); \
+          } catch (error) { \
+            if (error.code !== "MODULE_NOT_FOUND") throw error; \
+            vendor = path.resolve(path.dirname(cli), "..", "vendor"); \
+          } \
+          const target = fs.realpathSync(path.join(vendor, triple)); \
+          const binary = fs.realpathSync(path.join(target, "bin", "codex")); \
+          const bwrap = fs.realpathSync(path.join(target, "codex-resources", "bwrap")); \
+          for (const file of [binary, bwrap]) { \
+            if (!file.startsWith(target + path.sep)) { \
+              throw new Error("同梱資材が対象 target の外を指しています: " + file); \
+            } \
+            const stat = fs.statSync(file); \
+            if (!stat.isFile() || (stat.mode & 0o111) === 0) { \
+              throw new Error("同梱資材が実行可能な通常ファイルではありません: " + file); \
+            } \
+          } \
+          const words = new Set(run(bwrap, ["--help"]).split(/[^-a-z0-9]+/)); \
+          const missing = ["--as-pid-1", "--perms", "--argv0", "--ro-bind-fd"] \
+            .filter((option) => !words.has(option)); \
+          if (missing.length > 0) { \
+            throw new Error("同梱 bubblewrap の help に必要なオプションがありません: " + missing.join(" ")); \
+          } \
+          const version = run(bwrap, ["--version"]).trim(); \
+          const link = path.join(out, "bwrap"); \
+          fs.symlinkSync(bwrap, link); \
+          console.log("INFO: Codex 同梱 bubblewrap: " + link + " -> " + bwrap + " (" + version + ")"); \
+        } catch (error) { \
+          console.error("ERROR: Codex 同梱の bubblewrap を固定リンクにできません: " + error.message); \
+          process.exit(1); \
+        }'; \
+      link=/usr/local/libexec/c3c/codex-bwrap/bwrap; \
+      [ -L "$link" ] && [ "$(ls -A /usr/local/libexec/c3c/codex-bwrap)" = bwrap ] || { \
+        echo "ERROR: $link が専用ディレクトリ内の唯一の symlink ではありません" >&2; exit 1; }; \
+      bad="$(find "$link" -maxdepth 0 ! -user 0 -print)" || { \
+        echo "ERROR: $link の所有者を検査できません" >&2; exit 1; }; \
+      [ -z "$bad" ] || { \
+        echo "ERROR: $link が root 所有ではありません" >&2; exit 1; }; \
+      real="$(readlink -e "$link")" && [ -n "$real" ] || { \
+        echo "ERROR: $link の実体を解決できません" >&2; exit 1; }; \
+      for start in "$real" /usr/local/libexec/c3c/codex-bwrap; do \
+        p="$start"; \
+        while :; do \
+          bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { \
+            echo "ERROR: Codex 同梱 bubblewrap の経路 $p の所有者・mode を検査できません" >&2; exit 1; }; \
+          [ -z "$bad" ] || { \
+            echo "ERROR: Codex 同梱 bubblewrap の経路 $p が root 所有でないか group/other から書込可能です" >&2; exit 1; }; \
+          [ "$p" = / ] && break; \
+          p="$(dirname "$p")"; \
+        done; \
+      done; \
+    fi
+# <<< c3c codex-bwrap
 
 # エグレスファイアウォールのアセット: root 所有にし、node ユーザーが実行時に
 # 許可リストやスクリプト自体を変更できないようにする。node は sudo 経由で

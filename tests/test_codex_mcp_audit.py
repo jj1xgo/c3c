@@ -20,8 +20,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / 'codex-mcp-audit.py'
-SECRET_ENV = 'hunter2-env-value'
-SECRET_HEADER = 'Bearer sekrit-header-value'
+ENV_SENTINEL = 'hunter2-env-value'
+HEADER_SENTINEL = 'Bearer sekrit-header-value'
 # codex-cli 0.156.0 の RawMcpServerConfig の key（計画の Global Constraints と同じ 28 個）。
 KEY_NAMES = ('command', 'args', 'env', 'env_vars', 'cwd', 'http_headers', 'env_http_headers', 'url',
              'bearer_token', 'bearer_token_env_var', 'http_headers_helper', 'environment_id', 'auth',
@@ -36,7 +36,7 @@ args = ["server.js", "--port", "1"]
 cwd = "/workspace"
 env = { TOKEN = "%s" }
 env_vars = ["HOME", { name = "PATH", source = "local" }]
-''' % SECRET_ENV
+''' % ENV_SENTINEL
 
 
 class AuditCase(unittest.TestCase):
@@ -91,7 +91,7 @@ class SnapshotTests(AuditCase):
         doc = self.snapshot(STDIO_A)
         servers = [{'name': 'alpha', 'transport': {
             'type': 'stdio', 'command': 'node', 'args': ['server.js', '--port', '1'],
-            'env': {'TOKEN': SECRET_ENV}, 'env_vars': ['HOME', {'name': 'PATH', 'source': 'local'}],
+            'env': {'TOKEN': ENV_SENTINEL}, 'env_vars': ['HOME', {'name': 'PATH', 'source': 'local'}],
             'cwd': '/workspace', 'environment_id': None}}]
         text = json.dumps({'protocol_version': 2, 'servers': servers}, sort_keys=True,
                           separators=(',', ':'), ensure_ascii=False)
@@ -107,7 +107,7 @@ class SnapshotTests(AuditCase):
         for old, new in (('command = "node"', 'command = "deno"'),
                          ('"--port", "1"', '"--port", "2"'),
                          ('cwd = "/workspace"', 'cwd = "/tmp"'),
-                         (SECRET_ENV, 'other-value'),
+                         (ENV_SENTINEL, 'other-value'),
                          ('"HOME", ', '"USER", ')):
             with self.subTest(old=old):
                 self.assertNotEqual(self.snapshot(STDIO_A.replace(old, new))['hash'], base)
@@ -148,12 +148,12 @@ class SnapshotTests(AuditCase):
 
     def test_output_hides_env_values_and_http_headers(self):
         text = STDIO_A + ('\n[mcp_servers.web]\nurl = "https://a.example/mcp"\n'
-                          'http_headers = { Authorization = "%s" }\n' % SECRET_HEADER)
+                          'http_headers = { Authorization = "%s" }\n' % HEADER_SENTINEL)
         self.write(text)
         result = self.run_helper('snapshot')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn(SECRET_ENV, result.stdout + result.stderr)
-        self.assertNotIn(SECRET_HEADER, result.stdout + result.stderr)
+        self.assertNotIn(ENV_SENTINEL, result.stdout + result.stderr)
+        self.assertNotIn(HEADER_SENTINEL, result.stdout + result.stderr)
 
     def test_display_strips_control_characters_but_hash_keeps_them(self):
         clean = self.snapshot('[mcp_servers.m]\ncommand = "ab"\n')

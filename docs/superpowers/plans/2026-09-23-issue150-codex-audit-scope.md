@@ -1157,3 +1157,15 @@ git commit -m "docs: #150 の実装検証と実機受入を記録する"
 - Claude（claude-opus-5-5、headless `claude -p`、Read/Grep/Glob のみ）: 初回 81f409e で Critical 1（project 設定の `marketplaces` による plugin 取得元の差し替え）/ Important 2（試験書き換えの一覧の不足、不変条件 72 行）/ Minor 5。確認巡 1（c5edc11）ですべて直り「実装に渡せる」（Files 欄の書き漏れ 1 件は反映済み）。
 - 深刻度の割れ: `marketplaces` は Claude だけが Critical として指摘した。重い方を採って反映した。
 - 未対応の指摘: なし。範囲外として spec に記録したもの: project 設定の `hooks`・`js_repl_node_path`・`shell_environment_policy`、helper の無い HTTP の `env_http_headers`・`bearer_token_env_var`（protocol 1 から対象外）、Claude 経路の plugin 有効化経路の確認。
+
+## 結果（2026-09-23、実装 a019d80）
+
+- 回帰: `./lint.sh` 終了コード 0・警告ゼロ。`python3 -m unittest discover -s tests -p 'test_*.py'` 298 件 OK（着手前の基準も 298 件 OK）。
+- `./test-build.sh`（全体）: PASS 441 / FAIL 0。新しい `tomllib` の検査と `codex --version` が同梱 default（0.156.0）と一致する検査を含む。1 回目は実行者のコマンド（出力を `head` に通した）で途中終了したため、出力をファイルへ流して再実行した結果。
+- 実機受入（host、Podman、fixture は scratchpad の git repo。`CODEX_DIR=~/.codex-container`、`GITCONFIG_FILE=~/.gitconfig`、`allowed-domains.txt` に `chatgpt.com`・`auth.openai.com`）:
+  1. `codex-version.txt` = `latest` で `c3c codex -b`: イメージの Codex は `codex-cli 0.156.1`（同梱 default と異なる版）。版を理由に止まらず、`/workspace/.codex/config.toml` の審査（対象 0 件、空定義として記録）→ 本起動の照合（一致）→ Codex TUI の起動まで進んだ。label `io.c3c.codex-audit-protocol=2`、承認記録 `mcp-approvals/codex/<project>/project-config.json`。
+  2. `.codex/config.toml` に `[mcp_servers.probe]`（`/bin/true --c3c150`）: TTY なしでは定義を表示して「対話可能な TTY がない」で停止（実行者が確認）。持ち主の端末で `n` → Codex は起動しない、`y` → 起動、再実行 → 確認なしで起動（持ち主が確認）。
+  3. `[plugins."probe@fxmkt"] enabled = true`: 検査用コンテナで plugin 有効化を理由に拒否し、本起動なし。
+  4. `[marketplaces.fxmkt] source_type = "git"`: 同じく marketplace 定義を理由に拒否し、本起動なし。
+  5. protocol 1 の旧イメージ（sotlas-frontend の既存イメージ）で `-b` なし: コンテナを起動せず、label 不一致で `-b` を案内して停止。
+- not run: IPv6 有効時の実機起動（本変更は審査経路だけで、IPv6 の配線に触れないため）。ARM64 でのビルド（実機が無い）。

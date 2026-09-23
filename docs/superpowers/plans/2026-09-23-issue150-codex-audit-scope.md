@@ -1149,6 +1149,8 @@ git commit -m "docs: #150 の実装検証と実機受入を記録する"
 
 推奨実装: Opus — セキュリティ境界の変更で、判定基準 2（秘密を読める MCP の審査経路）に当たり、Task 5 は持ち主の対話操作を伴うコンテナ実機受入でもあるため（判定基準 1）。Sonnet は境界変更のため推さない。Codex は host の checkout で完結せず、計画も Task 2〜4 の試験の書き換えが逐語まで確定していないため推さない。
 
+実装: Opus（持ち主指定、2026-09-23）
+
 ## 計画レビュー（2026-09-23）
 
 - Codex（gpt-6-astra、`codex exec --sandbox read-only`）: 初回 81f409e で Critical 0 / Important 3（全 key の型検査、不変条件 72 行、`stat`→`open` の FIFO 差し替え）/ Minor 3。確認巡 1（c5edc11）で Important 3 件が部分的、確認巡 2（84e68e7）ですべて直り「実装に渡せる」。

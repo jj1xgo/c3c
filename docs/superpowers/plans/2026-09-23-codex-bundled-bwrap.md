@@ -117,6 +117,8 @@ const bwrap = fs.realpathSync(path.join(target, "codex-resources", "bwrap"));
 
 2026-09-23、Opus 5.5（`claude-opus-5-5`）が読み取り専用でレビューした。初回は Critical なし、Important 4 件と Minor 6 件。proc fallback の説明と受入、help の4項目、Codex 内部の環境再構成、ownership 検査順などを反映し、同じセッションで確認限定巡を実施。「実装に渡せる」、前回指摘はすべて解消との判定を得た。確認巡の軽微な注記に従い、両 RUN の `set -e` と同一の opt-out 判定も明記した。
 
+実装後の最終レビュー（2026-09-23）で、上記「entrypoint の存在検査は欠落を早く明示するためのもの」は help が不適合な場合に限る記述と分かった。上流 `find_system_bwrap_in_search_paths()` は存在しない・実行できない候補を飛ばして次の PATH 候補を選ぶため、リンクの欠落・dangling・実行不能ではシステム版へ黙って戻る。entrypoint の検査はそれを防ぐ fail-closed として README・不変条件・entrypoint のコメントを訂正した。
+
 これは計画の静的レビューである。製品実装・実ビルド・通常起動・境界受入は not run（計画作成の段階のため）。承認後も Task 1〜3 の実測と実装後レビューを省略しない。
 
 ## リリース判定と実行方法

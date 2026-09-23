@@ -235,8 +235,9 @@ if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then
   echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.c3c/codex-version.txt が空（opt-out）のままビルドしたか、旧いイメージです。対応版を書くか空ファイルを削除して同梱 default を使い、-b で再ビルドしてください。起動を中止します" >&2
   exit 1
 fi
-# 同梱 bubblewrap の固定リンクが無い（#145 より前の旧いイメージ等）まま起動すると、Codex がシステム版
-# を選びうる。欠落を審査・本起動より前に明示する（root が保護するビルド済み資材なので再探索・再生成しない）。
+# 同梱 bubblewrap の固定リンクが無い・壊れている・実行できない場合、上流の PATH 探索はその候補を飛ばして
+# 次の候補（システム版 /usr/bin/bwrap）を黙って選ぶ。それを止める fail-closed で、外さない。審査・本起動より
+# 前に停止する（root が保護するビルド済み資材なので再探索・再生成しない）。
 if [ ! -f "$CODEX_BWRAP_DIR/bwrap" ] || [ ! -x "$CODEX_BWRAP_DIR/bwrap" ]; then
   echo "ERROR: Codex 同梱の bubblewrap がありません。-b で再ビルドしてください。" >&2
   exit 1

@@ -256,12 +256,18 @@ RUN set -e; \
       link=/usr/local/libexec/c3c/codex-bwrap/bwrap; \
       [ -L "$link" ] && [ "$(ls -A /usr/local/libexec/c3c/codex-bwrap)" = bwrap ] || { \
         echo "ERROR: $link が専用ディレクトリ内の唯一の symlink ではありません" >&2; exit 1; }; \
-      [ -z "$(find "$link" -maxdepth 0 ! -user 0 -print)" ] || { \
+      bad="$(find "$link" -maxdepth 0 ! -user 0 -print)" || { \
+        echo "ERROR: $link の所有者を検査できません" >&2; exit 1; }; \
+      [ -z "$bad" ] || { \
         echo "ERROR: $link が root 所有ではありません" >&2; exit 1; }; \
-      for start in "$(readlink -f "$link")" /usr/local/libexec/c3c/codex-bwrap; do \
+      real="$(readlink -e "$link")" && [ -n "$real" ] || { \
+        echo "ERROR: $link の実体を解決できません" >&2; exit 1; }; \
+      for start in "$real" /usr/local/libexec/c3c/codex-bwrap; do \
         p="$start"; \
         while :; do \
-          [ -z "$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" ] || { \
+          bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { \
+            echo "ERROR: Codex 同梱 bubblewrap の経路 $p の所有者・mode を検査できません" >&2; exit 1; }; \
+          [ -z "$bad" ] || { \
             echo "ERROR: Codex 同梱 bubblewrap の経路 $p が root 所有でないか group/other から書込可能です" >&2; exit 1; }; \
           [ "$p" = / ] && break; \
           p="$(dirname "$p")"; \

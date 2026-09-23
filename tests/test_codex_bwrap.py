@@ -5,7 +5,8 @@ Dockerfile.claude の開始・終了コメントで区切った RUN から `node
 Dockerfile の行継続だけを除いて実行する。試験用コピーでは固定 CLI・出力ディレクトリ・`process.arch`
 だけを一時領域の値へ置換する。npm の配置は一時領域に fixture として組み、ホストの /usr/local には
 触れない。検査範囲は解決処理と help 検査とリンク作成であり、RUN 全体（opt-out 分岐・root 所有と
-mode の検査）は test-build.sh の実 build 検査が担う。
+mode の検査）は test-build.sh の実 build 検査が担う。ただし所有者・mode 検査の shell 部分は、find の
+失敗や実体の解決失敗を通過扱いにしない（fail-closed）ことだけを、find を差し替えて別に確かめる。
 """
 
 import json
@@ -28,13 +29,26 @@ REQUIRED = ('--as-pid-1', '--perms', '--argv0', '--ro-bind-fd')
 TRIPLES = {'x64': 'x86_64-unknown-linux-musl', 'arm64': 'aarch64-unknown-linux-musl'}
 
 
-def extract_script():
-    """開始・終了コメントの間の RUN から Node スクリプトを取り出す（行継続だけを除く）。"""
+def extract_block():
     text = DOCKERFILE.read_text(encoding='utf-8')
     if text.count(BEGIN) != 1 or text.count(END) != 1:
         raise AssertionError('Dockerfile.claude の開始・終了コメントが一組ではありません')
-    block = text.split(BEGIN, 1)[1].split(END, 1)[0]
-    joined = block.replace('\\\n', '')
+    return text.split(BEGIN, 1)[1].split(END, 1)[0].replace('\\\n', '')
+
+
+def extract_owner_check():
+    """Node スクリプトの後に続く、固定リンクの所有者・mode 検査の shell 部分を取り出す。"""
+    joined = extract_block()
+    start = joined.find('link=' + FIXED_OUT.strip('"') + '/bwrap;')
+    end = joined.rfind('done;')
+    if start < 0 or end < start:
+        raise AssertionError('所有者・mode 検査の shell 部分が見つかりません')
+    return joined[start:end + len('done;')]
+
+
+def extract_script():
+    """開始・終了コメントの間の RUN から Node スクリプトを取り出す（行継続だけを除く）。"""
+    joined = extract_block()
     found = re.findall(r"node -e '([^']*)'", joined)
     if len(found) != 1 or joined.count("node -e '") != 1:
         raise AssertionError('区切り内の node -e の単一引用符の組が一つではありません')
@@ -201,6 +215,55 @@ class CodexBwrapTest(unittest.TestCase):
     def test_help_timeout(self):
         self.populate(self.package(), sleep=10)
         self.assert_failed(self.run_script())
+
+
+class CodexBwrapOwnerCheckTest(unittest.TestCase):
+    """所有者・mode 検査が find の失敗・実体の解決失敗で止まること（PR #148 の二重レビュー指摘）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = extract_owner_check()
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='c3c-codex-bwrap-owner-'))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.out = self.tmp / 'codex-bwrap'
+        self.out.mkdir()
+        self.real = self.tmp / 'vendor' / 'bwrap'
+        fake_bwrap(self.real)
+        (self.out / 'bwrap').symlink_to(self.real)
+        self.bin = self.tmp / 'bin'
+        self.bin.mkdir()
+
+    def fake_find(self, status):
+        """出力なしで status を返す find。実 find の所有者判定（root 所有）を試験環境で迂回する。"""
+        find = self.bin / 'find'
+        find.write_text('#!/bin/sh\nexit %d\n' % status, encoding='utf-8')
+        find.chmod(0o755)
+
+    def run_check(self):
+        code = self.check.replace(FIXED_OUT.strip('"'), str(self.out))
+        env = dict(os.environ, PATH='%s:%s' % (self.bin, os.environ.get('PATH', '')))
+        return subprocess.run(['sh', '-c', 'set -e; ' + code], capture_output=True, text=True,
+                               timeout=30, env=env)
+
+    def test_passes_when_find_reports_nothing(self):
+        self.fake_find(0)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_find_failure_stops(self):
+        self.fake_find(1)
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('検査できません', result.stderr)
+
+    def test_unresolvable_link_stops(self):
+        self.fake_find(0)
+        self.real.unlink()
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('実体を解決できません', result.stderr)
 
 
 if __name__ == '__main__':

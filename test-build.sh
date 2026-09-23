@@ -1908,15 +1908,18 @@ d=/usr/local/libexec/c3c/codex-bwrap; l="$d/bwrap"
 [ -L "$l" ] && [ "$(ls -A "$d")" = bwrap ] || { echo "専用ディレクトリの中身が固定リンク一つではない"; exit 1; }
 case "$(uname -m)" in x86_64) t=x86_64-unknown-linux-musl ;; aarch64) t=aarch64-unknown-linux-musl ;; *) exit 1 ;; esac
 r="$(readlink "$l")"
-[ "$r" = "$(readlink -f "$l")" ] || { echo "固定リンクが正規化済みの絶対パスではない: $r"; exit 1; }
+e="$(readlink -e "$l")" && [ -n "$e" ] || { echo "固定リンクの実体を解決できない"; exit 1; }
+[ "$r" = "$e" ] || { echo "固定リンクが正規化済みの絶対パスではない: $r"; exit 1; }
 case "$r" in /usr/local/lib/node_modules/@openai/*/vendor/"$t"/codex-resources/bwrap) ;; *) echo "実体が npm の対応 triple 外: $r"; exit 1 ;; esac
 echo "$l -> $r"; "$l" --version
 help="$("$l" --help)"
-for o in --as-pid-1 --perms --argv0 --ro-bind-fd; do printf "%s\n" "$help" | grep -q -- "$o " || { echo "help に $o が無い"; exit 1; }; done
-[ -z "$(find "$l" -maxdepth 0 ! -user 0 -print)" ] || { echo "固定リンクが root 所有でない"; exit 1; }
+for o in --as-pid-1 --perms --argv0 --ro-bind-fd; do printf "%s\n" "$help" | grep -qE -- "(^|[^-a-z0-9])$o([^-a-z0-9]|\$)" || { echo "help に $o が無い"; exit 1; }; done
+bad="$(find "$l" -maxdepth 0 ! -user 0 -print)" || { echo "固定リンクの所有者を検査できない"; exit 1; }
+[ -z "$bad" ] || { echo "固定リンクが root 所有でない"; exit 1; }
 for p in "$r" "$d"; do
   while :; do
-    [ -z "$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" ] || { echo "root 所有でないか group/other 書込可: $p"; exit 1; }
+    bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { echo "所有者・mode を検査できない: $p"; exit 1; }
+    [ -z "$bad" ] || { echo "root 所有でないか group/other 書込可: $p"; exit 1; }
     ! [ -w "$p" ] || { echo "node から書込可: $p"; exit 1; }
     [ "$p" = / ] && break
     p="$(dirname "$p")"

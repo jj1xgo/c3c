@@ -1014,6 +1014,10 @@ guard_codex_agent() {
       guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です（Codex の opt-out。このイメージには Codex CLI を導入しません）。Codex を使うには固定版（例: 0.156.0）か latest を書くか、ファイルを削除して同梱 default を使い、-b で再ビルドしてください（npm が必要なため node-version.txt も空にしないでください）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
       ;;
     *)
+      # 書式は Dockerfile.claude のビルド時検証と同じ（素の X.Y.Z か latest）。ビルドで必ず止まる値を先に診断する。
+      if [[ ! "$value" =~ ^([0-9]+\.[0-9]+\.[0-9]+|latest)$ ]]; then
+        guard_fail "ERROR: $ASSET_PATH の $value は Codex の版指定の書式ではありません（0.156.0 のような素のバージョンか latest）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      fi
       [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（採用元: $origin_text）"
       ;;
   esac
@@ -1041,7 +1045,7 @@ codex_record_content() {
 }
 
 # 承認記録の静的検証（--check 用）。JSON 1 文書・重複 key 拒否・key 集合の完全一致・int の protocol・
-# 固定 version・小文字 hash を python3 -I で検証する（grep の正規表現では前後の garbage や
+# 小文字 hash を python3 -I で検証する（grep の正規表現では前後の garbage や
 # `.` の任意一致を通してしまう）。通常起動は codex_record_content() との完全一致で照合する。
 validate_codex_record_file() {
   python3 -I - "$1" "$CODEX_AUDIT_PROTOCOL_VERSION" <<'PYTHON' 2>/dev/null

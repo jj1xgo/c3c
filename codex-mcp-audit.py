@@ -19,6 +19,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -33,8 +34,12 @@ PROTOCOL_VERSION = 2
 # env_vars は McpServerEnvVar: 文字列名か {name, source?}。source は local/remote。
 ENV_VAR_KEYS = frozenset(('name', 'source'))
 ENV_VAR_SOURCES = ('local', 'remote')
-# auth は McpServerAuth の serde 名。
+# auth は McpServerAuth、approval は AppToolApproval、omit_tools_from の要素は ToolExposureSurface の serde 名。
 AUTH_VALUES = ('oauth', 'chatgpt', 'ema_auth')
+APPROVAL_VALUES = ('auto', 'prompt', 'writes', 'approve')
+SURFACE_VALUES = ('code_mode', 'deferred', 'direct')
+U16_MAX = 2 ** 16 - 1
+U64_MAX = 2 ** 64 - 1
 RECORD_KEYS = frozenset(('protocol_version', 'hash'))
 HASH_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 CONTROL_CHARS = re.compile(r'[\x00-\x1f\x7f]')
@@ -56,12 +61,13 @@ def is_bool(value):
     return isinstance(value, bool)
 
 
-def is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+def is_int_in(value, low, high):
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
 
 
-def is_nonneg_int(value):
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+def is_seconds(value):
+    """非負で有限の秒数（Duration::try_from_secs_f64 が受け付ける値）。"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
 
 def is_table(value):
@@ -88,19 +94,40 @@ def is_env_var_list(value):
     return isinstance(value, list) and all(is_env_var(item) for item in value)
 
 
+def is_enum(values):
+    return lambda value: is_str(value) and value in values
+
+
+def is_record(checks):
+    """既知 key だけを持ち、各値が検査を通る table（未知 key は native より厳しく拒否する）。"""
+    return lambda value: (is_table(value) and set(value) <= set(checks)
+                          and all(checks[key](item) for key, item in value.items()))
+
+
+# McpServerOAuthConfig と McpServerToolConfig（codex-rs/config/src/mcp_types.rs）のうち設定から読む field。
+OAUTH_CHECKS = {'client_id': is_str, 'callback_url': is_str,
+                'callback_port': lambda value: is_int_in(value, 0, U16_MAX),
+                'authorization_server_issuer': is_str}
+TOOL_CHECKS = {'approval_mode': is_enum(APPROVAL_VALUES),
+               'output_token_limit': lambda value: is_int_in(value, 1, U64_MAX)}
+
+
 # codex-cli 0.156.0 の RawMcpServerConfig（codex-rs/config/src/mcp_types.rs）の key と、その型の検査。
-# これ以外の key は審査できない。値は disabled なエントリでも検査する（native の受理と食い違わせない）。
+# これ以外の key は審査できない（未知の key は native が黙って無視するが、ここでは拒否する）。値の型は入れ子・
+# enum・整数範囲まで native に合わせ、disabled なエントリでも検査する。
 KEY_CHECKS = {
     'command': is_str, 'args': is_str_list, 'env': is_str_map, 'env_vars': is_env_var_list, 'cwd': is_str,
     'http_headers': is_str_map, 'env_http_headers': is_str_map, 'url': is_str, 'bearer_token': is_str,
     'bearer_token_env_var': is_str, 'http_headers_helper': is_str, 'environment_id': is_str,
-    'auth': lambda value: is_str(value) and value in AUTH_VALUES,
-    'startup_timeout_sec': is_number, 'startup_timeout_ms': is_nonneg_int, 'tool_timeout_sec': is_number,
+    'auth': is_enum(AUTH_VALUES),
+    'startup_timeout_sec': is_seconds, 'startup_timeout_ms': lambda value: is_int_in(value, 0, U64_MAX),
+    'tool_timeout_sec': is_seconds,
     'enabled': is_bool, 'required': is_bool, 'supports_parallel_tool_calls': is_bool,
-    'omit_tools_from': is_str_list, 'default_tools_approval_mode': is_str,
+    'omit_tools_from': lambda value: isinstance(value, list) and all(is_enum(SURFACE_VALUES)(item) for item in value),
+    'default_tools_approval_mode': is_enum(APPROVAL_VALUES),
     'enabled_tools': is_str_list, 'disabled_tools': is_str_list, 'scopes': is_str_list,
-    'oauth': is_table, 'oauth_resource': is_str, 'name': is_str,
-    'tools': lambda value: is_table(value) and all(is_table(item) for item in value.values()),
+    'oauth': is_record(OAUTH_CHECKS), 'oauth_resource': is_str, 'name': is_str,
+    'tools': lambda value: is_table(value) and all(is_record(TOOL_CHECKS)(item) for item in value.values()),
 }
 SERVER_KEYS = frozenset(KEY_CHECKS)
 

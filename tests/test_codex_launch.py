@@ -305,7 +305,8 @@ class CodexStaticGuardTests(LaunchCase):
         # 空ファイルだけが明示 opt-out で止まる。
         for label, content, ok in (('missing', None, True), ('empty', '\n', False), ('other pin', '0.157.0\n', True),
                                    ('old pin', '0.155.1\n', True), ('future pin', '9.9.9\n', True),
-                                   ('latest', 'latest\n', True), ('bundled', SUPPORTED + '\n', True)):
+                                   ('latest', 'latest\n', True), ('bundled', SUPPORTED + '\n', True),
+                                   ('bad format', 'foo\n', False), ('short pin', '0.156\n', False)):
             with self.subTest(case=label):
                 path = self.conf / 'codex-version.txt'
                 if content is None:

@@ -201,16 +201,36 @@ class RejectionTests(AuditCase):
             with self.subTest(key=key):
                 self.rejected(f'[mcp_servers.web]\nurl = "https://a.example"\n{key} = {value}\n', key)
 
+    def test_nested_enum_and_range_types_are_rejected_in_disabled_and_http_entries(self):
+        # RawMcpServerConfig の入れ子（McpServerOAuthConfig・McpServerToolConfig）、enum（AppToolApproval・
+        # ToolExposureSurface）、整数範囲（u16・u64・NonZeroUsize）、非負の有限秒まで検査する。
+        bad = {'oauth': ('{ callback_port = "wrong" }', '{ callback_port = 65536 }', '{ callback_port = -1 }',
+                         '{ client_id = 1 }', '{ extra = "x" }'),
+               'tools': ('{ t = { approval_mode = 1 } }', '{ t = { approval_mode = "wrong" } }',
+                         '{ t = { output_token_limit = 0 } }', '{ t = { extra = 1 } }'),
+               'default_tools_approval_mode': ('"wrong"',),
+               'omit_tools_from': ('["wrong"]',),
+               'startup_timeout_ms': ('18446744073709551616',),
+               'startup_timeout_sec': ('-1', 'nan', 'inf'),
+               'tool_timeout_sec': ('-1.5', 'nan', '-inf')}
+        for key, values in bad.items():
+            for value in values:
+                for head in ('[mcp_servers.x]\nenabled = false\ncommand = "a"\n',
+                             '[mcp_servers.x]\nurl = "https://a.example"\n'):
+                    with self.subTest(key=key, value=value, head=head[15:30]):
+                        self.rejected(f'{head}{key} = {value}\n', key)
+
     def test_valid_values_for_all_keys_are_accepted_in_a_disabled_entry(self):
         text = ('[mcp_servers.x]\nenabled = false\ncommand = "a"\nargs = ["b"]\nenv = { K = "v" }\n'
                 'env_vars = ["A", { name = "B", source = "remote" }]\ncwd = "/w"\nhttp_headers = { H = "v" }\n'
                 'env_http_headers = { H = "E" }\nurl = "https://a.example"\nbearer_token = "t"\n'
                 'bearer_token_env_var = "T"\nhttp_headers_helper = "/bin/x"\nenvironment_id = "local"\n'
                 'auth = "chatgpt"\nstartup_timeout_sec = 1.5\nstartup_timeout_ms = 10\ntool_timeout_sec = 3\n'
-                'required = true\nsupports_parallel_tool_calls = false\nomit_tools_from = ["s"]\n'
+                'required = true\nsupports_parallel_tool_calls = false\nomit_tools_from = ["code_mode", "direct"]\n'
                 'default_tools_approval_mode = "auto"\nenabled_tools = ["a"]\ndisabled_tools = ["b"]\n'
-                'scopes = ["s"]\noauth = { callback_port = 1 }\noauth_resource = "r"\nname = "n"\n'
-                'tools = { t = { approval_mode = "auto" } }\n')
+                'scopes = ["s"]\noauth = { client_id = "c", callback_url = "u", callback_port = 65535, '
+                'authorization_server_issuer = "i" }\noauth_resource = "r"\nname = "n"\n'
+                'tools = { t = { approval_mode = "writes", output_token_limit = 1 } }\n')
         self.assertEqual(len(KEY_NAMES), 28)
         for key in KEY_NAMES:
             self.assertIn(f'\n{key} = ', text)

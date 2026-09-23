@@ -21,14 +21,14 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / 'codex-mcp-audit.py'
-SUPPORTED = '0.155.1'
+SUPPORTED = '0.156.0'
 VERSION_LINE = 'codex-cli ' + SUPPORTED
 TRUST_OVERRIDE = 'projects={"/workspace"={trust_level="trusted"}}'
 SECRET_ENV = 'hunter2-env-value'
 SECRET_HEADER = 'Bearer sekrit-header-value'
 SECRET_STDERR = 'native-stderr-token-xyz'
 
-# 対象版 codex-cli 0.155.1 の `mcp list --json` を模す dummy。状態ファイルのパスは script に焼き込む。
+# 対象版 codex-cli 0.156.0 の `mcp list --json` を模す dummy。状態ファイルのパスは script に焼き込む。
 CODEX = '''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 state_path = %r
@@ -440,9 +440,9 @@ class SchemaTests(AuditCase):
         self.assertNotIn(SECRET_STDERR, result.stderr)
 
     def test_unsupported_version_is_rejected_before_listing(self):
-        for label, spec in (('newer', {'stdout': 'codex-cli 0.156.0\n'}),
-                            ('older', {'stdout': 'codex-cli 0.155.0\n'}),
-                            ('different prefix', {'stdout': 'codex 0.155.1\n'}),
+        for label, spec in (('newer', {'stdout': 'codex-cli 0.157.0\n'}),
+                            ('older', {'stdout': 'codex-cli 0.155.1\n'}),
+                            ('different prefix', {'stdout': 'codex 0.156.0\n'}),
                             ('empty', {'stdout': ''}),
                             ('extra line', {'stdout': VERSION_LINE + '\nextra\n'}),
                             ('trailing space', {'stdout': VERSION_LINE + ' \n'}),
@@ -580,7 +580,7 @@ class VerifyTests(AuditCase):
                  ('protocol string', {'text': json.dumps({'protocol_version': '1', 'codex_version': SUPPORTED, 'hash': good})}),
                  ('protocol float', {'text': json.dumps({'protocol_version': 1.0, 'codex_version': SUPPORTED, 'hash': good})}),
                  ('extra key', {'text': json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': good, 'servers': []})}),
-                 ('other version', {'version': '0.155.0'}),
+                 ('other version', {'version': '0.155.1'}),
                  ('other protocol', {'protocol_version': 2}),
                  ('wrong hash', {'hash_value': '0' * 64}),
                  ('short hash', {'hash_value': good[:-1]}),
@@ -618,7 +618,7 @@ class VerifyTests(AuditCase):
         self.state['list'] = {'stdout': '', 'code': 2}
         self.assert_rejected(self.run_helper('verify', str(record)))
         self.state['list'] = {}
-        self.state['version'] = {'stdout': 'codex-cli 0.156.0\n'}
+        self.state['version'] = {'stdout': 'codex-cli 0.157.0\n'}
         self.assert_rejected(self.run_helper('verify', str(record)))
 
 

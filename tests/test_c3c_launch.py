@@ -24,7 +24,7 @@ import time
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
-SUPPORTED = '0.155.1'
+SUPPORTED = '0.156.0'
 PREFLIGHT_OVERRIDE = 'compose.codex-preflight.yml'
 HASH_A = 'a' * 64
 

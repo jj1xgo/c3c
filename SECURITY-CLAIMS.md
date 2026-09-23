@@ -65,7 +65,7 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 
 ## C-3
 
-**対象**: `--agent codex` の起動時 MCP 審査（codex-cli 0.155.1）。
+**対象**: `--agent codex` の起動時 MCP 審査（codex-cli 0.156.0）。
 
 **成立条件・脅威モデル**: 信頼する launcher・イメージ・Podman を通常の起動経路で使い、利用者が
 表示されたローカル実行定義を確認する。native `codex mcp list --json` が解決した user/project/有効な

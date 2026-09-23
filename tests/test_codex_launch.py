@@ -19,7 +19,7 @@ import termios
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
-SUPPORTED = '0.155.1'
+SUPPORTED = '0.156.0'
 PREFLIGHT_OVERRIDE = 'compose.codex-preflight.yml'
 LABEL = 'io.c3c.codex-audit-protocol'
 HASH_A = 'a' * 64
@@ -295,7 +295,7 @@ class CodexStaticGuardTests(LaunchCase):
     def test_codex_version_file_is_diagnosed_statically(self):
         self.approve()
         # missing は c3c 第2b-2段階から同梱 default（対応版）に倒れて起動できる。空ファイルは明示 opt-out で止まる。
-        for label, content, ok in (('missing', None, True), ('empty', '\n', False), ('other pin', '0.156.0\n', False),
+        for label, content, ok in (('missing', None, True), ('empty', '\n', False), ('other pin', '0.157.0\n', False),
                                    ('latest', 'latest\n', True), ('supported', SUPPORTED + '\n', True)):
             with self.subTest(case=label):
                 path = self.conf / 'codex-version.txt'
@@ -406,7 +406,7 @@ class PreflightTests(LaunchCase):
             'two documents': {'stdout': valid + valid},
             'list': {'stdout': '[]\n'},
             'protocol 2': {'stdout': protocol(protocol_version=2)},
-            'other version': {'stdout': protocol(version='0.156.0')},
+            'other version': {'stdout': protocol(version='0.157.0')},
             'short hash': {'stdout': protocol(hash_value='a' * 63)},
             'uppercase hash': {'stdout': protocol(hash_value='A' * 64)},
             'count mismatch': {'stdout': protocol(count=2)},
@@ -561,7 +561,7 @@ class ApprovalTests(LaunchCase):
     def test_corrupt_or_foreign_record_requires_reconfirmation(self):
         record = self.record_path()
         record.parent.mkdir(parents=True)
-        for content in ('', HASH_A + '\n', '{"protocol_version":1,"codex_version":"0.155.0","hash":"%s"}\n' % HASH_A,
+        for content in ('', HASH_A + '\n', '{"protocol_version":1,"codex_version":"0.155.1","hash":"%s"}\n' % HASH_A,
                         json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_B})):
             with self.subTest(content=content[:20]):
                 record.write_text(content)
@@ -629,8 +629,8 @@ class CheckAndCleanTests(LaunchCase):
             'garbage after': valid + 'garbage\n',
             'two documents': valid + valid,
             'duplicate key': '{"protocol_version":1,"codex_version":"%s","hash":"%s","hash":"%s"}\n' % (SUPPORTED, '0' * 64, HASH_A),
-            'wrong version': valid.replace(SUPPORTED, '0.155.0'),
-            'dot as wildcard': valid.replace(SUPPORTED, '0x155x1'),
+            'wrong version': valid.replace(SUPPORTED, '0.155.1'),
+            'dot as wildcard': valid.replace(SUPPORTED, SUPPORTED.replace('.', 'x')),
             'protocol 1.0': valid.replace('"protocol_version":1,', '"protocol_version":1.0,'),
             'protocol true': valid.replace('"protocol_version":1,', '"protocol_version":true,'),
             'uppercase hash': valid.replace(HASH_A, HASH_A.upper()),
@@ -696,24 +696,24 @@ class CheckAndCleanTests(LaunchCase):
         name = self.project_name()
         mine = self.store / 'codex' / name
         mine.mkdir(parents=True)
-        (mine / '0.155.1.json').write_text('{}')
+        (mine / '0.156.0.json').write_text('{}')
         (mine / '0.150.0.json').write_text('{}')
         (self.store / name).write_text(HASH_A)
         other = self.store / 'codex' / 'other-project-12345678'
         other.mkdir(parents=True)
-        (other / '0.155.1.json').write_text('{}')
+        (other / '0.156.0.json').write_text('{}')
         (self.store / 'other-project-12345678').write_text(HASH_B)
         result = self.run_launcher('--clean', str(self.proj))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(mine.exists())
         self.assertFalse((self.store / name).exists())
-        self.assertTrue((other / '0.155.1.json').exists())
+        self.assertTrue((other / '0.156.0.json').exists())
         self.assertTrue((self.store / 'other-project-12345678').exists())
 
     def test_clean_all_removes_store(self):
         mine = self.store / 'codex' / self.project_name()
         mine.mkdir(parents=True)
-        (mine / '0.155.1.json').write_text('{}')
+        (mine / '0.156.0.json').write_text('{}')
         result = self.run_launcher('--clean')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(self.store.exists())

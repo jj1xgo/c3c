@@ -1148,3 +1148,10 @@ git commit -m "docs: #150 の実装検証と実機受入を記録する"
 区分: 境界 — SECURITY-CLAIMS C-3 の保証範囲と、launcher・entrypoint・審査 helper・イメージ label という境界機構を変えるため。計画・実装完了時（PR 前）・PR 後の 3 段階で Claude と Codex の二重レビューを行う。
 
 推奨実装: Opus — セキュリティ境界の変更で、判定基準 2（秘密を読める MCP の審査経路）に当たり、Task 5 は持ち主の対話操作を伴うコンテナ実機受入でもあるため（判定基準 1）。Sonnet は境界変更のため推さない。Codex は host の checkout で完結せず、計画も Task 2〜4 の試験の書き換えが逐語まで確定していないため推さない。
+
+## 計画レビュー（2026-09-23）
+
+- Codex（gpt-6-astra、`codex exec --sandbox read-only`）: 初回 81f409e で Critical 0 / Important 3（全 key の型検査、不変条件 72 行、`stat`→`open` の FIFO 差し替え）/ Minor 3。確認巡 1（c5edc11）で Important 3 件が部分的、確認巡 2（84e68e7）ですべて直り「実装に渡せる」。
+- Claude（claude-opus-5-5、headless `claude -p`、Read/Grep/Glob のみ）: 初回 81f409e で Critical 1（project 設定の `marketplaces` による plugin 取得元の差し替え）/ Important 2（試験書き換えの一覧の不足、不変条件 72 行）/ Minor 5。確認巡 1（c5edc11）ですべて直り「実装に渡せる」（Files 欄の書き漏れ 1 件は反映済み）。
+- 深刻度の割れ: `marketplaces` は Claude だけが Critical として指摘した。重い方を採って反映した。
+- 未対応の指摘: なし。範囲外として spec に記録したもの: project 設定の `hooks`・`js_repl_node_path`・`shell_environment_policy`、helper の無い HTTP の `env_http_headers`・`bearer_token_env_var`（protocol 1 から対象外）、Claude 経路の plugin 有効化経路の確認。

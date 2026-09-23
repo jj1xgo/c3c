@@ -65,9 +65,21 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 
 起動後は `command -v bwrap` でシステム版が残っていないこと、Codex の通常のサンドボックス付きコマンド実行で `pwd` / `git status` が成功することを確認する。今回の2ケース比較は成立したので、HOME 警告だけのために同じ診断を繰り返す必要はない。同様の環境へ適用する場合の受入は、製品の通常起動で行う。
 
+以上は #140 当時の回避策で、記録として残す。[#145](https://github.com/jj1xgo/c3c/issues/145) 以降は、システム版が間接依存で残るイメージでも Codex 経路で同梱版を選ぶ（次節）。
+
 上流の失敗検出修正も候補として残す。独自の stderr 書き換えラッパーや sandbox 無効化は導入しない。
 
 `unmask=/proc/*` は解消条件として報告されているが、本件では既定へ追加しない。[Podman の仕様](https://docs.podman.io/en/v4.4/markdown/options/security-opt.html)では unmask は既定のマスクと読み取り専用保護に関わる設定であり、`/proc/sys` 等への影響も評価が必要。個別パスの最小化も未検証。既存 `/proc` を継承する方式も新規 PID namespace に対応する procfs とは異なるため、保護範囲が同じとは扱わない。
+
+## #145: 同梱版の優先
+
+画像ライブラリ等の間接依存でシステム版 bubblewrap が入るプロジェクトでは、依存パッケージを外すと別の機能が壊れる。そこで c3c は依存パッケージを削除せず、Codex の選択だけを同梱版へ向ける。ビルド時に同梱実体への固定 symlink `/usr/local/libexec/c3c/codex-bwrap/bwrap` を作り、`entrypoint.sh` の Codex 経路でこのディレクトリを PATH の先頭へ加える。設計の詳細と対象外の条件は README「Codex CLI を対話で使う」節を参照する。
+
+この修正で使われるのは、Codex 自身の proc fallback である。同梱版は新しい procfs のマウントに失敗し、Codex が失敗を認識して `mount_proc=false` で再実行する。sandbox は外側コンテナの procfs を引き継ぐ。システム版 0.12.0 は失敗の表記が一致しないので fallback が働かない（上記「確認できたこと」）。新しい procfs とは保護範囲が異なるので、外側プロセスの見え方を受入で確かめる（次節）。
+
+### #145 の受入
+
+実機の受入結果は Task 3 の実施後にここへ記録する。
 
 ## ホストでの切り分け
 

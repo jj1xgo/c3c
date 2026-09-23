@@ -483,6 +483,14 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 
 **審査の範囲と限界**: 対象は c3c が起動する時点の設定済み MCP のローカル command 経路（stdio）で、`http_headers_helper` を持つ enabled な HTTP 型 MCP は「対応版の一覧では実行定義を完全に審査できない」として起動を拒否する（定義を無効化すれば起動できる）。helper の無い HTTP 型は外側のエグレス制限に委ね、URL 変更は再承認の対象にしない。hash には enabled な stdio の名前・command・args・cwd・env の値・env_vars を含める。無効な server と auth 状態・timeout 等の診断値は hash に含めない。未知の版・schema・重複 key、設定エラー、一覧取得の失敗・期限超過（版取得 5 秒、一覧 60 秒）は判定不能として停止する。起動後の設定変更・再接続は Codex の標準機能で、継続監視はしない（既存 Claude の TOFU と同じ限界）。検査用コンテナは native CLI を実行するため、cloud config の取得・auth refresh・OAuth discovery 等の通信と専用 home への書き込みが起きうる（「agent を起動しない」ことと「副作用ゼロ」は別）。ファイアウォールの初期化は検査と本起動で 2 回走る。固定の trust override（`projects={"/workspace"={trust_level="trusted"}}`）は検査と本起動で同じに渡すため、repo 側 `.codex/config.toml` の hooks・sandbox 設定等も有効になるが、MCP 以外の定義を c3c が承認した意味にはならない（hooks は Codex 自身の個別確認に委ねる）。sandbox と approval の CLI 指定は固定するが、追加の書込み先や exec policy などは native 設定の影響を受ける。実行ファイルや script 自体の内容の改変は、この定義 hash では検出しない。第1段階では `~/.claude.json` と `~/.claude` の rw 共有はそのまま残るため、Codex セッションからも Claude の認証・履歴等が見える（CLI ごとの認証隔離は未達成。全面分離は後続段階）。審査範囲と隔離の限界は [SECURITY-CLAIMS C-3](SECURITY-CLAIMS.md#c-3)・[C-4](SECURITY-CLAIMS.md#c-4) を参照。
 
+**sandbox の bubblewrap（#145）**: Codex の Linux sandbox は PATH 上で最初に見つかった `bwrap` を調べ、必要な機能があればそれを使う。c3c はビルド時に Codex 同梱の bubblewrap（npm が導入した `@openai/codex` の対応アーキテクチャの `codex-resources/bwrap`）を指す固定 symlink `/usr/local/libexec/c3c/codex-bwrap/bwrap` を作り、`entrypoint.sh` の Codex 経路だけがこのディレクトリを PATH の先頭へ加える。画像ライブラリ等の間接依存でシステム版（`/usr/bin/bwrap`）が入っていても、Codex は同梱版を選ぶ。システム版は削除・移動・書換えをしない。Claude 経路とイメージ全体の `PATH` は変わらない。
+
+- **直る仕組み**: 同梱版で新しい `/proc` のマウントが失敗すると、Codex はその失敗を認識して外側コンテナの procfs を引き継ぐ方式へ切り替える。システム版 0.12.0 のエラー表記はこの認識に一致しない（[調査記録](docs/codex-proc-investigation.md)）。つまり新しい procfs のマウントを成功させる変更ではない。上流が安全な既定とする新しい procfs とは保護範囲が異なる。sandbox 内から外側のプロセスがどう見えるかの実測は、調査記録の「#145 の受入」を参照する。
+- **子プロセスへの影響**: PATH は Codex の子プロセスへ継承されるので、Codex から名前で `bwrap` を呼ぶと同梱版になる。MCP stdio の `command = "bwrap"` も同様である（承認記録はコマンド文字列で照合し、解決される実体は PATH で決まる）。システム版が必要な呼出しは `/usr/bin/bwrap` と絶対パスで書く。c3c を経由しない独立起動や `podman exec` には、この PATH 変更は自動では適用されない。
+- **対象外の設定**: Codex は `shell_environment_policy` に従って子プロセスと sandbox helper の環境を作り直す。c3c の保証は、entrypoint が審査（snapshot / verify）と本起動へ同じ PATH を渡すところまでで、既定の policy を前提にする。`set.PATH`・`exclude`・`inherit` 等で PATH を変える設定では、選ばれる bwrap が変わりうる（c3c は設定を強制上書きしない）。
+- **信頼の置き方**: PATH 経由の選択では、上流の同梱版専用の起動経路（ビルド時 digest との照合と `/proc/self/fd` 経由の exec）を通らない。c3c は独自の hash 固定や起動時 checksum を加えず、npm による導入物と root 所有のイメージを信頼する。ビルド時に、help の必須 4 項目（`--as-pid-1`・`--perms`・`--argv0`・`--ro-bind-fd`）を検査する。あわせて、リンク・実体・全親ディレクトリが root 所有で、group/other から書き込めないことも検査する。`test-build.sh` は最終イメージでも node から書き込めないことを確認する。root やイメージ自体の改ざんは防御対象外で、上流の digest 検証と同等の保証ではない。
+- **旧イメージ**: 固定リンクの無いイメージ（#145 より前のビルド）では、Codex 経路は審査より前に `ERROR: Codex 同梱の bubblewrap がありません。-b で再ビルドしてください。` で止まる。`--check` は境界アセットのドリフトとして検出する。`c3c codex -b <ディレクトリ>` で再ビルドする。この検査は欠落を早く明示するためのものである。上流は先頭候補が不適合なら同梱版の経路へ進み、次の PATH 候補のシステム版へは戻らない。
+
 **`--check` と `--clean`**: `--check --agent codex` は検査用コンテナを起動せず、`CODEX_DIR`・版指定・イメージの label・承認記録の存在と形式だけを報告し、実効 MCP の動的照合は `not run` と明示する（承認済みとは報告しない）。`--clean <ディレクトリ>` はそのプロジェクトの Claude の記録と Codex の記録ディレクトリ全体（過去版を含む）を削除し、他プロジェクトは残す。`--clean` は記録全体を削除する。
 
 実イメージと専用 ChatGPT 認証で、非 TTY protocol 分離、承認・変更拒否、対話作業と `/resume`、hook の個別承認後の実行まで確認した。共有ノートの Markdown は読めるが、既定の `workspace-write` sandbox では `/shared` への書込みは拒否された。CLI ごとの自動 memory の同等性や、期限切れ認証の refresh まで確認した意味ではない。最終レビューと残る受入条件は [第1段階の検証記録](docs/superpowers/plans/2026-09-20-c3c-phase1-results.md) を参照。
@@ -667,7 +675,7 @@ Claude は `--permission-mode auto`（Claude Code の auto mode）で起動す�
 
 ## Podman 固有の注意
 
-- Codex で `bwrap: Can't mount proc on /proc: Operation not permitted` が出る場合は、[#140 の調査・診断手順](docs/codex-proc-investigation.md)を参照する。報告環境（Podman 5.8.6）では Codex 0.155.1 とシステム版 bubblewrap 0.12.0 の組合せで失敗し、システム版を外して Codex 同梱版を使う比較では成功した。Codex 用に追加した `bubblewrap` がある場合は他ツールの依存を確認して追加を戻し、再ビルド後に通常起動で確認する。`unmask=/proc/*` の既定追加は行わない。
+- Codex で `bwrap: Can't mount proc on /proc: Operation not permitted` が出る場合は、[#140 の調査・診断手順](docs/codex-proc-investigation.md)を参照する。報告環境（Podman 5.8.6）では Codex 0.155.1 とシステム版 bubblewrap 0.12.0 の組合せで失敗し、システム版を外して Codex 同梱版を使う比較では成功した。#145 以降の c3c は、システム版が残っていても Codex 経路で同梱版を優先する（前述「Codex CLI を対話で使う」節の sandbox の bubblewrap）。依存パッケージを削除する必要はなく、旧イメージは `-b` で再ビルドする。`unmask=/proc/*` の既定追加は行わない。
 
 - `userns_mode: keep-id` はホストユーザーの UID/GID をコンテナ内にマップする Podman 固有の機能。Docker に移植する場合は削除する。
 - `--in-pod false` は Podman Compose がデフォルトでサービスを Pod にラップする挙動を抑制する。Docker Compose はこのフラグを無視する。

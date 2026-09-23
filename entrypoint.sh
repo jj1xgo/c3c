@@ -153,10 +153,17 @@ SECRETS_MOUNT=/home/node/.config/claude-container/secrets
 # HOME・PATH で差し替えることはできず、検査（preflight）・再照合（verify）・本起動が同じ home と
 # CLI 実体を使う。CODEX_HOME は compose.yml が CODEX_DIR を rw で載せる固定マウント先。CLI 実体は
 # Dockerfile.claude の `npm install -g @openai/codex` が置く npm global bin の固定絶対パス。
+# CODEX_BWRAP_DIR は Codex 同梱 bubblewrap の固定 symlink だけを置く root 所有の専用ディレクトリ
+# （Dockerfile.claude が作る。#145）。Codex 経路の PATH の先頭へここで一度だけ加え、snapshot・verify・
+# 本起動へ同じ PATH を継承させる。Codex の PATH 探索が最初に見つける bwrap を同梱版にし、システム版
+# （画像ライブラリの間接依存等）を選ばせないため。CODEX_HOME と同じく秘密の export より前に確定するので、
+# secrets/export/PATH では差し替えられない。Claude 経路の PATH は変えない。
 if [ "$CC_AGENT" = codex ]; then
   export CODEX_HOME=/home/node/.codex
   CODEX_CLI=/usr/local/bin/codex
-  readonly CODEX_HOME CODEX_CLI
+  CODEX_BWRAP_DIR=/usr/local/libexec/c3c/codex-bwrap
+  readonly CODEX_HOME CODEX_CLI CODEX_BWRAP_DIR
+  export PATH="$CODEX_BWRAP_DIR:$PATH"
 fi
 
 # SECRETS_DIR/export/ 配下の各ファイルを「ファイル名＝環境変数名」として export する。
@@ -226,6 +233,12 @@ CODEX_AUDIT=/usr/local/bin/codex-mcp-audit.py
 CODEX_APPROVED=/etc/claude-container/codex-mcp-approved.json
 if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then
   echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.c3c/codex-version.txt が空（opt-out）のままビルドしたか、旧いイメージです。対応版を書くか空ファイルを削除して同梱 default を使い、-b で再ビルドしてください。起動を中止します" >&2
+  exit 1
+fi
+# 同梱 bubblewrap の固定リンクが無い（#145 より前の旧いイメージ等）まま起動すると、Codex がシステム版
+# を選びうる。欠落を審査・本起動より前に明示する（root が保護するビルド済み資材なので再探索・再生成しない）。
+if [ ! -f "$CODEX_BWRAP_DIR/bwrap" ] || [ ! -x "$CODEX_BWRAP_DIR/bwrap" ]; then
+  echo "ERROR: Codex 同梱の bubblewrap がありません。-b で再ビルドしてください。" >&2
   exit 1
 fi
 if ! cd -- /workspace; then

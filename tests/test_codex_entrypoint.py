@@ -26,6 +26,7 @@ FIXED_HELPER = '/usr/local/bin/codex-mcp-audit.py'
 FIXED_APPROVED = '/etc/claude-container/codex-mcp-approved.json'
 CLAUDE_APPROVED = '/etc/claude-container/mcp-approved-hash'
 SECRETS_MOUNT = '/home/node/.config/claude-container/secrets'
+FIXED_BWRAP_DIR = '/usr/local/libexec/c3c/codex-bwrap'
 
 # Codex CLI の dummy: 版と一覧は状態ファイルの fixture、それ以外の argv は exec として記録する。
 CODEX = '''#!/usr/bin/env python3
@@ -89,18 +90,26 @@ class EntrypointCase(unittest.TestCase):
         self.codex = self.root / 'codex'
         self.codex.write_text(CODEX % str(self.state_path))
         self.codex.chmod(0o755)
-        for name, extra in (('sudo', 'echo "firewall stdout noise"'), ('refresh', ''), ('claude', 'printf "claude-env MCP_TOKEN=%s CODEX_HOME=%s\\n" "${MCP_TOKEN-unset}" "${CODEX_HOME-unset}" >> "$RECORD"')):
+        for name, extra in (('sudo', 'echo "firewall stdout noise"'), ('refresh', ''), ('claude', 'printf "claude-env MCP_TOKEN=%s CODEX_HOME=%s PATH=%s\\n" "${MCP_TOKEN-unset}" "${CODEX_HOME-unset}" "$PATH" >> "$RECORD"')):
             path = self.bin / name
             path.write_text(RECORDER.format(name=name, extra=extra))
             path.chmod(0o755)
+        # Codex 同梱 bubblewrap の固定リンク（#145）: 専用ディレクトリ内の symlink → 実体の dummy。
+        self.bwrap_dir = self.root / 'codex-bwrap'
+        self.bwrap_dir.mkdir()
+        self.bwrap_real = self.root / 'bwrap-real'
+        self.bwrap_real.write_text('#!/bin/sh\nexit 0\n')
+        self.bwrap_real.chmod(0o755)
+        (self.bwrap_dir / 'bwrap').symlink_to(self.bwrap_real)
         source = (ROOT / 'entrypoint.sh').read_text()
-        for needle in (FIXED_HOME, FIXED_HELPER, FIXED_CLI, FIXED_APPROVED, CLAUDE_APPROVED, SECRETS_MOUNT,
+        for needle in (FIXED_HOME, FIXED_HELPER, FIXED_CLI, FIXED_APPROVED, CLAUDE_APPROVED, SECRETS_MOUNT, FIXED_BWRAP_DIR,
                        '/usr/local/bin/firewall-refresh.py', '/workspace/.mcp.json', 'cd -- /workspace'):
             self.assertIn(needle, source, f'entrypoint.sh に固定パス {needle} がない')
         # 固定パスを試験用コピーへ置換する。trust override の "/workspace" は helper 側の固定値と一致させるため置換しない。
         source = (source.replace(FIXED_HELPER, str(HELPER)).replace(FIXED_CLI, str(self.codex))
                   .replace(FIXED_HOME, str(self.codex_home)).replace(FIXED_APPROVED, str(self.approved))
                   .replace(CLAUDE_APPROVED, str(self.claude_approved)).replace(SECRETS_MOUNT, str(self.fixture_mount_dir))
+                  .replace(FIXED_BWRAP_DIR, str(self.bwrap_dir))
                   .replace('/usr/local/bin/firewall-refresh.py', str(self.bin / 'refresh'))
                   .replace('/workspace/.mcp.json', str(self.workspace / '.mcp.json'))
                   .replace('cd -- /workspace', 'cd -- ' + str(self.workspace)))
@@ -352,11 +361,68 @@ class SecretIsolationTests(EntrypointCase):
                 for call in self.codex_calls:
                     self.assertEqual(call['env']['CODEX_HOME'], str(self.codex_home))
                     self.assertEqual(call['env']['HOME'], str(self.root / 'home'))
-                    self.assertTrue(call['env']['PATH'].startswith(str(self.bin)))
+                    self.assertEqual(call['env']['PATH'], str(self.bwrap_dir) + ':' + self.env['PATH'])
                     self.assertEqual(call['env']['MCP_TOKEN'], 'tok')
                 for name in ('CODEX_HOME', 'HOME', 'PATH'):
                     self.assertIn(f"'{name}' は既に環境変数に設定されています", result.stderr)
                 self.assertEqual(list(other_home.iterdir()), [])
+
+
+class BundledBwrapPathTests(EntrypointCase):
+    """#145: Codex 経路だけ同梱 bubblewrap の専用ディレクトリを PATH の先頭へ一度加え、全段へ継承する。"""
+
+    def codex_path(self):
+        return str(self.bwrap_dir) + ':' + self.env['PATH']
+
+    def test_preflight_and_run_share_prepended_path(self):
+        self.approve_from_preflight()
+        self.assertEqual(self.kinds(), ['version', 'list'])
+        for call in self.codex_calls:
+            self.assertEqual(call['env']['PATH'], self.codex_path())
+        for read_only in ('0', '1'):
+            with self.subTest(read_only=read_only):
+                result = self.run_entrypoint('codex', 'run', read_only)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.kinds(), ['version', 'list', 'exec'])
+                for call in self.codex_calls:
+                    self.assertEqual(call['env']['PATH'], self.codex_path())
+
+    def test_claude_path_is_unchanged_and_does_not_need_bundled_bwrap(self):
+        for mutate in (lambda: None, lambda: (self.bwrap_dir / 'bwrap').unlink()):
+            with self.subTest(mutate=mutate):
+                mutate()
+                result = self.run_entrypoint('claude')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                env_line = next(r for r in self.records if r.startswith('claude-env'))
+                self.assertTrue(env_line.endswith(' PATH=' + self.env['PATH']), env_line)
+
+    def test_missing_dangling_or_non_executable_link_fails_before_any_codex_call(self):
+        cases = {
+            'missing link': lambda: (self.bwrap_dir / 'bwrap').unlink(),
+            'dangling link': lambda: self.bwrap_real.unlink(),
+            'non-executable': lambda: self.bwrap_real.chmod(0o644),
+        }
+        for label, mutate in cases.items():
+            for mode in ('preflight', 'run'):
+                with self.subTest(case=label, mode=mode):
+                    self.setUp()
+                    self.approve_from_preflight()
+                    mutate()
+                    result = self.run_entrypoint('codex', mode, '0')
+                    self.assertEqual(result.returncode, 1, label)
+                    self.assertEqual(self.codex_calls, [], label)
+                    self.assertIn('ERROR: Codex 同梱の bubblewrap がありません。-b で再ビルドしてください。', result.stderr)
+                    if mode == 'preflight':
+                        self.assertEqual(result.stdout, '')
+                    self.assertFalse(any(r.startswith('claude') for r in self.records))
+
+    def test_opt_out_without_cli_keeps_cli_error(self):
+        self.codex.unlink()
+        (self.bwrap_dir / 'bwrap').unlink()
+        result = self.run_entrypoint('codex', 'run', '0')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Codex CLI が導入されていません', result.stderr)
+        self.assertNotIn('bubblewrap', result.stderr)
 
 
 if __name__ == '__main__':

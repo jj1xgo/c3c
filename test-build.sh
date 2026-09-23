@@ -670,6 +670,7 @@ run_launcher_tests() {
   check "c3c 入口（symlink 解決・旧名 symlink の同一契約・parser・初回選択/記憶・本 run 終了コード保持・check/clean の無書込）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_launch.py"
   check "設定ディレクトリの選択（.c3c/旧名/なし/二重配置/型不正・symlink、check の継続と無書込、clean の独立、新旧配置の hash 同一）と Node/Codex の既定ビルド入力（同梱 default・project pin・空 opt-out・npm WARNING）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_config.py"
   check "entrypoint の agent 分岐（enum・preflight 分離・固定 home/CLI・verify→exec・Claude 順序）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_entrypoint.py"
+  check "Codex 同梱 bubblewrap の解決（npm の nested/hoisted/legacy・x64/arm64・欠落/実行不能/target 外/help 4 項目の fail-closed）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_bwrap.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
@@ -1899,6 +1900,31 @@ check "codex --version が同梱 default（codex-cli $DEFAULT_CODEX_VERSION）�
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
 check "codex の実体が entrypoint.sh の固定パス /usr/local/bin/codex にある" \
   bash -c 'podman run --rm --network=none "$1" sh -c "[ -x /usr/local/bin/codex ] && [ -x /usr/local/bin/node ] && [ -x /usr/local/bin/npm ]"' _ "$IMAGE"
+# Codex 同梱 bubblewrap の固定リンク（#145）。Dockerfile.claude のビルド時検査と同じ条件を、最終
+# イメージで node ユーザーとして確かめ直す（ビルド後の層で所有者・mode が変わっていないことの確認）。
+# shellcheck disable=SC2016  # コンテナ内の sh で評価する
+CODEX_BWRAP_PROBE='set -e
+d=/usr/local/libexec/c3c/codex-bwrap; l="$d/bwrap"
+[ -L "$l" ] && [ "$(ls -A "$d")" = bwrap ] || { echo "専用ディレクトリの中身が固定リンク一つではない"; exit 1; }
+case "$(uname -m)" in x86_64) t=x86_64-unknown-linux-musl ;; aarch64) t=aarch64-unknown-linux-musl ;; *) exit 1 ;; esac
+r="$(readlink "$l")"
+[ "$r" = "$(readlink -f "$l")" ] || { echo "固定リンクが正規化済みの絶対パスではない: $r"; exit 1; }
+case "$r" in /usr/local/lib/node_modules/@openai/*/vendor/"$t"/codex-resources/bwrap) ;; *) echo "実体が npm の対応 triple 外: $r"; exit 1 ;; esac
+echo "$l -> $r"; "$l" --version
+help="$("$l" --help)"
+for o in --as-pid-1 --perms --argv0 --ro-bind-fd; do printf "%s\n" "$help" | grep -q -- "$o " || { echo "help に $o が無い"; exit 1; }; done
+[ -z "$(find "$l" -maxdepth 0 ! -user 0 -print)" ] || { echo "固定リンクが root 所有でない"; exit 1; }
+for p in "$r" "$d"; do
+  while :; do
+    [ -z "$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" ] || { echo "root 所有でないか group/other 書込可: $p"; exit 1; }
+    ! [ -w "$p" ] || { echo "node から書込可: $p"; exit 1; }
+    [ "$p" = / ] && break
+    p="$(dirname "$p")"
+  done
+done
+[ "$(id -u)" != 0 ]'
+check "Codex 同梱 bubblewrap の固定リンク（唯一の symlink・npm の対応 triple・help 4 項目・root 所有・node から書込不可）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$CODEX_BWRAP_PROBE"
 log ""
 
 # 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。
@@ -2035,7 +2061,7 @@ if stage_common_context "$OPTOUT_CONTEXT_DIR"; then
   check "Codex opt-out: 空の codex-version.txt でビルド成功" podman build \
     -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OPTOUT_IMAGE" "$OPTOUT_CONTEXT_DIR"
   check "Codex opt-out: codex が入っていない" \
-    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c '! command -v codex >/dev/null && [ ! -e /usr/local/bin/codex ]'
+    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c '! command -v codex >/dev/null && [ ! -e /usr/local/bin/codex ] && [ ! -e /usr/local/libexec/c3c/codex-bwrap ]'
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "Codex opt-out: Node は同梱 default のまま入っている" \
     bash -c '[ "$(podman run --rm --network=none "$1" node --version)" = "v$2" ]' _ "$OPTOUT_IMAGE" "$DEFAULT_NODE_VERSION"

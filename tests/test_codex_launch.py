@@ -630,7 +630,7 @@ class CheckAndCleanTests(LaunchCase):
             'two documents': valid + valid,
             'duplicate key': '{"protocol_version":1,"codex_version":"%s","hash":"%s","hash":"%s"}\n' % (SUPPORTED, '0' * 64, HASH_A),
             'wrong version': valid.replace(SUPPORTED, '0.155.1'),
-            'dot as wildcard': valid.replace(SUPPORTED, '0x155x1'),
+            'dot as wildcard': valid.replace(SUPPORTED, SUPPORTED.replace('.', 'x')),
             'protocol 1.0': valid.replace('"protocol_version":1,', '"protocol_version":1.0,'),
             'protocol true': valid.replace('"protocol_version":1,', '"protocol_version":true,'),
             'uppercase hash': valid.replace(HASH_A, HASH_A.upper()),

@@ -1319,11 +1319,48 @@ run_explicit_build() {
 CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
 CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 
+# 保護対象 1 件の型を検査する（claude-container#131）。ファイルシステムは変更せず、判定と
+# guard_fail の呼び出しだけを行う（通常起動では guard_fail が exit し、--check では
+# CHECK_HAS_ERROR を立てて戻る）。引数: $1=検査するパス、$2=種別（dir / file）。
+# 戻り値 0 = 型が一致、または欠落（呼び出し元が作ってよい）、1 = 不正（起動を中止する）。
+# symlink は有効・無効を問わず拒否する。:ro の子マウントはリンク先に付くが、リンク自体は
+# rw の親マウント内に残るため、コンテナ内で rm + mkdir すれば書き込み可能な実体へ
+# 置き換えられ、保護を迂回できる。実ディレクトリ／実ファイルに置き換えてもらう。
+validate_claude_config_ro_path() {
+  local path="$1" kind="$2"
+  if [[ "$kind" != dir && "$kind" != file ]]; then
+    guard_fail "ERROR: 内部エラー: 読み取り専用保護の種別 '$kind' は不正です。起動を中止します。" || return 1
+    return 1
+  fi
+  if [[ -L "$path" ]]; then
+    if [[ "$kind" == dir ]]; then
+      guard_fail "ERROR: $path が symlink です（読み取り専用保護はコンテナ内から rm + mkdir で迂回されるため、実ディレクトリに置き換えてください）。起動を中止します。" || return 1
+    else
+      guard_fail "ERROR: $path が symlink です（読み取り専用保護はコンテナ内から rm + 再作成で迂回されるため、実ファイルに置き換えてください）。起動を中止します。" || return 1
+    fi
+    return 1
+  fi
+  if [[ "$kind" == dir && -d "$path" ]] || [[ "$kind" == file && -f "$path" ]]; then
+    return 0
+  fi
+  if [[ -e "$path" ]]; then
+    if [[ "$kind" == dir ]]; then
+      guard_fail "ERROR: $path がディレクトリではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
+    else
+      guard_fail "ERROR: $path が通常ファイルではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
+    fi
+    return 1
+  fi
+  return 0
+}
+
 # 上記 12 項目のマウント先をホスト側に用意する。マウント先が無いと podman がサブ uid
 # 所有・0700 の実体をホストの ~/.claude 内に作り、ユーザー権限で消せない残骸になるため、
 # ランチャーがユーザー権限で明示的に空で作る（空ディレクトリ・空ファイル・`{}` は
 # Claude Code にとって不活性）。基点は compose.yml の親マウントと同じ ${CLAUDE_CONFIG_DIR:-~}。
-# 呼び出し位置は全 guard と MCP 承認の後（起動を拒否する経路ではホストに何も書かない）。
+# 呼び出し位置は全 guard と MCP 承認の後。起動前から存在する保護対象の型不一致・symlink は
+# 子 placeholder の作成前に拒否する（claude-container#131。作成途中の I/O エラーや並行変更に
+# 対する全ロールバックは行わない）。
 # --check（CHECK_MODE=1）では何も作らず報告だけ行う（--check は書き込みをしない契約）。
 prepare_claude_config_ro() {
   local base cfg name path created=0 host_base
@@ -1375,17 +1412,25 @@ prepare_claude_config_ro() {
     echo "INFO: $cfg を読み取り専用保護のため空で作成しました" >&2
   fi
 
-  # symlink は有効・無効を問わず拒否する。:ro の子マウントはリンク先に付くが、リンク自体は
-  # rw の親マウント内に残るため、コンテナ内で rm + mkdir すれば書き込み可能な実体へ
-  # 置き換えられ、保護を迂回できる。実ディレクトリ／実ファイルに置き換えてもらう。
+  # 通常起動では、1 項目でも作る前に 12 項目すべての型を検査する（claude-container#131）。
+  # 配列末尾の項目が不正なときに、先行する項目だけホストへ作ってから拒否するのを防ぐ。
+  # --check はここを通さず、従来どおりの順で欠落を WARN しつつ不正項目で失敗する（無書込）。
+  if [[ ${CHECK_MODE:-0} -eq 0 ]]; then
+    for name in "${CLAUDE_CONFIG_RO_DIRS[@]}"; do
+      validate_claude_config_ro_path "$cfg/$name" dir || return 1
+    done
+    for name in "${CLAUDE_CONFIG_RO_FILES[@]}"; do
+      validate_claude_config_ro_path "$cfg/$name" file || return 1
+    done
+  fi
+
+  # 作成の直前にも同じ判定を行う（事前検査の後に置き換えられた場合の防御。作成自体も
+  # noclobber で上書きしない）。
   for name in "${CLAUDE_CONFIG_RO_DIRS[@]}"; do
     path="$cfg/$name"
-    if [[ -L "$path" ]]; then
-      guard_fail "ERROR: $path が symlink です（読み取り専用保護はコンテナ内から rm + mkdir で迂回されるため、実ディレクトリに置き換えてください）。起動を中止します。" || return 1
-    elif [[ -d "$path" ]]; then
+    validate_claude_config_ro_path "$path" dir || return 1
+    if [[ -d "$path" ]]; then
       continue
-    elif [[ -e "$path" ]]; then
-      guard_fail "ERROR: $path がディレクトリではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
     elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
       guard_warn "[WARN] $path が無い（通常起動時に空で作成）"
     else
@@ -1396,12 +1441,9 @@ prepare_claude_config_ro() {
   done
   for name in "${CLAUDE_CONFIG_RO_FILES[@]}"; do
     path="$cfg/$name"
-    if [[ -L "$path" ]]; then
-      guard_fail "ERROR: $path が symlink です（読み取り専用保護はコンテナ内から rm + 再作成で迂回されるため、実ファイルに置き換えてください）。起動を中止します。" || return 1
-    elif [[ -f "$path" ]]; then
+    validate_claude_config_ro_path "$path" file || return 1
+    if [[ -f "$path" ]]; then
       continue
-    elif [[ -e "$path" ]]; then
-      guard_fail "ERROR: $path が通常ファイルではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
     elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
       guard_warn "[WARN] $path が無い（通常起動時に空で作成）"
     else

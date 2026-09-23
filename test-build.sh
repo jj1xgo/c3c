@@ -610,6 +610,37 @@ snapshot_check_targets() (
   done
 )
 
+# 保護対象（基点の .claude 以下）だけを記録する（claude-container#131）。snapshot_check_targets と
+# 同じ属性・同じ NUL 区切りだが、起動台帳・承認記録・ステージングを含めない（拒否経路でも
+# 書かれるそれらの差分で、保護対象の不変判定を汚さないため）。引数は基点の .claude。
+snapshot_config_ro_targets() (
+  set -o pipefail
+  local target="$1"
+  if [[ -e "$target" || -L "$target" ]]; then
+    find "$target" -printf '%y %m %U %G %T@ %p -> %l\0' | LC_ALL=C sort -z || return 1
+    find "$target" -type f -exec sha256sum --zero -- {} + | LC_ALL=C sort -z || return 1
+  else
+    printf 'absent %s\0' "$target"
+  fi
+)
+
+# 起動前から不正な型の保護対象が 1 つだけある基点を作り直す（claude-container#131）。
+# 引数: $1=基点、$2=保護対象名、$3=種別（file / dir / link / linkfile / dangling）。
+# 先行する保護対象は欠落のままにし、symlink の実体は .claude の外へ置く（snapshot に混ぜない）。
+config_ro_fixture_setup() {
+  local base="$1" name="$2" kind="$3"
+  rm -rf "$base" || return 1
+  mkdir -p "$base/.claude" || return 1
+  case "$kind" in
+    file) printf 'gitdir: %s\n' "$base/elsewhere/.git" > "$base/.claude/$name" ;;
+    dir) mkdir -p "$base/.claude/$name" ;;
+    link) mkdir -p "$base/link-target-dir" && ln -s ../link-target-dir "$base/.claude/$name" ;;
+    linkfile) printf 'x\n' > "$base/link-target-file" && ln -s ../link-target-file "$base/.claude/$name" ;;
+    dangling) ln -s ../missing-target "$base/.claude/$name" ;;
+    *) return 1 ;;
+  esac
+}
+
 # ランチャーが作った .build-context/<name>/ を後始末する（実行前に無かったものだけ）。
 launcher_sandbox_cleanup() {
   local after_ctx new_ctx
@@ -1320,6 +1351,7 @@ CURL
 }
 
 # prepare_claude_config_ro() の検証（PR #47）。
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
 run_config_ro_launcher_tests() {
   local root bin home proj out rc d f before_ctx
   launcher_sandbox_init
@@ -1373,6 +1405,8 @@ run_config_ro_launcher_tests() {
   run_launcher
   check "B: 型不一致は ERROR で起動中止（rc=$rc）" \
     bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'hooks'" "$out"
+  check "B: 型不一致の拒否では何も作成しない" \
+    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$home/.claude/hooks"; mkdir -p "$home/.claude/hooks"
 
@@ -1384,6 +1418,8 @@ run_config_ro_launcher_tests() {
   run_launcher
   check "B2: symlink の保護対象は ERROR で起動中止（rc=$rc）" \
     bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'hooks'" "$out"
+  check "B2: symlink の拒否では何も作成しない" \
+    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$home/.claude/hooks"; mkdir -p "$home/.claude/hooks"
 
@@ -1438,6 +1474,47 @@ run_config_ro_launcher_tests() {
   check "F: 作業ディレクトリが ~/.claude を含むと WARNING（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING' && printf '%s' \"\$0\" | grep -q '別の rw'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # G: 起動前から存在する型不一致・symlink は、先行する不足項目を作る前に拒否する
+  #    （claude-container#131）。不正にするのは各配列の末尾（dirs の .git、files の
+  #    statusline.sh）で、それより前の項目が作られないことを見る。既存の fixture を汚さない
+  #    よう別基点へ隔離し、ケース・モードごとに基点ごと作り直す。
+  local g_base g_cfg g_case g_name g_kind g_mode g_snap_ok
+  g_base="$home/cfg131"; g_cfg="$g_base/.claude"
+  while IFS='|' read -r g_case g_name g_kind; do
+    for g_mode in run check; do
+      if ! config_ro_fixture_setup "$g_base" "$g_name" "$g_kind"; then
+        check "G: $g_case（$g_mode）の fixture を作成する" false
+        continue
+      fi
+      g_snap_ok=1
+      snapshot_config_ro_targets "$g_cfg" > "$root/g-before" 2>> "$LOG_FILE" || g_snap_ok=0
+      launcher_sandbox_reset_records
+      if [[ "$g_mode" == run ]]; then
+        run_launcher CLAUDE_CONFIG_DIR="$g_base"
+      else
+        run_launcher_check CLAUDE_CONFIG_DIR="$g_base"
+      fi
+      snapshot_config_ro_targets "$g_cfg" > "$root/g-after" 2>> "$LOG_FILE" || g_snap_ok=0
+      check "G: $g_case は ERROR で起動中止（$g_mode、rc=$rc）" \
+        bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "ERROR" && printf "%s" "$2" | grep -qF "$3"' \
+          _ "$rc" "$out" "$g_name"
+      check "G: $g_case は保護対象を変更しない（$g_mode）" \
+        bash -c '[ "$1" -eq 1 ] && cmp -s "$2" "$3"' _ "$g_snap_ok" "$root/g-before" "$root/g-after"
+      check "G: $g_case は先行項目を作成しない（$g_mode）" \
+        [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
+      check "G: $g_case は compose を呼ばない（$g_mode）" [ ! -e "$root/compose-calls" ]
+      printf '%s\n' "$out" >> "$LOG_FILE"
+    done
+  done <<'GCASES'
+G1 .git が gitfile|.git|file
+G2 .git が有効 symlink|.git|link
+G3 .git が dangling symlink|.git|dangling
+G4 statusline.sh がディレクトリ|statusline.sh|dir
+G5 statusline.sh が有効 symlink|statusline.sh|linkfile
+G6 statusline.sh が dangling symlink|statusline.sh|dangling
+GCASES
+  rm -rf "$g_base"
 
   launcher_sandbox_cleanup
 }

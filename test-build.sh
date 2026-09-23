@@ -1479,9 +1479,9 @@ run_config_ro_launcher_tests() {
   #    （claude-container#131）。不正にするのは各配列の末尾（dirs の .git、files の
   #    statusline.sh）で、それより前の項目が作られないことを見る。既存の fixture を汚さない
   #    よう別基点へ隔離し、ケース・モードごとに基点ごと作り直す。
-  local g_base g_cfg g_case g_name g_kind g_mode g_snap_ok
+  local g_base g_cfg g_case g_name g_kind g_warn g_mode g_snap_ok
   g_base="$home/cfg131"; g_cfg="$g_base/.claude"
-  while IFS='|' read -r g_case g_name g_kind; do
+  while IFS='|' read -r g_case g_name g_kind g_warn; do
     for g_mode in run check; do
       if ! config_ro_fixture_setup "$g_base" "$g_name" "$g_kind"; then
         check "G: $g_case（$g_mode）の fixture を作成する" false
@@ -1504,15 +1504,20 @@ run_config_ro_launcher_tests() {
       check "G: $g_case は先行項目を作成しない（$g_mode）" \
         [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
       check "G: $g_case は compose を呼ばない（$g_mode）" [ ! -e "$root/compose-calls" ]
+      # --check は事前検査を通さず、不正項目より前の欠落を従来どおり WARN する（g_warn 件）
+      if [[ "$g_mode" == check ]]; then
+        check "G: $g_case は不正項目より前の欠落 $g_warn 件を WARN する（check）" \
+          [ "$(printf '%s\n' "$out" | awk '/ERROR/ { exit } /が無い（通常起動時に空で作成）/ { n++ } END { print n + 0 }')" -eq "$g_warn" ]
+      fi
       printf '%s\n' "$out" >> "$LOG_FILE"
     done
   done <<'GCASES'
-G1 .git が gitfile|.git|file
-G2 .git が有効 symlink|.git|link
-G3 .git が dangling symlink|.git|dangling
-G4 statusline.sh がディレクトリ|statusline.sh|dir
-G5 statusline.sh が有効 symlink|statusline.sh|linkfile
-G6 statusline.sh が dangling symlink|statusline.sh|dangling
+G1 .git が gitfile|.git|file|8
+G2 .git が有効 symlink|.git|link|8
+G3 .git が dangling symlink|.git|dangling|8
+G4 statusline.sh がディレクトリ|statusline.sh|dir|11
+G5 statusline.sh が有効 symlink|statusline.sh|linkfile|11
+G6 statusline.sh が dangling symlink|statusline.sh|dangling|11
 GCASES
   rm -rf "$g_base"
 

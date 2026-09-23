@@ -1,7 +1,7 @@
 # Codex 起動時 MCP 審査の範囲を Claude 経路に揃える（#150）設計
 
 **Issue:** [#150](https://github.com/jj1xgo/c3c/issues/150)
-**状態:** 設計案（持ち主のレビュー待ち）。実装計画は本 spec の承認後に writing-plans で作る。
+**状態:** 設計確定（持ち主承認 2026-09-23）。実装計画: docs/superpowers/plans/2026-09-23-issue150-codex-audit-scope.md
 **区分:** 境界（SECURITY-CLAIMS C-3 の保証範囲と、`compose`・launcher・`entrypoint.sh`・`codex-mcp-audit.py` の審査経路を変える）。
 
 ## 目的

@@ -19,6 +19,7 @@ import termios
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
+# codex-version.txt の fixture 値（#150 から審査は Codex の版に依存しない）。
 SUPPORTED = '0.156.0'
 PREFLIGHT_OVERRIDE = 'compose.codex-preflight.yml'
 LABEL = 'io.c3c.codex-audit-protocol'
@@ -68,7 +69,7 @@ elif args[:1] == ['compose']:
     verb = next((a for a in args if a in ('build', 'run')), None)
     if verb == 'build':
         state['image_exists'] = True
-        state['label'] = state.get('build_label', '1')
+        state['label'] = state.get('build_label', '2')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
         spec = state.get('preflight', {})
@@ -96,12 +97,19 @@ exit 2
 '''
 
 
-def protocol(hash_value=HASH_A, count=None, servers=None, version=SUPPORTED, protocol_version=1):
+def server(**fields):
+    base = {'name': 'a', 'command': 'x', 'args': [], 'cwd': None, 'env_keys': [], 'env_vars': [], 'environment_id': None}
+    base.update(fields)
+    return base
+
+
+def protocol(hash_value=HASH_A, count=None, servers=None, protocol_version=2, extra=None):
     if servers is None:
-        servers = [{'name': 'alpha', 'command': 'python3', 'args': ['server.py', '--flag'], 'cwd': '/workspace',
-                    'env_keys': ['API_KEY'], 'env_vars': ['HOME', {'name': 'TOKEN', 'source': 'local'}]}]
-    doc = {'protocol_version': protocol_version, 'codex_version': version, 'hash': hash_value,
+        servers = [server(name='alpha', command='python3', args=['server.py', '--flag'], cwd='/workspace',
+                          env_keys=['API_KEY'], env_vars=['HOME', {'name': 'TOKEN', 'source': 'local'}])]
+    doc = {'protocol_version': protocol_version, 'hash': hash_value,
            'count': len(servers) if count is None else count, 'servers': servers}
+    doc.update(extra or {})
     return json.dumps(doc, ensure_ascii=False) + '\n'
 
 
@@ -139,7 +147,7 @@ class LaunchCase(unittest.TestCase):
         (self.bin / 'podman').chmod(0o755)
         (self.bin / 'curl').write_text(CURL)
         (self.bin / 'curl').chmod(0o755)
-        self.state = {'image_exists': True, 'label': '1', 'preflight': {'stdout': protocol()}}
+        self.state = {'image_exists': True, 'label': '2', 'preflight': {'stdout': protocol()}}
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
                     'TMPDIR': str(self.tmpdir), 'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
         self.store = self.home / '.local/state/claude-container/mcp-approvals'
@@ -152,15 +160,14 @@ class LaunchCase(unittest.TestCase):
                                 capture_output=True, check=True)
         return os.fsdecode(result.stdout)
 
-    def record_path(self, version=SUPPORTED):
-        return self.store / 'codex' / self.project_name() / f'{version}.json'
+    def record_path(self):
+        return self.store / 'codex' / self.project_name() / 'project-config.json'
 
     def approve(self, hash_value=HASH_A):
         """前回のホスト承認を再現する（launcher が書く正本と同じ形）。"""
         record = self.record_path()
         record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text(json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': hash_value},
-                                     separators=(',', ':')) + '\n')
+        record.write_text(json.dumps({'protocol_version': 2, 'hash': hash_value}, separators=(',', ':')) + '\n')
         return record
 
     def run_launcher(self, *args, answer=None, tty=False, env_extra=None, cwd=None):
@@ -294,9 +301,11 @@ class CodexStaticGuardTests(LaunchCase):
 
     def test_codex_version_file_is_diagnosed_statically(self):
         self.approve()
-        # missing は c3c 第2b-2段階から同梱 default（対応版）に倒れて起動できる。空ファイルは明示 opt-out で止まる。
-        for label, content, ok in (('missing', None, True), ('empty', '\n', False), ('other pin', '0.157.0\n', False),
-                                   ('latest', 'latest\n', True), ('supported', SUPPORTED + '\n', True)):
+        # missing は同梱 default に倒れて起動できる。#150 から固定版・latest はどれも版を理由に止めない。
+        # 空ファイルだけが明示 opt-out で止まる。
+        for label, content, ok in (('missing', None, True), ('empty', '\n', False), ('other pin', '0.157.0\n', True),
+                                   ('old pin', '0.155.1\n', True), ('future pin', '9.9.9\n', True),
+                                   ('latest', 'latest\n', True), ('bundled', SUPPORTED + '\n', True)):
             with self.subTest(case=label):
                 path = self.conf / 'codex-version.txt'
                 if content is None:
@@ -307,9 +316,11 @@ class CodexStaticGuardTests(LaunchCase):
                 if ok:
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(len(self.main_runs()), 1)
-                    if label == 'latest':
-                        self.assertIn(SUPPORTED, result.stderr)
-                        self.assertIn('WARNING', result.stderr)
+                    self.assertNotIn('対応版', result.stderr)
+                    self.assertNotIn('WARNING: ' + str(path), result.stderr)
+                    if content is not None:
+                        check = self.run_launcher('--check', '--agent', 'codex', str(self.proj))
+                        self.assertIn(f'[OK]   Codex 版指定: {content.strip()}（採用元: project）', check.stdout)
                     if label == 'missing':
                         self.assertIn(f'Codex 版: {SUPPORTED}（採用元: 同梱 default）', result.stderr)
                 else:
@@ -329,7 +340,7 @@ class ImageLabelTests(LaunchCase):
         self.approve()
         for exists, build, expect_builds in ((False, False, 1), (False, True, 1), (True, False, 0), (True, True, 1)):
             with self.subTest(exists=exists, build=build):
-                self.state = {'image_exists': exists, 'label': '1', 'build_label': '1', 'preflight': {'stdout': protocol()}}
+                self.state = {'image_exists': exists, 'label': '2', 'build_label': '2', 'preflight': {'stdout': protocol()}}
                 args = (['-b'] if build else []) + ['--agent', 'codex', str(self.proj)]
                 result = self.run_launcher(*args)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -344,7 +355,7 @@ class ImageLabelTests(LaunchCase):
                     self.assertLess(order.index('build'), max(i for i, o in enumerate(order) if o == 'inspect'))
 
     def test_missing_or_unknown_label_blocks_preflight_and_run(self):
-        for label in ('', '2', 'yes'):
+        for label in ('', '1', 'yes'):
             with self.subTest(label=label):
                 self.state = {'image_exists': True, 'label': label, 'preflight': {'stdout': protocol()}}
                 result = self.run_launcher('--agent', 'codex', str(self.proj))
@@ -405,29 +416,26 @@ class PreflightTests(LaunchCase):
             'prefix log': {'stdout': 'INFO: leaked log\n' + valid},
             'two documents': {'stdout': valid + valid},
             'list': {'stdout': '[]\n'},
-            'protocol 2': {'stdout': protocol(protocol_version=2)},
-            'other version': {'stdout': protocol(version='0.157.0')},
+            'protocol 1': {'stdout': protocol(protocol_version=1)},
+            'codex_version present': {'stdout': protocol(extra={'codex_version': SUPPORTED})},
             'short hash': {'stdout': protocol(hash_value='a' * 63)},
             'uppercase hash': {'stdout': protocol(hash_value='A' * 64)},
             'count mismatch': {'stdout': protocol(count=2)},
             'count negative': {'stdout': protocol(count=-1, servers=[])},
-            'missing servers': {'stdout': json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_A, 'count': 0}) + '\n'},
-            'extra key': {'stdout': json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_A,
-                                                'count': 0, 'servers': [], 'raw': 'x'}) + '\n'},
+            'missing servers': {'stdout': json.dumps({'protocol_version': 2, 'hash': HASH_A, 'count': 0}) + '\n'},
+            'extra key': {'stdout': protocol(servers=[], extra={'raw': 'x'})},
             'server missing field': {'stdout': protocol(servers=[{'name': 'a', 'command': 'x'}])},
-            'server env values': {'stdout': protocol(servers=[{'name': 'a', 'command': 'x', 'args': [], 'cwd': None,
-                                                              'env_keys': ['K'], 'env_vars': [], 'env': {'K': 'v'}}])},
-            'unknown env_vars source': {'stdout': protocol(servers=[{'name': 'a', 'command': 'x', 'args': [], 'cwd': None,
-                                                                     'env_keys': [], 'env_vars': [{'name': 'K', 'source': 'cloud'}]}])},
-            'env_vars source int': {'stdout': protocol(servers=[{'name': 'a', 'command': 'x', 'args': [], 'cwd': None,
-                                                                 'env_keys': [], 'env_vars': [{'name': 'K', 'source': 1}]}])},
-            'env_vars unknown key': {'stdout': protocol(servers=[{'name': 'a', 'command': 'x', 'args': [], 'cwd': None,
-                                                                  'env_keys': [], 'env_vars': [{'name': 'K', 'default': 'x'}]}])},
+            'server env values': {'stdout': protocol(servers=[server(env_keys=['K'], env={'K': 'v'})])},
+            'server without environment_id': {'stdout': protocol(servers=[{k: v for k, v in server().items() if k != 'environment_id'}])},
+            'environment_id int': {'stdout': protocol(servers=[server(environment_id=1)])},
+            'unknown env_vars source': {'stdout': protocol(servers=[server(env_vars=[{'name': 'K', 'source': 'cloud'}])])},
+            'env_vars source int': {'stdout': protocol(servers=[server(env_vars=[{'name': 'K', 'source': 1}])])},
+            'env_vars unknown key': {'stdout': protocol(servers=[server(env_vars=[{'name': 'K', 'default': 'x'}])])},
             'bool protocol': {'stdout': protocol(protocol_version=True)},
         }
         for label, spec in cases.items():
             with self.subTest(case=label):
-                self.state = {'image_exists': True, 'label': '1', 'preflight': spec}
+                self.state = {'image_exists': True, 'label': '2', 'preflight': spec}
                 result = self.run_launcher('--agent', 'codex', str(self.proj))
                 self.assertNotEqual(result.returncode, 0, label)
                 self.assertEqual(len(self.preflight_calls()), 1)
@@ -474,17 +482,21 @@ exit $rc
 class ApprovalTests(LaunchCase):
     def test_each_server_and_approval_question_have_separate_lines(self):
         first = json.loads(protocol())['servers'][0]
-        second = dict(first, name='beta', command='node', args=['other.js'])
+        second = dict(first, name='beta', command='node', args=['other.js'], environment_id='remote-1')
         self.state['preflight'] = {'stdout': protocol(servers=[first, second])}
         result = self.run_launcher('--agent', 'codex', str(self.proj), tty=True, answer='n')
         self.assertEqual(result.returncode, 1)
         lines = result.stderr.splitlines()
-        self.assertEqual(len([s for s in lines if s.startswith('  - ')]), 2)
+        shown = [s for s in lines if s.startswith('  - ')]
+        self.assertEqual(len(shown), 2)
+        self.assertIn('environment: remote-1', shown[1])
+        self.assertNotIn('environment:', shown[0])
+        self.assertTrue(any('.codex/config.toml' in s for s in lines))
         self.assertTrue(any(s.startswith('これらの MCP') for s in lines))
         self.assertEqual(self.main_runs(), [])
 
     def expected_record(self, hash_value):
-        return json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': hash_value}, separators=(',', ':')) + '\n'
+        return json.dumps({'protocol_version': 2, 'hash': hash_value}, separators=(',', ':')) + '\n'
 
     def test_first_run_prompts_on_tty_and_records_approval(self):
         result = self.run_launcher('--agent', 'codex', str(self.proj), tty=True, answer='y')
@@ -494,7 +506,8 @@ class ApprovalTests(LaunchCase):
         self.assertNotIn('API_KEY=', result.stderr)
         record = self.record_path()
         self.assertTrue(record.is_file())
-        self.assertEqual(json.loads(record.read_text()), {'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_A})
+        self.assertEqual(json.loads(record.read_text()), {'protocol_version': 2, 'hash': HASH_A})
+        self.assertEqual(record.name, 'project-config.json')
         self.assertEqual(record.stat().st_mode & 0o777, 0o600)
         self.assertEqual(record.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(record.parent.parent.stat().st_mode & 0o777, 0o700)
@@ -561,8 +574,9 @@ class ApprovalTests(LaunchCase):
     def test_corrupt_or_foreign_record_requires_reconfirmation(self):
         record = self.record_path()
         record.parent.mkdir(parents=True)
-        for content in ('', HASH_A + '\n', '{"protocol_version":1,"codex_version":"0.155.1","hash":"%s"}\n' % HASH_A,
-                        json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_B})):
+        for content in ('', HASH_A + '\n', '{"protocol_version":1,"codex_version":"0.156.0","hash":"%s"}\n' % HASH_A,
+                        '{"protocol_version":2,"codex_version":"0.156.0","hash":"%s"}\n' % HASH_A,
+                        json.dumps({'protocol_version': 2, 'hash': HASH_B})):
             with self.subTest(content=content[:20]):
                 record.write_text(content)
                 result = self.run_launcher('--agent', 'codex', str(self.proj))
@@ -570,8 +584,8 @@ class ApprovalTests(LaunchCase):
                 self.assertEqual(self.main_runs(), [])
 
     def test_prompt_strips_control_characters_from_display(self):
-        servers = [{'name': 'al\x1bpha', 'command': 'py\x07thon3', 'args': ['s\x08.py'], 'cwd': '/work\x08space',
-                    'env_keys': ['K\x1bEY'], 'env_vars': ['H\x07OME', {'name': 'T\x00OK', 'source': 'local'}]}]
+        servers = [server(name='al\x1bpha', command='py\x07thon3', args=['s\x08.py'], cwd='/work\x08space',
+                          env_keys=['K\x1bEY'], env_vars=['H\x07OME', {'name': 'T\x00OK', 'source': 'local'}])]
         self.state['preflight'] = {'stdout': protocol(servers=servers)}
         result = self.run_launcher('--agent', 'codex', str(self.proj), tty=True, answer='n')
         self.assertNotEqual(result.returncode, 0)
@@ -579,6 +593,18 @@ class ApprovalTests(LaunchCase):
         self.assertIn('TOK[local]', result.stderr)
         for char in ('\x1b', '\x07', '\x08', '\x00'):
             self.assertNotIn(char, result.stderr)
+
+    def test_old_versioned_record_is_ignored_and_clean_removes_it(self):
+        old = self.store / 'codex' / self.project_name() / '0.156.0.json'
+        old.parent.mkdir(parents=True)
+        old.write_text('{"protocol_version":1,"codex_version":"0.156.0","hash":"%s"}\n' % HASH_A)
+        result = self.run_launcher('--agent', 'codex', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, '旧記録では承認済みにならない')
+        self.assertIn('[y/N]', result.stderr)
+        self.assertEqual(self.main_runs(), [])
+        clean = self.run_launcher('--clean', str(self.proj))
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertFalse(old.parent.exists())
 
     def test_claude_gate_is_not_used_for_codex(self):
         (self.proj / '.mcp.json').write_text(json.dumps({'mcpServers': {'claude-only': {'command': 'evil'}}}))
@@ -595,7 +621,7 @@ class CheckAndCleanTests(LaunchCase):
     def test_check_codex_is_static_and_reports_not_run(self):
         record = self.record_path()
         record.parent.mkdir(parents=True)
-        record.write_text(json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_A}) + '\n')
+        record.write_text(json.dumps({'protocol_version': 2, 'hash': HASH_A}) + '\n')
         before_proj, before_home = self.snapshot(self.proj), self.snapshot(self.home)
         result = self.run_launcher('--check', '--agent', 'codex', str(self.proj))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -623,21 +649,21 @@ class CheckAndCleanTests(LaunchCase):
     def test_check_record_format_is_validated_as_one_strict_json_document(self):
         record = self.record_path()
         record.parent.mkdir(parents=True)
-        valid = json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_A}, separators=(',', ':')) + '\n'
+        valid = json.dumps({'protocol_version': 2, 'hash': HASH_A}, separators=(',', ':')) + '\n'
         bad = {
             'garbage before': 'garbage\n' + valid,
             'garbage after': valid + 'garbage\n',
             'two documents': valid + valid,
-            'duplicate key': '{"protocol_version":1,"codex_version":"%s","hash":"%s","hash":"%s"}\n' % (SUPPORTED, '0' * 64, HASH_A),
-            'wrong version': valid.replace(SUPPORTED, '0.155.1'),
-            'dot as wildcard': valid.replace(SUPPORTED, SUPPORTED.replace('.', 'x')),
-            'protocol 1.0': valid.replace('"protocol_version":1,', '"protocol_version":1.0,'),
-            'protocol true': valid.replace('"protocol_version":1,', '"protocol_version":true,'),
+            'duplicate key': '{"protocol_version":2,"hash":"%s","hash":"%s"}\n' % ('0' * 64, HASH_A),
+            'protocol 1': valid.replace('"protocol_version":2,', '"protocol_version":1,'),
+            'old shape': '{"protocol_version":2,"codex_version":"0.156.0","hash":"%s"}\n' % HASH_A,
+            'protocol 2.0': valid.replace('"protocol_version":2,', '"protocol_version":2.0,'),
+            'protocol true': valid.replace('"protocol_version":2,', '"protocol_version":true,'),
             'uppercase hash': valid.replace(HASH_A, HASH_A.upper()),
             'short hash': valid.replace(HASH_A, HASH_A[:-1]),
             'extra key': valid.replace('}\n', ',"servers":[]}\n'),
-            'missing key': '{"protocol_version":1,"codex_version":"%s"}\n' % SUPPORTED,
-            'nan': valid.replace('"protocol_version":1,', '"protocol_version":NaN,'),
+            'missing key': '{"protocol_version":2}\n',
+            'nan': valid.replace('"protocol_version":2,', '"protocol_version":NaN,'),
         }
         for label, content in bad.items():
             with self.subTest(case=label):
@@ -652,7 +678,7 @@ class CheckAndCleanTests(LaunchCase):
         self.assertIn('形式 OK', result.stdout)
         self.assertNotIn('形式が不正', result.stdout)
         # 空白の違いは JSON として同じ文書なので静的診断では OK（通常起動は完全一致で再確認する）。
-        record.write_text(json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': HASH_A}, indent=1))
+        record.write_text(json.dumps({'protocol_version': 2, 'hash': HASH_A}, indent=1))
         result = self.run_launcher('--check', '--agent', 'codex', str(self.proj))
         self.assertIn('形式 OK', result.stdout)
 

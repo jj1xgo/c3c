@@ -100,9 +100,21 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 
 コンテナ側では、非特権の `iptables -S` が拒否され、Codex プロセスの capability は 0 だった。HTTPS は `api.github.com` が 200、`example.com` と `http://api.github.com` は接続できなかった。node は固定リンク・その親・同梱実体とその親のいずれにも書き込めない（root:root、755）。
 
+**認証済み対話セッションでの受入**: 2026-09-23、`537fd32` で同じ fixture を `c3c codex -b` により再ビルドした（image `2a5a27e481f5`）。このイメージには `/usr/bin/bwrap` 0.12.0 が残っている。固定リンクは npm の `codex-linux-x64` の `codex-resources/bwrap`（`bubblewrap built for Codex`）を指す。
+
+準備として、持ち主の許可を得て、fixture の `.c3c/env` に Codex 専用の認証ディレクトリ（`CODEX_DIR`）と `GITCONFIG_FILE=~/.gitconfig` を設定した。`.c3c/allowed-domains.txt` には `chatgpt.com` と `auth.openai.com` を加えた。この 2 つが無いと、TUI の起動時に `account/read failed ... workspace routing discovery failed` で終了する。
+
+起動は通常の `c3c codex <fixture>` と `c3c codex --read-only <fixture>` の 2 通りで、どちらも MCP 審査（対象 0 件）を経て TUI に入った。TUI で agent に `pwd` と `git status --short --branch` を通常のシェルツールで実行させ、結果を Codex のセッション記録（`sessions/…/rollout-*.jsonl`、originator `codex-tui`、Codex 0.156.0）で確認した。
+
+| sandbox（approval は `on-request`） | `pwd` | `git status --short --branch` |
+| --- | --- | --- |
+| `workspace-write`（`network_access=false`） | rc 0、`/workspace` | rc 0、`## master` と fixture の設定変更 2 件 |
+| `read-only` | rc 0、`/workspace` | rc 0、同上 |
+
+どちらのモードでも、承認の要求と `Can't mount proc on /proc` は出なかった。TUI への入力は `expect` で TTY を与えて自動化した。人が画面を見て操作したものではない。
+
 **not run と限界**:
 
-- ChatGPT 認証済みの対話セッションで、agent の通常ツールとして `pwd` / `git status` を実行する受入は未実施。持ち主のセッションで行う。
 - glycin の画像処理は、この image の gdk-pixbuf が libglycin にリンクしておらず、glycin を通る入口を用意できなかった。PNG のサムネイル生成は、既定 PATH と Codex の PATH の両方で成功した（gdk-pixbuf 内蔵のローダー）。Codex の子プロセスからの glycin の互換は主張しない。
 - arm64 は fixture の単体試験だけで、実機は未確認。IPv6 の実通信も未確認。
 - 外側プロセスの `environ` が読めないという結果は、上記 2 プロセスとこの版に限る。全プロセスが不可視とは主張しない。

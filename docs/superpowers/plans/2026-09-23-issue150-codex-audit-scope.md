@@ -64,13 +64,16 @@ enabled stdio の実行定義だけを canonical hash にまとめ、project 設
 """
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / 'codex-mcp-audit.py'
@@ -250,6 +253,11 @@ class RejectionTests(AuditCase):
             with self.subTest(key=key):
                 self.rejected(f'[mcp_servers.x]\nenabled = false\n{key} = {value}\n', key)
 
+    def test_wrong_types_are_rejected_in_enabled_http_entries(self):
+        for key, value in (('args', '[1]'), ('env', 'false'), ('required', '"yes"'), ('scopes', '"x"')):
+            with self.subTest(key=key):
+                self.rejected(f'[mcp_servers.web]\nurl = "https://a.example"\n{key} = {value}\n', key)
+
     def test_valid_values_for_all_keys_are_accepted_in_a_disabled_entry(self):
         text = ('[mcp_servers.x]\nenabled = false\ncommand = "a"\nargs = ["b"]\nenv = { K = "v" }\n'
                 'env_vars = ["A", { name = "B", source = "remote" }]\ncwd = "/w"\nhttp_headers = { H = "v" }\n'
@@ -323,6 +331,29 @@ class RejectionTests(AuditCase):
             self.config.chmod(0)
             self.assertEqual(self.run_helper('snapshot').returncode, 1)
             self.config.chmod(0o600)
+
+    def test_fifo_is_rejected_without_blocking_and_without_path_based_stat(self):
+        # stat と open の間に FIFO へ差し替えられても止まらないことを、構造で固定する:
+        # パスへの stat（os.stat / os.path.isfile）を使わず、O_NONBLOCK で開いた fd を fstat する。
+        spec = importlib.util.spec_from_file_location('codex_mcp_audit_under_test', HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.config.unlink(missing_ok=True)
+        os.mkfifo(self.config)
+
+        def blocked(signum, frame):
+            raise TimeoutError('load_config が FIFO で止まった')
+
+        previous = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(5)
+        try:
+            with mock.patch.object(os, 'stat', side_effect=AssertionError('パスへの stat を使っている')):
+                with self.assertRaises(module.AuditError) as ctx:
+                    module.load_config(str(self.config))
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertIn('通常ファイル', str(ctx.exception))
 
     def test_symlink_to_regular_file_is_followed_and_dangling_is_absent(self):
         target = self.root / 'real.toml'
@@ -717,7 +748,7 @@ if __name__ == '__main__':
 - [ ] **Step 4: 試験が通ることを確かめる**
 
 Run: `python3 -m unittest tests.test_codex_mcp_audit -v 2>&1 | tail -5`
-Expected: `OK`（全件成功）。`test_non_regular_or_unreadable_config_is_rejected` の権限部分は root 実行時だけ省略される。
+Expected: `OK`（全件成功）。`test_non_regular_or_unreadable_config_is_rejected` の権限部分は root 実行時だけ省略される。`test_fifo_is_rejected_without_blocking_and_without_path_based_stat` は、`load_config` がパスへの `stat` を使うと失敗する（差し替えの窓を作る実装への回帰を検出する）。
 
 - [ ] **Step 5: lint と commit**
 
@@ -800,7 +831,7 @@ if [ "$CODEX_START_MODE" = preflight ]; then
 if ! python3 -I "$CODEX_AUDIT" --config "$CODEX_PROJECT_CONFIG" verify "$CODEX_APPROVED"; then
 ```
 
-235 行のメッセージ「対応版を書くか空ファイルを削除して」を「固定版か latest を書くか空ファイルを削除して」にする。227-231 行付近のコメント（snapshot / verify の説明、「protocol 1」「版不一致」を含む）を「リポジトリ同梱の `.codex/config.toml` を読む。Codex CLI は本起動の exec だけで使う」に直す。263 行のコメント「snapshot/verify（codex-mcp-audit.py の LIST_ARGS）と同じ値を渡す」は、LIST_ARGS が無くなるので「固定の trust override（検査用コンテナと本起動で同じ設定解決にするため、launcher の preflight と同じ値）」に直す。
+235 行のメッセージ「対応版を書くか空ファイルを削除して」を「固定版か latest を書くか空ファイルを削除して」にする。227-231 行付近のコメント（snapshot / verify の説明、「protocol 1」「版不一致」を含む）を「リポジトリ同梱の `.codex/config.toml` を読む。Codex CLI は本起動の exec だけで使う」に直す。263 行のコメント「snapshot/verify（codex-mcp-audit.py の LIST_ARGS）と同じ値を渡す」は、LIST_ARGS が無くなるので「固定の trust override（`/workspace` を trusted project にして `.codex/config.toml` を有効にする値。審査は同じファイルを直接読むので、この引数とは独立）」に直す。
 
 - [ ] **Step 4: Dockerfile を変える**
 
@@ -964,7 +995,7 @@ git commit -m "feat: #150 launcher の Codex 版照合を外し protocol 2 の�
 - Modify: `test-build.sh:1874-1892`
 - Modify: `README.md`（「利用側プロジェクトの設定」の `codex-version.txt` の行 245 と説明 262、「Codex CLI をセカンドオピニオンとして使う」の手順 1（443）、「Codex CLI を対話で使う」の前提（468）・起動フロー・審査の範囲と限界（482-484）、「変更後の確認」の該当行（709）、`codex-version.txt` を説明する 534 行）
 - Modify: `SECURITY-CLAIMS.md` の C-3
-- Modify: `docs/development-invariants.md:29`・`:93`
+- Modify: `docs/development-invariants.md:29`・`:72`・`:93`
 - Modify: `docs/superpowers/specs/2026-09-23-codex-mcp-audit-scope-design.md` の **状態** 行
 
 **Interfaces:**

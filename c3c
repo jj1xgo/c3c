@@ -22,7 +22,7 @@ READ_ONLY=0
 READ_ONLY_SET=0
 # Codex の起動時 MCP 審査で対応する版と protocol（codex-mcp-audit.py・Dockerfile.claude の label と同期）。
 # 未知版・未知 protocol は同じ審査方式として黙認せず、対応確認が必要と診断する。
-CODEX_SUPPORTED_VERSION=0.155.1
+CODEX_SUPPORTED_VERSION=0.156.0
 CODEX_AUDIT_PROTOCOL_VERSION=1
 CODEX_AUDIT_PROTOCOL_LABEL=io.c3c.codex-audit-protocol
 readonly CODEX_SUPPORTED_VERSION CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL

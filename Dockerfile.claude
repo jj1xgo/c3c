@@ -146,7 +146,7 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
       rm -f "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt node.sha256; \
     fi
 
-# codex-version.txt が指定するバージョン（例: "0.155.1"）か文字どおりの "latest" の
+# codex-version.txt が指定するバージョン（例: "0.156.0"）か文字どおりの "latest" の
 # Codex CLI を npm からインストールする。上の node-version.txt と同じ設計思想（汎用の
 # ビルドフックではなく宣言的なファイル。設計の根拠は内部運用 issue を参照）で、
 # claude-container 同梱の default（c3c 第2b-2段階から起動時 MCP 審査の対応版に固定）を
@@ -163,7 +163,7 @@ RUN echo "codex-cachebust=${CODEX_CACHEBUST}" && \
     CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)" && \
     if [ -n "$CODEX_VERSION" ]; then \
       echo "$CODEX_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
-        echo "ERROR: .c3c/codex-version.txt には 0.155.1 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $CODEX_VERSION）" >&2; exit 1; }; \
+        echo "ERROR: .c3c/codex-version.txt には 0.156.0 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $CODEX_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
         echo "ERROR: codex-version.txt（$CODEX_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Codex を使わないなら .c3c/codex-version.txt も空にしてください。" >&2; exit 1; }; \
       npm install -g "@openai/codex@${CODEX_VERSION}"; \

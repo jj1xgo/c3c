@@ -18,7 +18,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'codex-mcp-audit.py'
-SUPPORTED = '0.155.1'
+SUPPORTED = '0.156.0'
 TRUST_OVERRIDE = 'projects={"/workspace"={trust_level="trusted"}}'
 FIXED_HOME = '/home/node/.codex'
 FIXED_CLI = '/usr/local/bin/codex'
@@ -39,7 +39,7 @@ with open(state['calls'], 'a') as out:
     out.write(json.dumps({'kind': kind, 'args': args, 'argv0': sys.argv[0], 'cwd': os.getcwd(),
                           'env': {k: os.environ.get(k) for k in ('CODEX_HOME', 'HOME', 'PATH', 'MCP_TOKEN', 'CC_AGENT')}}) + '\\n')
 if kind == 'version':
-    sys.stdout.write(state.get('version', 'codex-cli 0.155.1\\n'))
+    sys.stdout.write(state.get('version', 'codex-cli 0.156.0\\n'))
 elif kind == 'list':
     sys.stdout.write(json.dumps(state['listing']) + '\\n')
 sys.exit(0)
@@ -257,7 +257,7 @@ class RunTests(EntrypointCase):
     def test_missing_cli_or_unsupported_version_has_no_fallback(self):
         self.approve_from_preflight()
         for label, mutate in (('missing cli', lambda: self.codex.unlink()),
-                              ('wrong version', lambda: self.state.update(version='codex-cli 0.156.0\n'))):
+                              ('wrong version', lambda: self.state.update(version='codex-cli 0.157.0\n'))):
             with self.subTest(case=label):
                 mutate()
                 for mode in ('preflight', 'run'):

@@ -10,13 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-23-codex-mcp-audit-scope-design.md`
 
-**作業場所:** worktree `~/Projects/worktrees/c3c-issue150`、ブランチ `feat/issue150-codex-audit-scope`（origin/main 039abf1 起点）。
+**作業場所:** worktree `~/Projects/worktrees/c3c-issue150`、ブランチ `feat/issue150-codex-audit-scope`（origin/main 039abf1 起点）。Task 1 着手前に `PLAN=$(git rev-parse HEAD)` を控える（Task 4 Step 5 で使う）。Task 1〜3 の commit は作業途中の区切りで、Task 4 Step 5 で 1 つにまとめる。
 
 ## Global Constraints
 
 - 審査対象は `/workspace/.codex/config.toml` の `mcp_servers` と `plugins` だけ。`CODEX_DIR`（`/home/node/.codex`）の設定と plugin キャッシュは読まない。
 - `plugins` のエントリが 1 つでもあり、`enabled = false`（真偽値の false）と明示されていないものがあれば拒否する。
-- `mcp_servers.<name>` の許可 key は codex-cli 0.156.0 の `RawMcpServerConfig`（`codex-rs/config/src/mcp_types.rs`）の 28 個: `command` `args` `env` `env_vars` `cwd` `http_headers` `env_http_headers` `url` `bearer_token` `bearer_token_env_var` `http_headers_helper` `environment_id` `auth` `startup_timeout_sec` `startup_timeout_ms` `tool_timeout_sec` `enabled` `required` `supports_parallel_tool_calls` `omit_tools_from` `default_tools_approval_mode` `enabled_tools` `disabled_tools` `scopes` `oauth` `oauth_resource` `name` `tools`。これ以外の key を持つエントリは拒否する。
+- `marketplaces` のエントリが 1 つでもあれば拒否する（project 層の marketplace は user 層で有効化した plugin の取得元を差し替えうる）。空の `[marketplaces]` は通す。
+- `mcp_servers.<name>` の許可 key は codex-cli 0.156.0 の `RawMcpServerConfig`（`codex-rs/config/src/mcp_types.rs`）の 28 個: `command` `args` `env` `env_vars` `cwd` `http_headers` `env_http_headers` `url` `bearer_token` `bearer_token_env_var` `http_headers_helper` `environment_id` `auth` `startup_timeout_sec` `startup_timeout_ms` `tool_timeout_sec` `enabled` `required` `supports_parallel_tool_calls` `omit_tools_from` `default_tools_approval_mode` `enabled_tools` `disabled_tools` `scopes` `oauth` `oauth_resource` `name` `tools`。これ以外の key を持つエントリは拒否する。各 key の値の型は `RawMcpServerConfig` に合わせて検査し（helper の `KEY_CHECKS`）、disabled なエントリも検査する。
 - hash の対象は enabled stdio の名前・`command`・`args`・`env`・`env_vars`・`cwd`・`environment_id`。
 - enabled で `http_headers_helper` が非 null のエントリは transport を問わず拒否する。helper の無い HTTP（`url` のみ）は hash 対象外で通す。
 - protocol は 2。`CODEX_AUDIT_PROTOCOL_VERSION=2`、`LABEL io.c3c.codex-audit-protocol="2"`、`PROTOCOL_VERSION = 2` を同期させる。
@@ -29,7 +30,7 @@
 ## Review Focus
 
 1. **イメージの python3 が 3.11 未満（`tomllib` が無い）**: 利用側が `base-image.txt` で古いベースを選ぶと起きうる。helper は `tomllib` の import 失敗を判定不能として明確なメッセージで止まり（Codex は起動しない）、README の前提に「イメージ内 python3 3.11 以上」を書く。→ Task 1 の `test_missing_tomllib_is_reported_as_audit_error`、Task 4 の README。
-2. **`.codex/config.toml` が symlink・ディレクトリ・FIFO・読めないファイル**: symlink は Codex と同じく辿り、通常ファイルでなければ拒否する。FIFO で open が止まらないよう、`os.stat` で通常ファイルか確かめてから開く。→ Task 1 の `test_non_regular_or_unreadable_config_is_rejected`。
+2. **`.codex/config.toml` が symlink・ディレクトリ・FIFO・読めないファイル、または検査中に差し替えられる**: symlink は Codex と同じく辿り、通常ファイルでなければ拒否する。`O_NONBLOCK` で開いた同じ fd を `fstat` して読むので、`stat` と `open` の間に FIFO へ差し替えても止まり続けない（検査と読み取りの窓が無い）。→ Task 1 の `test_non_regular_or_unreadable_config_is_rejected`。
 3. **検査と本起動の間に `.codex/config.toml` が変わる**: 本起動の verify が同じファイルを再度読み、hash 不一致で止まる（現行の再照合と同じ）。→ Task 2 の既存 `test_verify_failure_never_execs_native_cli` を新方式で維持。
 4. **旧イメージ（protocol 1）と旧承認記録（`0.156.0.json`）**: 旧イメージは label 不一致で preflight 前に `-b` を案内して止まる。旧記録は読まず、初回だけ再確認になる。`--clean <dir>` は Codex subdirectory ごと消す。→ Task 3 の label・record・clean の試験。
 5. **`latest` で入った版が 0.156.0 と違う**: 版を理由に止まらない。→ Task 3 の guard 試験（`latest` と任意の固定版がどちらも OK）、Task 5 の実機確認。
@@ -75,6 +76,12 @@ REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / 'codex-mcp-audit.py'
 SECRET_ENV = 'hunter2-env-value'
 SECRET_HEADER = 'Bearer sekrit-header-value'
+# codex-cli 0.156.0 の RawMcpServerConfig の key（計画の Global Constraints と同じ 28 個）。
+KEY_NAMES = ('command', 'args', 'env', 'env_vars', 'cwd', 'http_headers', 'env_http_headers', 'url',
+             'bearer_token', 'bearer_token_env_var', 'http_headers_helper', 'environment_id', 'auth',
+             'startup_timeout_sec', 'startup_timeout_ms', 'tool_timeout_sec', 'enabled', 'required',
+             'supports_parallel_tool_calls', 'omit_tools_from', 'default_tools_approval_mode', 'enabled_tools',
+             'disabled_tools', 'scopes', 'oauth', 'oauth_resource', 'name', 'tools')
 
 STDIO_A = '''
 [mcp_servers.alpha]
@@ -220,6 +227,43 @@ class RejectionTests(AuditCase):
 
     def test_plugins_must_be_a_table(self):
         self.rejected('plugins = ["x"]\n', 'plugins')
+
+    def test_marketplaces_are_rejected_with_names(self):
+        for text in ('[marketplaces.evil]\nsource_type = "git"\nsource = "https://a.example/r.git"\n',
+                     '[marketplaces.evil]\nsource_type = "local"\nsource = "./plugins"\n',
+                     'marketplaces = { evil = 1 }\n'):
+            with self.subTest(text=text):
+                self.rejected(text, 'evil')
+        self.rejected('marketplaces = 1\n', 'marketplaces')
+        self.assertEqual(self.snapshot('[marketplaces]\n')['count'], 0)
+
+    def test_every_allowed_key_rejects_wrong_type_even_when_disabled(self):
+        bad = {'command': '1', 'args': '"b"', 'env': 'false', 'env_vars': '[1]', 'cwd': '1',
+               'http_headers': '{ K = 1 }', 'env_http_headers': '"x"', 'url': '1', 'bearer_token': '1',
+               'bearer_token_env_var': '1', 'http_headers_helper': '1', 'environment_id': '1',
+               'auth': '"other"', 'startup_timeout_sec': '"30"', 'startup_timeout_ms': '-1',
+               'tool_timeout_sec': 'true', 'required': '"yes"', 'supports_parallel_tool_calls': '1',
+               'omit_tools_from': '"x"', 'default_tools_approval_mode': '1', 'enabled_tools': '[1]',
+               'disabled_tools': '"x"', 'scopes': '[true]', 'oauth': '"x"', 'oauth_resource': '1',
+               'name': '1', 'tools': '{ t = 1 }'}
+        for key, value in bad.items():
+            with self.subTest(key=key):
+                self.rejected(f'[mcp_servers.x]\nenabled = false\n{key} = {value}\n', key)
+
+    def test_valid_values_for_all_keys_are_accepted_in_a_disabled_entry(self):
+        text = ('[mcp_servers.x]\nenabled = false\ncommand = "a"\nargs = ["b"]\nenv = { K = "v" }\n'
+                'env_vars = ["A", { name = "B", source = "remote" }]\ncwd = "/w"\nhttp_headers = { H = "v" }\n'
+                'env_http_headers = { H = "E" }\nurl = "https://a.example"\nbearer_token = "t"\n'
+                'bearer_token_env_var = "T"\nhttp_headers_helper = "/bin/x"\nenvironment_id = "local"\n'
+                'auth = "chatgpt"\nstartup_timeout_sec = 1.5\nstartup_timeout_ms = 10\ntool_timeout_sec = 3\n'
+                'required = true\nsupports_parallel_tool_calls = false\nomit_tools_from = ["s"]\n'
+                'default_tools_approval_mode = "auto"\nenabled_tools = ["a"]\ndisabled_tools = ["b"]\n'
+                'scopes = ["s"]\noauth = { callback_port = 1 }\noauth_resource = "r"\nname = "n"\n'
+                'tools = { t = { approval_mode = "auto" } }\n')
+        self.assertEqual(len(KEY_NAMES), 28)
+        for key in KEY_NAMES:
+            self.assertIn(f'\n{key} = ', text)
+        self.assertEqual(self.snapshot(text)['count'], 0)
 
     def test_http_headers_helper_is_rejected_for_any_enabled_entry(self):
         self.rejected('[mcp_servers.web]\nurl = "https://a.example"\nhttp_headers_helper = "/bin/x"\n',
@@ -373,9 +417,10 @@ Expected: FAIL（現行 helper は `--config` を受け付けず argparse のエ
 - Codex CLI は実行しない。読むのは公開の設定形式（Config Reference）だけで、Codex の版に依存しない。
 - 審査するのはリポジトリ同梱の project 設定だけ。CODEX_HOME の user 設定は Claude 経路の ~/.claude.json と
   同じく審査対象外（README「帰結の重大性で線を引いている」節）。
-- project 設定での plugin 有効化は、plugin の中身を読まずに fail-closed で拒否する（中身を読むと
+- project 設定での plugin 有効化と marketplace 定義は、中身を読まずに fail-closed で拒否する（中身を読むと
   Codex の内部形式に依存するため）。
 - 判定不能（壊れた TOML・型違い・未知 key・command と url の併記・helper 付き定義）は fail-closed。
+  型は disabled なエントリも含め、許可する全 key について検査する。
 - 表示用文字列は制御文字を除去する（entrypoint/launcher の既存方針と同じ）。hash には元の値を使う。
 """
 
@@ -393,16 +438,11 @@ except ImportError:
     tomllib = None
 
 PROTOCOL_VERSION = 2
-# codex-cli 0.156.0 の RawMcpServerConfig（codex-rs/config/src/mcp_types.rs）の key。これ以外は審査できない。
-SERVER_KEYS = frozenset((
-    'command', 'args', 'env', 'env_vars', 'cwd', 'http_headers', 'env_http_headers',
-    'url', 'bearer_token', 'bearer_token_env_var', 'http_headers_helper',
-    'environment_id', 'auth', 'startup_timeout_sec', 'startup_timeout_ms', 'tool_timeout_sec',
-    'enabled', 'required', 'supports_parallel_tool_calls', 'omit_tools_from', 'default_tools_approval_mode',
-    'enabled_tools', 'disabled_tools', 'scopes', 'oauth', 'oauth_resource', 'name', 'tools'))
 # env_vars は McpServerEnvVar: 文字列名か {name, source?}。source は local/remote。
 ENV_VAR_KEYS = frozenset(('name', 'source'))
 ENV_VAR_SOURCES = ('local', 'remote')
+# auth は McpServerAuth の serde 名。
+AUTH_VALUES = ('oauth', 'chatgpt', 'ema_auth')
 RECORD_KEYS = frozenset(('protocol_version', 'hash'))
 HASH_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 CONTROL_CHARS = re.compile(r'[\x00-\x1f\x7f]')
@@ -424,6 +464,18 @@ def is_bool(value):
     return isinstance(value, bool)
 
 
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def is_nonneg_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def is_table(value):
+    return isinstance(value, dict)
+
+
 def is_str_list(value):
     return isinstance(value, list) and all(is_str(item) for item in value)
 
@@ -442,6 +494,23 @@ def is_env_var(item):
 
 def is_env_var_list(value):
     return isinstance(value, list) and all(is_env_var(item) for item in value)
+
+
+# codex-cli 0.156.0 の RawMcpServerConfig（codex-rs/config/src/mcp_types.rs）の key と、その型の検査。
+# これ以外の key は審査できない。値は disabled なエントリでも検査する（native の受理と食い違わせない）。
+KEY_CHECKS = {
+    'command': is_str, 'args': is_str_list, 'env': is_str_map, 'env_vars': is_env_var_list, 'cwd': is_str,
+    'http_headers': is_str_map, 'env_http_headers': is_str_map, 'url': is_str, 'bearer_token': is_str,
+    'bearer_token_env_var': is_str, 'http_headers_helper': is_str, 'environment_id': is_str,
+    'auth': lambda value: is_str(value) and value in AUTH_VALUES,
+    'startup_timeout_sec': is_number, 'startup_timeout_ms': is_nonneg_int, 'tool_timeout_sec': is_number,
+    'enabled': is_bool, 'required': is_bool, 'supports_parallel_tool_calls': is_bool,
+    'omit_tools_from': is_str_list, 'default_tools_approval_mode': is_str,
+    'enabled_tools': is_str_list, 'disabled_tools': is_str_list, 'scopes': is_str_list,
+    'oauth': is_table, 'oauth_resource': is_str, 'name': is_str,
+    'tools': lambda value: is_table(value) and all(is_table(item) for item in value.values()),
+}
+SERVER_KEYS = frozenset(KEY_CHECKS)
 
 
 def strict_pairs(pairs):
@@ -473,16 +542,18 @@ def load_config(path):
     if tomllib is None:
         raise AuditError('イメージの python3 に tomllib がありません（Python 3.11 以上が必要です）。'
                          'Codex の起動時審査を行えないため起動を中止します')
+    # 検査と読み取りの間の差し替え（FIFO 等）で止まり続けないよう、O_NONBLOCK で開いた同じ fd を
+    # fstat して通常ファイルか確かめ、その fd から読む。symlink は Codex と同じく辿る。
     try:
-        info = os.stat(path)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError as exc:
-        raise AuditError(f'{sanitize(path)} を確認できません: {sanitize(exc.strerror or exc)}') from None
-    if not stat.S_ISREG(info.st_mode):
-        raise AuditError(f'{sanitize(path)} が通常ファイルではありません')
+        raise AuditError(f'{sanitize(path)} を開けません: {sanitize(exc.strerror or exc)}') from None
     try:
-        with open(path, 'rb') as handle:
+        with os.fdopen(fd, 'rb') as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise AuditError(f'{sanitize(path)} が通常ファイルではありません')
             data = handle.read()
     except OSError as exc:
         raise AuditError(f'{sanitize(path)} を読めません: {sanitize(exc.strerror or exc)}') from None
@@ -496,18 +567,27 @@ def load_config(path):
         raise AuditError(f'{sanitize(path)} を TOML として解析できません: {sanitize(exc)}') from None
 
 
-def check_plugins(config):
+def check_plugin_sources(config):
+    """project 設定での plugin 有効化と marketplace 定義を、中身を読まずに拒否する。"""
     plugins = config.get('plugins')
-    if plugins is None:
-        return
-    if not isinstance(plugins, dict):
-        raise AuditError('.codex/config.toml の plugins が table ではありません')
-    active = sorted(sanitize(name) for name, entry in plugins.items()
-                    if not (isinstance(entry, dict) and entry.get('enabled') is False))
-    if active:
-        raise AuditError('リポジトリの .codex/config.toml で plugin が有効化されています（' + ', '.join(active) + '）。'
-                         'リポジトリ同梱の plugin は c3c の起動時審査で内容を確認できないため起動を中止します。'
-                         '使わないなら該当エントリを削除するか enabled = false にしてください')
+    if plugins is not None:
+        if not isinstance(plugins, dict):
+            raise AuditError('.codex/config.toml の plugins が table ではありません')
+        active = sorted(sanitize(name) for name, entry in plugins.items()
+                        if not (isinstance(entry, dict) and entry.get('enabled') is False))
+        if active:
+            raise AuditError('リポジトリの .codex/config.toml で plugin が有効化されています（' + ', '.join(active) + '）。'
+                             'リポジトリ同梱の plugin は c3c の起動時審査で内容を確認できないため起動を中止します。'
+                             '使わないなら該当エントリを削除するか enabled = false にしてください')
+    marketplaces = config.get('marketplaces')
+    if marketplaces is not None:
+        if not isinstance(marketplaces, dict):
+            raise AuditError('.codex/config.toml の marketplaces が table ではありません')
+        if marketplaces:
+            names = ', '.join(sorted(sanitize(name) for name in marketplaces))
+            raise AuditError('リポジトリの .codex/config.toml で plugin の marketplace が定義されています（' + names + '）。'
+                             'plugin の取得元を差し替えうる設定は c3c の起動時審査で確認できないため起動を中止します。'
+                             '該当エントリを削除してください')
 
 
 def normalize(config):
@@ -526,10 +606,10 @@ def normalize(config):
         if unknown:
             shown = ', '.join(sorted(sanitize(key) for key in unknown))
             raise AuditError(f'MCP server {name}: c3c が審査できない key があります（{shown}）')
-        enabled = entry.get('enabled', True)
-        if not is_bool(enabled):
-            raise AuditError(f'MCP server {name}: enabled が真偽値ではありません')
-        if not enabled:
+        for key, value in entry.items():
+            if not KEY_CHECKS[key](value):
+                raise AuditError(f'MCP server {name}: {key} の型が不正です')
+        if not entry.get('enabled', True):
             continue
         if entry.get('http_headers_helper') is not None:
             raise AuditError(f'MCP server {name}: enabled な定義が http_headers_helper（ローカル command）を持つため、'
@@ -537,21 +617,12 @@ def normalize(config):
         if 'command' in entry and 'url' in entry:
             raise AuditError(f'MCP server {name}: command と url の両方があり transport を判定できません')
         if 'url' in entry:
-            if not is_str(entry['url']):
-                raise AuditError(f'MCP server {name}: url が文字列ではありません')
             continue
         if 'command' not in entry:
             raise AuditError(f'MCP server {name}: command も url も無いため transport を判定できません')
         transport = {'type': 'stdio', 'command': entry['command'], 'args': entry.get('args', []),
                      'env': entry.get('env') or None, 'env_vars': entry.get('env_vars', []),
                      'cwd': entry.get('cwd'), 'environment_id': entry.get('environment_id')}
-        ok = (is_str(transport['command']) and is_str_list(transport['args'])
-              and (transport['env'] is None or is_str_map(transport['env']))
-              and is_env_var_list(transport['env_vars'])
-              and (transport['cwd'] is None or is_str(transport['cwd']))
-              and (transport['environment_id'] is None or is_str(transport['environment_id'])))
-        if not ok:
-            raise AuditError(f'MCP server {name}: stdio の定義の型が不正です')
         servers.append({'name': raw_name, 'transport': transport})
     servers.sort(key=lambda server: server['name'])
     return servers
@@ -584,7 +655,7 @@ def snapshot(config_path):
     config = load_config(config_path)
     servers = []
     if config is not None:
-        check_plugins(config)
+        check_plugin_sources(config)
         servers = normalize(config)
     return {'protocol_version': PROTOCOL_VERSION, 'hash': canonical_hash(servers), 'count': len(servers),
             'servers': [display(server) for server in servers]}
@@ -696,6 +767,12 @@ git commit -m "feat: #150 Codex MCP 審査 helper を project の config.toml �
 7. `test_missing_cli_or_unsupported_version_has_no_fallback` を `test_missing_cli_has_no_fallback` に改名し、「未対応版」部分（dummy の `--version` を変えて拒否を確かめる部分）を削除する。代わりに、dummy の `--version` が `codex-cli 9.9.9` を返しても preflight と run が成功し、dummy が `mcp list` で一度も呼ばれない（呼び出し記録に `mcp` が無い）ことを確かめる新しい試験 `test_codex_version_is_not_consulted` を足す。
 8. `test_three_stages_share_home_cwd_override_and_cli` は、snapshot / verify が Codex CLI を呼ばなくなるので、「本起動の exec だけが CLI を呼び、その argv に固定 trust override が入る」ことの確認に縮める。
 9. `test_verify_failure_never_execs_native_cli` に、承認後に `.codex/config.toml` を書き換えると exec されないケース（`'config changed'`）を足す。
+10. CLI の呼び出し記録（`self.kinds()`・`self.codex_calls`）に依存する次の assert を新方式に合わせる。preflight と verify は CLI を呼ばない。
+    - 197 行 `self.kinds() == ['version', 'list']` → `[]`
+    - 227 行 `['version', 'list', 'exec']` → `['exec']`
+    - 379 行・386 行（`BundledBwrapPathTests`）の kinds 比較 → preflight は `[]`、run は `['exec']`。PATH の先頭が同梱 bwrap のディレクトリであることは、exec の記録の env で確かめる。
+    - 206-207 行 `self.codex_calls[0]['env']`（preflight が秘密 export の後であることの観測）→ 削除する。preflight は Codex CLI も MCP command も実行しないので、秘密 export との順序は境界の要件ではなくなる（entrypoint 内の実行位置は変えない。Task 4 で不変条件 72 行をこの内容に更新する）。代わりに、run の exec の env に export した秘密が入り、`CODEX_HOME`・CLI 実体が固定値であることを確かめる。
+    - 361-365 行（`SecretIsolationTests` の preflight 側）→ preflight の CLI 呼び出しが無いことを `assertEqual(self.kinds(), [])` で確かめ、秘密の差し替えの検査は run の exec の env だけで行う。
 
 - [ ] **Step 2: 試験が失敗することを確かめる**
 
@@ -723,11 +800,11 @@ if [ "$CODEX_START_MODE" = preflight ]; then
 if ! python3 -I "$CODEX_AUDIT" --config "$CODEX_PROJECT_CONFIG" verify "$CODEX_APPROVED"; then
 ```
 
-227-231 行付近のコメント（snapshot / verify の説明）を「リポジトリ同梱の `.codex/config.toml` を読む。Codex CLI は本起動の exec だけで使う」に直す。263 行のコメント「snapshot/verify（codex-mcp-audit.py の LIST_ARGS）と同じ値を渡す」は、LIST_ARGS が無くなるので「固定の trust override（検査用コンテナと本起動で同じ設定解決にするため、launcher の preflight と同じ値）」に直す。
+235 行のメッセージ「対応版を書くか空ファイルを削除して」を「固定版か latest を書くか空ファイルを削除して」にする。227-231 行付近のコメント（snapshot / verify の説明、「protocol 1」「版不一致」を含む）を「リポジトリ同梱の `.codex/config.toml` を読む。Codex CLI は本起動の exec だけで使う」に直す。263 行のコメント「snapshot/verify（codex-mcp-audit.py の LIST_ARGS）と同じ値を渡す」は、LIST_ARGS が無くなるので「固定の trust override（検査用コンテナと本起動で同じ設定解決にするため、launcher の preflight と同じ値）」に直す。
 
 - [ ] **Step 4: Dockerfile を変える**
 
-`Dockerfile.claude` の label を `LABEL io.c3c.codex-audit-protocol="2"` にし、直前のコメント「この label が対応版（1）と一致する」を「（2）」に直す。helper の COPY 前のコメントに「protocol 2 から Codex CLI を呼ばず、`/workspace/.codex/config.toml` を `tomllib` で読む（イメージの python3 は 3.11 以上が必要）」を足す。
+`Dockerfile.claude` の label を `LABEL io.c3c.codex-audit-protocol="2"` にし、直前のコメント「この label が対応版（1）と一致する」を「（2）」に直す。152 行のコメント「（c3c 第2b-2段階から起動時 MCP 審査の対応版に固定）」を「（固定版 0.156.0）」にする。helper の COPY 前のコメントに「protocol 2 から Codex CLI を呼ばず、`/workspace/.codex/config.toml` を `tomllib` で読む（イメージの python3 は 3.11 以上が必要）」を足す。
 
 - [ ] **Step 5: 試験が通ることを確かめる**
 
@@ -767,12 +844,17 @@ git commit -m "feat: #150 entrypoint の Codex 審査を project 設定の読み
 6. 旧記録の扱い: `test_old_versioned_record_is_ignored_and_clean_removes_it` を足す。`<project>/0.156.0.json` に旧記録があっても `project-config.json` が無ければ確認プロンプトが出ること、`--clean <dir>` 後に Codex subdirectory ごと消えることを確かめる。
 7. 表示: `environment_id` が非 null の server は確認の表示行に `environment: <値>` が出ることを確かめる（`test_each_server_and_approval_question_have_separate_lines` に 1 ケース足す）。
 
+`tests/test_codex_launch.py` の追加分: 142 行・332 行（`build_label` を含む）・430 行の `'label': '1'` を `'2'` にする。
+
 `tests/test_c3c_launch.py`: 113 行・181 行の protocol / 記録を protocol 2 の形にし、`SUPPORTED` 依存を外す。64 行の fake podman が返す label の既定を `'2'` にする（`self.state['label']` の既定値を探して `'2'` に揃える）。
 
 `tests/test_c3c_config.py`:
 1. `test_bundled_defaults_are_the_contract_values_and_match_the_codex_helper` を `test_bundled_defaults_are_the_contract_values` に改名し、`CODEX_SUPPORTED_VERSION`・`SUPPORTED_VERSION` の assert 2 行を削除する（`codex-mcp-audit.py` に `SUPPORTED_VERSION` が無いことを `assertNotIn('SUPPORTED_VERSION', helper)` で確かめる）。
 2. 606 行の `self.assertIn(DEFAULT_CODEX, result.stderr, '使うなら対応版を案内する')` を `self.assertIn('latest', result.stderr, '使うなら固定版か latest を案内する')` にする。
 3. fake podman の label 既定値 `'1'` を `'2'` にする（`self.state = {'image_exists': ..., 'label': '1', ...}` の全箇所）。
+4. 358 行の `{SUPPORTED}.json` の承認記録を `project-config.json`・protocol 2 の形にする。
+
+各ファイルで `grep -n "'label': '1'\|codex_version\|SUPPORTED}.json" tests/` が何も出さないことを確かめる。
 
 - [ ] **Step 2: 試験が失敗することを確かめる**
 
@@ -850,7 +932,14 @@ ok = (isinstance(doc, dict) and set(doc) == {'protocol_version', 'hash'}
 
 `check_codex_approval()` の WARNING を `"WARNING: リポジトリの .codex/config.toml に、前回の承認から変わっている（または未承認の）ローカル command 定義があります。そのコードは Codex のセッション中に実行され、export された全ての秘密を読めます:"` にする。
 
-最後に `grep -n 'CODEX_SUPPORTED_VERSION\|codex_version' c3c` が何も出さないことを確かめる。
+次の取り残しも直す。
+- 23 行のコメントは Step 3 で置き換え済み。462 行のコメントは Step 3 で置き換え済み。
+- 955 行のコメント「値の妥当性（書式・対応版）は」を「値の妥当性（書式）は」にする。
+- 1108 行のコメント「protocol 1 文書」を「protocol 2 文書」にする。
+- 1197-1216 行の `fail()` のメッセージの「対応版と異なります」を「対応 protocol と異なります」にする。
+- 1875 行のコメント「同梱 default（24.18.0 / 対応版 Codex）」を「同梱 default（24.18.0 / Codex 0.156.0）」にする。
+
+最後に `grep -nE 'CODEX_SUPPORTED_VERSION|codex_version|対応版|protocol 1|LIST_ARGS|版不一致' c3c entrypoint.sh Dockerfile.claude codex-mcp-audit.py` を実行し、Codex の版に関する記述が残っていないことを確かめる（Task 2 の entrypoint 229-231 行「protocol 1」「版不一致」・235 行「対応版を書くか」、Dockerfile 152 行・355 行を含む。235 行は「固定版か latest を書くか」にする）。
 
 - [ ] **Step 7: 試験が通ることを確かめる**
 
@@ -884,7 +973,11 @@ git commit -m "feat: #150 launcher の Codex 版照合を外し protocol 2 の�
 
 - [ ] **Step 1: test-build.sh の整合検査を外す**
 
-1877-1880 行のコメントのうち、`CODEX_SUPPORTED_VERSION`・`SUPPORTED_VERSION` との不一致を失敗にする理由の 3 行を削除し、1889-1892 行の `check` 2 件（launcher と helper の `SUPPORTED_VERSION` 一致）を削除する。同梱 default が固定版であることと、イメージ内の `codex --version` が同梱 default と一致する検査は残す。1869 行の `codex-mcp-audit.py --help` の検査は残す（`tomllib` の import を含む起動確認になる）。
+1877-1880 行のコメントのうち、`CODEX_SUPPORTED_VERSION`・`SUPPORTED_VERSION` との不一致を失敗にする理由の 3 行を削除し、1889-1892 行の `check` 2 件（launcher と helper の `SUPPORTED_VERSION` 一致）を削除する。同梱 default が固定版であることと、イメージ内の `codex --version` が同梱 default と一致する検査は残す。1869 行の `codex-mcp-audit.py --help` の検査は残す。`--help` は `tomllib` の有無を確かめないので、その直後に次の検査を足す。
+
+```bash
+check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
+```
 
 Run: `bash -n test-build.sh && grep -c SUPPORTED_VERSION test-build.sh`
 Expected: 構文エラーなし、`0`
@@ -897,7 +990,7 @@ Expected: 構文エラーなし、`0`
 - 443 行の `\`codex-version.txt\`＝対応版 \`0.156.0\`` を `\`codex-version.txt\`＝\`0.156.0\`` にし、`固定版（推奨）または \`latest\`` を `固定版または \`latest\`` にする。
 - 468 行を次にする: `` `codex-version.txt` は固定版か `latest`（未指定なら同梱 default の `0.156.0`。npm が必要で、同梱 default の `node-version.txt` か `packages.txt` の `nodejs`/`npm` で導入）。起動時審査は Codex の版に依存しない。プロジェクト側の空ファイル（opt-out）は起動を中止する。起動時審査はイメージ内の python3（3.11 以上。`tomllib` を使う）で行う ``
 - 起動フロー（482 行）の (2) の `io.c3c.codex-audit-protocol=1` を `=2` に、(3) を「同じマウント・作業ディレクトリの検査用コンテナ（非 TTY、`compose.codex-preflight.yml`、stdin は `/dev/null`）を起動し、コンテナ内の `codex-mcp-audit.py` がリポジトリ同梱の `/workspace/.codex/config.toml` を読んで、enabled な stdio 定義の canonical hash と表示用情報だけを 1 つの JSON 文書として返す。Codex CLI・agent・MCP の command はこの段階で起動しない」に、(4) の承認記録パスを `.../codex/<project>/project-config.json` に、表示項目に environment（指定時）を足す。(5) の「同じ home・CLI 実体・設定解決で」を「同じファイルを読み直して」にする。
-- 審査の範囲と限界（484 行）を次の要点で書き直す: 対象はリポジトリ同梱の `/workspace/.codex/config.toml` の `mcp_servers`（stdio は hash、helper 付きは拒否、helper 無し HTTP は外側のエグレス制限に委ねる）。同じファイルで plugin が有効化されていれば、plugin の中身を読めないため起動前に拒否する（`enabled = false` なら通す）。hash には名前・command・args・cwd・env の値・env_vars・environment_id を含め、timeout 等の診断値は含めない。未知の key・壊れた TOML・型違いは判定不能として停止する。`CODEX_DIR` の user 設定と plugin キャッシュは審査しない（Claude 経路の `~/.claude.json` と同じ。README の #29 の節）。そのため、セッションが `CODEX_DIR` の `config.toml` に MCP を書き足しても次回起動で確認は出ない。検査用コンテナは Codex CLI を実行しないので、旧方式の版取得・一覧取得の期限と cloud config 取得等の副作用の記述は削除する。固定 trust override・hooks・sandbox 設定・実行ファイルの内容・Claude 共有領域の記述は残す。
+- 審査の範囲と限界（484 行）を次の要点で書き直す: 対象はリポジトリ同梱の `/workspace/.codex/config.toml` の `mcp_servers`（stdio は hash、helper 付きは拒否、helper 無し HTTP は外側のエグレス制限に委ねる）。同じファイルで plugin が有効化されていれば、plugin の中身を読めないため起動前に拒否する（`enabled = false` なら通す）。hash には名前・command・args・cwd・env の値・env_vars・environment_id を含め、timeout 等の診断値は含めない。未知の key・壊れた TOML・型違いは判定不能として停止する。`CODEX_DIR` の user 設定と plugin キャッシュは審査しない（Claude 経路の `~/.claude.json` と同じ。README の #29 の節）。そのため、セッションが `CODEX_DIR` の `config.toml` に MCP を書き足しても次回起動で確認は出ない。検査用コンテナは Codex CLI を実行しないので、旧方式の版取得・一覧取得の期限と cloud config 取得等の副作用の記述は削除する。同じファイルで marketplace が定義されていれば、plugin の取得元を差し替えうるため起動前に拒否する。Codex は設定層を table ごとに深く merge するので、project の `url` だけのエントリが user 層の同名エントリの宛先を変えたり、project の `command` だけのエントリに user 層の `args`・`env` が合わさったりしうる（user 設定を読まないための限界）。`latest` で入った版がリポジトリ設定から新しい実行経路を取り込んでも追えない（網羅性は 0.156.0 で確認）。固定 trust override・hooks・sandbox 設定・実行ファイルの内容・Claude 共有領域の記述は残す。
 - 534 行の `Codex CLI（対応版 \`0.156.0\`）の固定版 default` を `Codex CLI（\`0.156.0\`）の固定版 default` にする。
 - 709 行の `同梱 default と \`CODEX_SUPPORTED_VERSION\`・\`codex-mcp-audit.py\` の対応版の一致` を削除する。
 
@@ -921,7 +1014,7 @@ C-3 を次の内容に置き換える。
 
 **保証する動作**: 対応 protocol の image label を起動前に検査する。検査用コンテナで project 設定を
 読み、enabled stdio の名前、command、args、cwd、env、env_vars、environment_id を正規化して hash 化し、
-初回・変更時はホストで確認する。project 設定で plugin が有効化されていれば、確認の前に停止する。
+初回・変更時はホストで確認する。project 設定で plugin が有効化されているか marketplace が定義されていれば、確認の前に停止する。
 承認記録はホスト側の agent/project 別に保存し、本起動には 1 ファイルだけを `:ro` で渡す。
 本起動でも同じファイルを読み直して一致したときだけ Codex へ進む。対象ゼロは空定義として確認なしで記録する。
 未知 key・壊れた TOML・型違い・command と url の併記・承認拒否・必要な TTY の欠如・再照合不一致は
@@ -933,6 +1026,11 @@ C-3 を次の内容に置き換える。
   セッションがそこへ MCP を書き足しても、次回起動の確認では検出しない（Claude 経路の `~/.claude.json` と同じ限界）。
 - enabled な定義に `http_headers_helper` がある場合は審査不能として拒否する。helper の無い HTTP と
   disabled server は hash 対象外で、HTTP URL の変更も再承認対象外。通信先は外側の firewall に従う。
+- Codex は設定層を table ごとに深く merge する。project の `url` だけのエントリが user 層の同名エントリ
+  （helper 付きを含む）の宛先を変えたり、project の `command` だけのエントリに user 層の `args`・`env` が
+  合わさったりしうる。確認表示は project 設定の内容だけで、実効の定義とは一致しない場合がある。
+- 網羅性（project 層の探索規則、MCP・plugin・marketplace 以外に repo から実行経路を持ち込める設定が無いこと、
+  許可 key の集合）は codex-cli 0.156.0 でだけ確認している。`latest` 等で入った別の版が新しい経路を取り込んでも追えない。
 - 定義の承認であり、実行ファイル・script・依存パッケージの内容や安全性を保証しない。本起動の
   再照合後の変更、セッション中の設定変更・再接続・plugin の追加、利用者やモデルが直接起動するコマンドは継続監視しない。
 - env の値と HTTP header は表示しないが、command/args に秘密を埋め込めば確認表示に出る。
@@ -946,25 +1044,31 @@ C-3 を次の内容に置き換える。
 `compose.codex-preflight.yml` と各 Codex 回帰テスト。実装の契約と実機受入は区別し、現在の受入状況は
 [README の Codex 節](README.md#codex-cli-を対話で使う) を参照する。
 
-**再確認契機**: Codex の公開設定形式（`mcp_servers` の key・plugin の有効化方法）・project 設定の探索規則・trust、
-起動経路、承認保存先、マウントの変更時。
+**再確認契機**: 同梱 default の Codex 版を上げるとき。Codex の公開設定形式（`mcp_servers` の key・plugin と marketplace の設定方法）・
+project 設定の探索規則・trust、起動経路、承認保存先、マウントの変更時。
 ```
 
 - [ ] **Step 4: development-invariants を直す**
 
+- 72 行: 「検査・再照合・本起動で home・cwd・CLI 実体・設定解決用 override（…、helper の `LIST_ARGS` と同値）を揃える構成を崩さない」を、「検査（snapshot）と再照合（verify）は同じ `/workspace/.codex/config.toml` を読み、Codex CLI も MCP command も実行しない。本起動は固定の CLI 実体・home・cwd・trust override（`projects={"/workspace"={trust_level="trusted"}}`）で exec する。snapshot は秘密 export の後の現在位置に置くが、CLI を実行しないので順序は境界の要件ではない」に書き換える（同じ行の他の要件は残す）。
+
 - 29 行: 承認記録パスの `mcp-approvals/codex/<project>/<対応版>.json` を `mcp-approvals/codex/<project>/project-config.json` に、`run_codex_preflight()` の説明の `protocol 1 文書` を `protocol 2 文書` にし、「`codex-mcp-audit.py` は Codex CLI を実行せず、リポジトリ同梱の `/workspace/.codex/config.toml` だけを読む。`CODEX_DIR` の設定を審査対象へ戻す場合は #150 の判断（#29 の線引き）を見直す」を 1 文足す。
 - 93 行: `（\`24.18.0\` / 起動時 MCP 審査の対応版）` を `（\`24.18.0\` / \`0.156.0\`）` に、`（\`test-build.sh\` が書式と、launcher の \`CODEX_SUPPORTED_VERSION\`・\`codex-mcp-audit.py\` の \`SUPPORTED_VERSION\` との一致を検査する。対応版を上げるときは 3 箇所を同時に変える）` を `（\`test-build.sh\` が書式とイメージ内の版の一致を検査する）` にする。
 
-- [ ] **Step 5: spec の状態行を更新し、lint と commit**
+- [ ] **Step 5: spec の状態行を更新し、実装と文書を 1 commit にまとめる**
 
 spec の **状態** 行を `設計確定（持ち主承認 2026-09-23）。実装計画: docs/superpowers/plans/2026-09-23-issue150-codex-audit-scope.md` にする。
 
 Run: `./lint.sh`
 Expected: 終了コード 0
 
+AGENTS.md の「挙動を変えたら README.md の該当節も同じコミットで更新する」に合わせ、Task 1〜3 の commit と本 Task の変更を 1 つの commit にまとめる。`PLAN` は本計画の最新の commit（Task 1 着手前の HEAD）。
+
 ```bash
 git add test-build.sh README.md SECURITY-CLAIMS.md docs/development-invariants.md docs/superpowers/specs/2026-09-23-codex-mcp-audit-scope-design.md
-git commit -m "docs: #150 Codex 起動時審査の範囲変更を README・SECURITY-CLAIMS・不変条件に反映する"
+git reset --soft "$PLAN"
+git commit -m "feat: #150 Codex 起動時 MCP 審査をリポジトリの .codex/config.toml に揃え、版の照合を外す"
+git log --oneline "$PLAN"..HEAD   # 1 行だけであること
 ```
 
 ---
@@ -994,7 +1098,7 @@ Expected: `FAIL: 0`。README「変更後の確認」節で本変更に該当す�
 
 1. `.c3c/codex-version.txt` を `latest` にして `c3c codex -b <fixture>` を実行する。Expected: npm の最新（2026-09-23 時点 0.156.1）が入り、版を理由に止まらず、審査（対象 0 件）を経て TUI に入る。`podman run --rm <image> codex --version` で実際の版を記録する。
 2. fixture の `.codex/config.toml` に `[mcp_servers.probe]` の stdio 定義（`command = "/bin/true"`）を書いて `c3c codex <fixture>` を実行する。Expected: ホストで確認プロンプトが出る。`n` で Codex が起動しないこと、`y` で起動し、2 回目は確認が省略されることを確認する。
-3. `.codex/config.toml` に `[plugins."probe@fxmkt"]\nenabled = true` を足して起動する。Expected: 確認の前に plugin 有効化を理由に停止し、Codex は起動しない。
+3. `.codex/config.toml` に `[plugins."probe@fxmkt"]\nenabled = true` を足して起動する。Expected: 確認の前に plugin 有効化を理由に停止し、Codex は起動しない。plugin の行を消し、`[marketplaces.fxmkt]\nsource_type = "git"\nsource = "https://example.invalid/r.git"` を足して起動する。Expected: marketplace 定義を理由に停止する。
 4. protocol 1 の旧イメージ（Task 前にビルドしたもの）で `-b` なしに起動し、label 不一致で `-b` を案内して止まることを確認する（旧イメージが無ければ `not run`）。
 
 TUI の操作と確認プロンプトへの応答は持ち主が行う。確認プロンプトへの応答を自動化しない。

@@ -413,3 +413,19 @@ git commit -m "docs: #149 の実機受入を記録する"
 区分: 境界 — `compose.yml` のマウント（`:ro` 保護の対象）と launcher の bind 元の決定という、`docs/development-invariants.md` に載る境界機構を変えるため。計画・実装完了時（PR 前）・PR 後の 3 段階で Claude と Codex の二重レビューを行う。
 
 推奨実装: Opus — `compose.yml:96-97` のとおりこの `:ro` はホスト側の任意コマンド実行を防ぐセキュリティ境界で、グローバル指示の「セキュリティ境界を含むときは Opus」に当たる。Task 2 はコンテナの実起動を伴う（判定基準 1 で Claude）。Sonnet は境界変更のため推さない。Codex は host の checkout で完結せず、Task 2 の実機受入を担えないため推さない。
+
+実装: Opus（持ち主指定。2026-09-24「このまま #149 を進めて」。実行方法は executing-plans）
+
+## 実機受入の結果（Task 2）
+
+2026-09-24、ホスト（x86_64、Podman 5.8.6）で、commit `eba50b7` の c3c を使って確認した。fixture は新しく作った隔離プロジェクト（git リポジトリ。`.c3c/env` は Codex 専用の空の `CODEX_DIR` だけで、`GITCONFIG_FILE` は未設定）。`c3c codex -b` でビルドしたイメージは `98f9df4ab59c`、Codex は 0.156.0。持ち主の Codex 認証とホストの実 `~/.codex` は使っていない。
+
+| Step | 実測 |
+| --- | --- |
+| 1 `--check` | `[OK]   git 設定: GITCONFIG_FILE 未設定（空の <c3c>/empty.gitconfig を ~/.gitconfig へ :ro で bind）`。WARN は fixture の `CODEX_DIR` のパーミッションだけ（700 にして解消）。イメージが未ビルドだったので、ドリフトの WARNING は出ない |
+| 2 Codex sandbox 内の git | コンテナ内の `stat -c %F ~/.gitconfig` は `regular empty file`。`podman inspect` の bind 元は `<c3c>/empty.gitconfig`、`RW=false`。#145 と同じ方法（Codex プロセスと同じ PATH、`setpriv --ambient-caps=-all --inh-caps=-all`）で `codex sandbox -c sandbox_mode=…` を実行した。`git status --short --branch` は、read-only と workspace-write のどちらも rc 0（`## master`）。sandbox 内でも `~/.gitconfig` は `regular empty file` |
+| 3 書き込み不可 | `git config --global user.name x` は rc 4（`could not write config file … Device or resource busy`）。追記は `Read-only file system`。ホスト側の `empty.gitconfig` は 0 バイトのまま |
+| 4 `GITHUB_MAIN_PAT` と #25 | `SECRETS_DIR/GITHUB_MAIN_PAT`（ダミー値）を置いた。agent（Codex）プロセスの `/proc/<pid>/environ` にある `GIT_CONFIG_COUNT=1`・`GIT_CONFIG_KEY_0=credential.helper`・`GIT_CONFIG_VALUE_0=`（空）を、`podman exec` で同じ値のまま与えて確かめた（agent のプロセス木で直接実行したのではなく、その環境を再現したもの）。(1) `GITCONFIG_FILE` 未設定: `git config --show-origin --get-all credential.helper` は `command line:` の空値 1 件だけ。(2) `helper = store` を書いた専用ファイルを `GITCONFIG_FILE` に指定: `file:/home/node/.gitconfig	store` の後に `command line:` の空値の順（リセットが効く） |
+| 5 設定時と Claude 経路 | `GITCONFIG_FILE=~/.gitconfig`: コンテナ内の `git config --global user.name` はホストの値を返した。bind 元はホストの `~/.gitconfig`、`RW=false`。`c3c claude`（PTY 付きで起動し、プロンプトは送っていない。`CC_AGENT=claude`）で `GITCONFIG_FILE` を未設定にした場合: `~/.gitconfig` は `regular empty file 0`、書き込みは rc 4、bind 元は `empty.gitconfig`、`RW=false`、ホスト側は 0 バイトのまま |
+
+補足: 最初の `./test-build.sh --launcher-only` で 1 件だけ FAIL した（`build と run に共有・スキル・plugin・IPv6 の override が共存する`）。ログでは、`-b` の中で GitHub meta を取りに行ったときの HTTP 403 が原因だった。直後の `api.github.com/meta` は 200 を返し、再実行では PASS=311・FAIL=0 になった。

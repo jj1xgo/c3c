@@ -75,7 +75,7 @@ nq > 0 {
 }
 AWKEOF
 
-reason='gh pr review --approve（PR 承認）の自律実行は禁止です（issue #10）。承認は auto-merge の引き金になりうるため、承認とマージは人間がホスト側で行います。値付き承認フラグは --approve=false 等でも拒否します。レビュー補助が目的なら承認フラグ自体を省き、--comment / --request-changes を使ってください。'
+reason='gh pr review --approve（PR 承認）の自律実行は禁止です（issue #10）。承認は auto-merge の引き金になりうるため、人間が行います。値付き承認フラグは --approve=false 等でも拒否します。レビュー補助が目的なら承認フラグ自体を省き、--comment / --request-changes を使ってください。'
 
 emit_deny() {
   if command -v jq >/dev/null 2>&1; then

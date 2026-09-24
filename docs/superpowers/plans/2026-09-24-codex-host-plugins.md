@@ -233,7 +233,7 @@ Run: `TMPDIR=/tmp ./test-build.sh --launcher-only 2>&1 | grep -E 'FAIL|PASS:|結
 Expected: 新関数の check の大半が `[FAIL]`（未実装のため。未設定ケースと「CODEX_DIR 未設定」の一部は偶然 PASS しうる）。既存テストは PASS のまま。README の E7 は、許可リストをまだ変えていないので PASS のまま。
 
 Run: `python3 -m unittest tests.test_codex_launch.HostPluginsTests -v`
-Expected: `test_host_plugins_override_reaches_build_preflight_and_run_after_mountpoint` が FAIL（override が無い）、`test_without_opt_in_codex_path_has_no_override` は PASS。
+Expected: 両方 FAIL。1 つ目は override が無いため、2 つ目は注入した `C3C_CODEX_PLUGINS_SOURCE` をまだ破棄しないため（`assertIsNone` が失敗する）。
 
 - [ ] **Step 4: override ファイルを作る**
 
@@ -364,8 +364,8 @@ prepare_codex_host_plugins() {
 
 - [ ] **Step 9: テストが通ることを確かめる**
 
-Run: `./lint.sh; echo lint_rc=$?; TMPDIR=/tmp ./test-build.sh --launcher-only > /tmp/c3c-launcher.log 2>&1; echo launcher_rc=$?; tail -5 /tmp/c3c-launcher.log; python3 -m unittest tests.test_codex_launch -v 2>&1 | tail -3`
-Expected: `lint_rc=0`・警告ゼロ（Task 2 の lint 追加前なので、compose 検査は既存分のみ）。`launcher_rc=0` で FAIL 0。E7（許可リストと README 表の一致）も PASS。`tests.test_codex_launch` は `OK`。
+Run: `./lint.sh; echo lint_rc=$?; TMPDIR=/tmp ./test-build.sh --launcher-only > /tmp/c3c-launcher.log 2>&1; echo launcher_rc=$?; tail -5 /tmp/c3c-launcher.log; python3 -m unittest tests.test_codex_launch > /tmp/c3c-codex-launch.log 2>&1; echo unittest_rc=$?; tail -3 /tmp/c3c-codex-launch.log`
+Expected: `lint_rc=0`・警告ゼロ（Task 2 の lint 追加前なので、compose 検査は既存分のみ）。`launcher_rc=0` で FAIL 0。E7（許可リストと README 表の一致）も PASS。`unittest_rc=0` で末尾が `OK`。
 
 - [ ] **Step 10: Commit**
 
@@ -563,8 +563,8 @@ git commit -m "docs: CODEX_HOST_PLUGINS（ホストの Codex plugin キャッシ
 cache_fingerprint() (
   set -o pipefail
   cd ~/.codex/plugins || exit 1
-  { find cache -printf '%y %m %U %T@ %p -> %l\n' | LC_ALL=C sort &&
-    find cache -type f -exec sha256sum -- {} + | LC_ALL=C sort; } | sha256sum
+  { find cache -printf '%y %m %U %T@ %p -> %l\0' | LC_ALL=C sort -z &&
+    find cache -type f -exec sha256sum --zero -- {} + | LC_ALL=C sort -z; } | sha256sum
 )
 cache_fingerprint > /tmp/c3c-cache-before.txt; echo rc=$?
 ```
@@ -620,19 +620,21 @@ git commit -m "docs: CODEX_HOST_PLUGINS の実機受入を記録する"
 
 - sandbox: `danger-full-access`。`./lint.sh` の Compose 検査、`test-build.sh --config-ro-only`、Task 4 は rootless Podman を使い、Codex の workspace-write sandbox（bubblewrap）の中では user namespace を作れず動かない見込み（推測。未実測）。持ち主がこれを許可しない場合は、Task 1〜3 を workspace-write で実装し、Podman を使う検証（Task 1 Step 9 と Task 3 Step 6 の lint、Task 2 Step 2・3・5、Task 4）を `not run` として Claude の対話セッションへ渡す。
 - ネットワーク: Task 1〜3 は不要。Task 2 Step 5 のテストイメージが無い場合の `--build-only` と Task 4 の `-b` はパッケージ取得のため必要。
-- 対話が要る A3 は Codex では行わず、持ち主か Claude の対話セッションが担う。
+- Task 4 のうち Codex が行うのは受入前の指紋取得と A1（`--check`）だけ。A2〜A6（と A4 末尾の受入後の指紋比較）は TTY のある対話起動や稼働中の対話コンテナを前提にする（Codex 経路の初回承認は TTY が無いと起動しない）ため、持ち主か Claude の対話セッションが担う。
 - `/goal` に渡す文面:
 
 ```text
-docs/superpowers/plans/2026-09-24-codex-host-plugins.md の Task 1〜3 を、ブランチ feat/codex-host-plugins の上で Step 順に実装する。各 Step の Run を実行し、Expected と一致しなければその場で止めて、実行したコマンドと出力を報告する。計画にない設計変更はしない（必要なら止めて報告）。続けて Task 4 を A3 以外について実行し、結果を docs/superpowers/plans/2026-09-24-codex-host-plugins-results.md に記録する。A3 は not run として理由を書く。commit は計画の各 Step のとおり行い、push と PR 作成はしない。
+docs/superpowers/plans/2026-09-24-codex-host-plugins.md の Task 1〜3 を、ブランチ feat/codex-host-plugins の上で Step 順に実装する。各 Step の Run を実行し、Expected と一致しなければその場で止めて、実行したコマンドと出力を報告する。計画にない設計変更はしない（必要なら止めて報告）。続けて Task 4 のうち、前提のキャッシュ指紋の取得（受入前）と A1 だけを実行し、結果を docs/superpowers/plans/2026-09-24-codex-host-plugins-results.md に記録する。A2〜A6 は TTY のある対話起動が要るため実行せず、not run として理由を書く。commit は計画の各 Step のとおり行い、push と PR 作成はしない。
 ```
 
 区分: 境界（`compose.yml` 系の境界マウント・ホストで実行される内容の書込み経路・`docs/development-invariants.md` の不変条件を変えるため）。計画・PR 前・PR 後の 3 段階の二重レビューを行う。
 
-推奨実装: Codex（host の checkout と実 Podman で完結し、各 Step のコードと Expected を逐語で確定させたため。判定基準 4 に当たる。ただし上記のとおり Podman の検証には `danger-full-access` が要る見込みで、それを許可しない場合は Claude（Sonnet）が次点。Sonnet ならホストの Claude Code から Podman をそのまま使え、検証を分割せずに済む。A3 は対話操作なので持ち主か Claude の対話セッションが担う）。
+推奨実装: Codex（host の checkout と実 Podman で完結し、各 Step のコードと Expected を逐語で確定させたため。判定基準 4 に当たる。ただし上記のとおり Podman の検証には `danger-full-access` が要る見込みで、それを許可しない場合は Claude（Sonnet）が次点。Sonnet ならホストの Claude Code から Podman をそのまま使え、検証を分割せずに済む。Task 4 の A2〜A6 は対話操作なので持ち主か Claude の対話セッションが担う）。
 
 ## レビューの記録
 
 - 1 巡目（2026-09-24、対象 `63e4538`）: Codex（GPT-6 Astra、`codex exec --sandbox read-only`）「修正後に渡せる」Important 2・Minor 2。Claude（Opus 5.5、`claude -p` headless、modelUsage で確認）「修正後に渡せる」Important 3・Minor 7。
   - 反映: 他の rw マウントとの重なりの WARNING と文書の保証範囲の限定（両者 Important）、`/` に正規化された `CODEX_DIR` の重なり見落とし（Codex I-2）、Codex 実行条件と `/goal` 文面（Claude I-2）、`c3c codex` 経路のテスト（Claude I-3）、実 Podman fixture の source を CONTEXT の外へ（Codex I-1）、キャッシュ指紋に内容とリンク先を含める（Codex M-3）、pipefail と skill 集合の比較（Codex M-4）、作成前の検査（Claude M-1）、symlink の source の実体解決テスト（Claude M-2）、A3 のログ確認と A6 の有効化行の残存（Claude M-3）、inode 共有の記述を弱める（Claude M-4）、ドリフト WARNING の告知（Claude M-6）、`CODEX_HOME` 変更構成は対象外（Claude M-7）。
+  - 確認限定巡（対象 `9adba9a`）: Codex「修正後に渡せる」。Important 2 件は修正済み、Minor 2 件の残り（指紋を NUL 区切りに、unittest の終了コード）を次の commit で反映（Minor のみのため再確認は省略）。
+  - 確認限定巡（対象 `9adba9a`）: Claude（Opus 5.5、`--resume`）「修正後に渡せる」。Important・Minor はすべて修正済み。修正で入った Minor 2 件（Step 3 の Expected の誤り、`/goal` に対話が要る受入項目を含めていた）を反映。Critical・Important が残らないため、これ以上の確認巡は回さない。
   - Claude M-5（キャッシュ内の絶対 symlink）は実測で解消: 2026-09-24 のホストの `~/.codex/plugins/cache` に絶対パスの symlink は 0 件（`find -type l -lname '/*'`）。

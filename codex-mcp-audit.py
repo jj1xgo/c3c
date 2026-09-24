@@ -40,6 +40,8 @@ APPROVAL_VALUES = ('auto', 'prompt', 'writes', 'approve')
 SURFACE_VALUES = ('code_mode', 'deferred', 'direct')
 U16_MAX = 2 ** 16 - 1
 U64_MAX = 2 ** 64 - 1
+# Duration::MAX（u64::MAX 秒 + 999,999,999 ns）を超えない f64 の上限（排他）。rustc 1.95 で 2^64 は拒否、直前の f64 は許可と実測。
+SECONDS_LIMIT = 2.0 ** 64
 RECORD_KEYS = frozenset(('protocol_version', 'hash'))
 HASH_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 CONTROL_CHARS = re.compile(r'[\x00-\x1f\x7f]')
@@ -66,8 +68,14 @@ def is_int_in(value, low, high):
 
 
 def is_seconds(value):
-    """非負で有限の秒数（Duration::try_from_secs_f64 が受け付ける値）。"""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    """Duration::try_from_secs_f64 が受け付ける秒数。上流は値を f64 にしてから渡し、非負・非 NaN・2^64 未満を求める。"""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        secs = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(secs) and 0 <= secs < SECONDS_LIMIT
 
 
 def is_table(value):

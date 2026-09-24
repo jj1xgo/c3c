@@ -211,14 +211,23 @@ class RejectionTests(AuditCase):
                'default_tools_approval_mode': ('"wrong"',),
                'omit_tools_from': ('["wrong"]',),
                'startup_timeout_ms': ('18446744073709551616',),
-               'startup_timeout_sec': ('-1', 'nan', 'inf'),
-               'tool_timeout_sec': ('-1.5', 'nan', '-inf')}
+               'startup_timeout_sec': ('-1', 'nan', 'inf', '1e100', '18446744073709551616.0', '1' + '0' * 400),
+               'tool_timeout_sec': ('-1.5', 'nan', '-inf', '1e100', '18446744073709551616.0', '1' + '0' * 400)}
         for key, values in bad.items():
             for value in values:
                 for head in ('[mcp_servers.x]\nenabled = false\ncommand = "a"\n',
                              '[mcp_servers.x]\nurl = "https://a.example"\n'):
                     with self.subTest(key=key, value=value, head=head[15:30]):
                         self.rejected(f'{head}{key} = {value}\n', key)
+
+    def test_seconds_boundary_values_are_accepted_in_disabled_and_http_entries(self):
+        # Duration::try_from_secs_f64 の境界（rustc 1.95 で実測）: 2^64 直前の f64・i64 最大・-0.0・最小の非正規数は Ok。
+        for value in ('18446744073709549568.0', '9223372036854775807', '-0.0', '5e-324'):
+            for key in ('startup_timeout_sec', 'tool_timeout_sec'):
+                for head in ('[mcp_servers.x]\nenabled = false\ncommand = "a"\n',
+                             '[mcp_servers.x]\nurl = "https://a.example"\n'):
+                    with self.subTest(key=key, value=value, head=head[15:30]):
+                        self.assertEqual(self.snapshot(f'{head}{key} = {value}\n')['count'], 0)
 
     def test_valid_values_for_all_keys_are_accepted_in_a_disabled_entry(self):
         text = ('[mcp_servers.x]\nenabled = false\ncommand = "a"\nargs = ["b"]\nenv = { K = "v" }\n'

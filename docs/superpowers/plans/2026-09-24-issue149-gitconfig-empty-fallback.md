@@ -405,6 +405,11 @@ git commit -m "docs: #149 の実機受入を記録する"
 - Codex（gpt-6-astra、`codex exec --sandbox read-only`）: 修正後に渡せる。Important 1（挙動変更と README が別 commit になる手順）、Minor 2（build・preflight の export を試験していない、RUN_DIR のコロンを試験していない）。すべて反映した。
 - Claude（claude-opus-5-5、headless `claude -p`、Read/Grep/Glob のみ）: 修正後に渡せる。Important 2（共有 stash を push/pop する手順、`podman exec` からは #25 の `GIT_CONFIG_*` が見えない受入手順）、Minor 6。Minor は M-1〜M-5 を反映した。M-6（`test-runtime.sh` で実マウントを検査する）は採らない: 実マウントの挙動は Task 2 の実機受入で確かめ、runtime test の compose 環境の配線を増やすほどの回帰リスクが無いため。
 
+## 計画レビュー（確認限定巡、fbce603）
+
+- Codex（gpt-6-astra、read-only）: Important 1・Minor 2 すべて解消、新たな破損なし。実装に渡せる。
+- Claude（claude-opus-5-5、headless、1 巡目の会話を `--resume`）: Important 2・Minor 5 すべて解消、新たな破損なし。実装に渡せる。`codex -b <dir>` の呼び出し形は未確認（Task 1 に合わせ方の指示あり）。
+
 区分: 境界 — `compose.yml` のマウント（`:ro` 保護の対象）と launcher の bind 元の決定という、`docs/development-invariants.md` に載る境界機構を変えるため。計画・実装完了時（PR 前）・PR 後の 3 段階で Claude と Codex の二重レビューを行う。
 
 推奨実装: Opus — `compose.yml:96-97` のとおりこの `:ro` はホスト側の任意コマンド実行を防ぐセキュリティ境界で、グローバル指示の「セキュリティ境界を含むときは Opus」に当たる。Task 2 はコンテナの実起動を伴う（判定基準 1 で Claude）。Sonnet は境界変更のため推さない。Codex は host の checkout で完結せず、Task 2 の実機受入を担えないため推さない。

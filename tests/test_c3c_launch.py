@@ -46,7 +46,8 @@ except OSError:
 record = {'args': args, 'stdin': stdin,
           'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
                                                   'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
-                                                  'CONTEXT', 'CLAUDE_CONTAINER_DIR', 'ASSET_HASH', 'BASE_IMAGE')}}
+                                                  'CONTEXT', 'CLAUDE_CONTAINER_DIR', 'ASSET_HASH', 'BASE_IMAGE',
+                                                  'C3C_GITCONFIG_SOURCE', 'GITCONFIG_FILE')}}
 with open(os.path.join(root, 'calls'), 'a') as out:
     out.write(json.dumps(record) + '\\n')
 def save():
@@ -900,6 +901,109 @@ class GitIdentityThroughLauncherTests(LaunchCase):
         # 別プロジェクトの記憶は別ファイル（自分の env・GIT_* の継承では他 repo へ誘導しない）。
         result = self.run_c3c(str(linked), env_extra={'GIT_DIR': str(clone / '.git'), 'GIT_WORK_TREE': str(clone)})
         self.assert_single_run(result, 'claude', context=linked)
+
+
+class GitconfigSourceTests(LaunchCase):
+    """#149: GITCONFIG_FILE 未設定時の ~/.gitconfig は同梱の空ファイル（:ro）。bind 元は launcher が決める。"""
+
+    def empty(self):
+        return self.runner / 'empty.gitconfig'
+
+    def append_env(self, line):
+        with (self.conf / 'env').open('a') as handle:
+            handle.write(line + '\n')
+
+    def test_repository_ships_an_empty_regular_file(self):
+        path = REPO / 'empty.gitconfig'
+        self.assertFalse(path.is_symlink())
+        self.assertTrue(path.is_file())
+        self.assertEqual(path.stat().st_size, 0)
+
+    def test_unset_uses_the_bundled_empty_file(self):
+        run = self.assert_single_run(self.run_c3c('claude', str(self.proj)), 'claude')
+        self.assertEqual(run['env']['C3C_GITCONFIG_SOURCE'], str(self.empty()))
+        self.assertIsNone(run['env']['GITCONFIG_FILE'])
+
+    def test_set_uses_the_configured_file(self):
+        gitconfig = self.root / 'host.gitconfig'
+        gitconfig.write_text('[user]\n\tname = x\n')
+        self.append_env(f'GITCONFIG_FILE={gitconfig}')
+        run = self.assert_single_run(self.run_c3c('claude', str(self.proj)), 'claude')
+        self.assertEqual(run['env']['C3C_GITCONFIG_SOURCE'], str(gitconfig))
+
+    def test_host_environment_value_is_ignored(self):
+        result = self.run_c3c('claude', str(self.proj), env_extra={'C3C_GITCONFIG_SOURCE': '/etc/shadow'})
+        run = self.assert_single_run(result, 'claude')
+        self.assertEqual(run['env']['C3C_GITCONFIG_SOURCE'], str(self.empty()))
+
+    def test_env_file_cannot_set_the_source(self):
+        self.append_env('C3C_GITCONFIG_SOURCE=/etc/shadow')
+        result = self.run_c3c('claude', str(self.proj))
+        run = self.assert_single_run(result, 'claude')
+        self.assertEqual(run['env']['C3C_GITCONFIG_SOURCE'], str(self.empty()))
+        self.assertIn('解釈しないため無視', result.stderr)
+
+    def test_broken_fallback_stops_before_any_container(self):
+        target = self.root / 'other.gitconfig'
+        target.write_text('')
+        for label, breaker in (('nonempty', lambda p: p.write_text('[credential]\n\thelper = store\n')),
+                               ('symlink', lambda p: (p.unlink(), p.symlink_to(target))),
+                               ('missing', lambda p: p.unlink()),
+                               ('directory', lambda p: (p.unlink(), p.mkdir()))):
+            with self.subTest(label=label):
+                path = self.empty()
+                if path.is_dir() and not path.is_symlink():
+                    path.rmdir()
+                elif path.exists() or path.is_symlink():
+                    path.unlink()
+                path.write_text('')
+                breaker(path)
+                result = self.run_c3c('claude', str(self.proj))
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('empty.gitconfig', result.stderr)
+                self.assert_no_containers()
+
+    def test_check_reports_broken_fallback(self):
+        self.empty().write_text('x\n')
+        result = self.run_c3c('--check', str(self.proj))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('empty.gitconfig', result.stdout + result.stderr)
+        self.assert_no_containers()
+
+    def test_check_reports_the_fallback(self):
+        result = self.run_c3c('--check', str(self.proj))
+        self.assertIn('git 設定: GITCONFIG_FILE 未設定', result.stdout)
+
+    def test_colon_in_source_path_stops(self):
+        gitconfig = self.root / 'a:b.gitconfig'
+        gitconfig.write_text('')
+        self.append_env(f'GITCONFIG_FILE={gitconfig}')
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('コロン', result.stderr)
+        self.assert_no_containers()
+
+    def test_colon_in_run_dir_stops(self):
+        # GITCONFIG_FILE 未設定のまま、c3c の置き場所（RUN_DIR）にコロンを含める。
+        colon_runner = self.root / 'a:b'
+        colon_runner.mkdir()
+        copy_tree_keeping_symlinks(REPO, colon_runner)
+        result = self.run_entry(colon_runner / 'c3c', 'claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('コロン', result.stderr)
+        self.assert_no_containers()
+
+    def test_every_compose_call_gets_the_source(self):
+        # 明示ビルド → Codex の preflight → 本起動の 3 種すべてに同じ bind 元が渡る。
+        self.state['image_exists'] = False
+        self.approve_codex()
+        result = self.run_c3c('codex', '-b', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        self.assertEqual(len(self.preflight_calls()), 1)
+        self.assertEqual(len(self.main_runs()), 1)
+        for call in self.compose_calls():
+            self.assertEqual(call['env']['C3C_GITCONFIG_SOURCE'], str(self.empty()), call['args'])
 
 
 if __name__ == '__main__':

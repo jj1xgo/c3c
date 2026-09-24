@@ -98,6 +98,8 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 | プロセス制限 | CapInh/Prm/Eff/Bnd/Amb=0、NoNewPrivs=1、Seccomp=2 |
 | `shell_environment_policy.set.PATH="/usr/bin:/bin"` を指定 | 元の `Can't mount proc on /proc` で rc 1（文書化した対象外条件が実在する） |
 
+`git status` の rc 128 は #149 で対処した。`GITCONFIG_FILE` 未設定時の bind 元を c3c 同梱の空ファイル（`empty.gitconfig`、`:ro`）にし、`~/.gitconfig` が通常ファイルになるようにした。対処後の実測は `docs/superpowers/plans/2026-09-24-issue149-gitconfig-empty-fallback.md` の末尾に記録する。
+
 コンテナ側では、非特権の `iptables -S` が拒否され、Codex プロセスの capability は 0 だった。HTTPS は `api.github.com` が 200、`example.com` と `http://api.github.com` は接続できなかった。node は固定リンク・その親・同梱実体とその親のいずれにも書き込めない（root:root、755）。
 
 **認証済み対話セッションでの受入**: 2026-09-23、`537fd32` で同じ fixture を `c3c codex -b` により再ビルドした（image `2a5a27e481f5`）。このイメージには `/usr/bin/bwrap` 0.12.0 が残っている。固定リンクは npm の `codex-linux-x64` の `codex-resources/bwrap`（`bubblewrap built for Codex`）を指す。

@@ -35,13 +35,16 @@
 
 1. **ホスト環境・env ファイルからの注入**: シェルに `C3C_GITCONFIG_SOURCE=/etc/shadow` が export されていても、`.c3c/env` に同じ行があっても、bind 元は launcher の決めた値になる（env ファイルの行には WARNING）。→ Task 1 Step 1 の `test_host_environment_value_is_ignored`・`test_env_file_cannot_set_the_source`。
 2. **同梱ファイルの欠落・改変**: 部分的なコピー（`c3c` だけを別の場所へ置く）、内容の追記、symlink への差し替えで、中身のある設定や別ファイルが `~/.gitconfig` になる。→ 停止する（`test_broken_fallback_stops_before_any_container`、`--check` は `test_check_reports_broken_fallback`）。
-3. **`GITHUB_MAIN_PAT` あり・`GITCONFIG_FILE` なし**: `credential.helper` のリセットは従来どおり効く（`GIT_CONFIG_*` は `entrypoint.sh` が設定し、本変更は触れない）。→ Task 3 の実機受入の手順 4 で `git config --show-origin --get-all credential.helper` を確認する。
-4. **コンテナ内からの書き込み**: `git config --global user.name x` が EROFS 系で失敗し、ホスト側の `empty.gitconfig` が 0 バイトのまま。→ Task 3 の手順 3。
-5. **RUN_DIR にコロンを含む配置**: `/opt/c:3c/` のような置き場所で compose が volume を誤分割しない（起動前に停止する）。→ `test_colon_in_source_path_stops`。
+3. **`GITHUB_MAIN_PAT` あり・`GITCONFIG_FILE` なし**: `credential.helper` のリセットは従来どおり効く（`GIT_CONFIG_*` は `entrypoint.sh` が設定し、本変更は触れない）。→ Task 2 の実機受入の Step 4 で、agent のプロセス木の中から `git config --show-origin --get-all credential.helper` を確認する。
+4. **コンテナ内からの書き込み**: `git config --global user.name x` が EROFS 系で失敗し、ホスト側の `empty.gitconfig` が 0 バイトのまま。→ Task 2 の Step 3。
+5. **RUN_DIR にコロンを含む配置**: `/opt/c:3c/` のような置き場所で compose が volume を誤分割しない（`GITCONFIG_FILE` 未設定でも起動前に停止する）。これは本変更で新しく生まれる停止条件で、README とリリースノートに書く。→ `test_colon_in_run_dir_stops`（設定した `GITCONFIG_FILE` 側は `test_colon_in_source_path_stops`）。
+6. **build・preflight・本起動のすべての compose 呼び出し**: 将来 guard より前に compose 呼び出しが増えても、既定値 `/dev/null` へ黙って戻らない。→ `test_every_compose_call_gets_the_source`。
 
 ---
 
-### Task 1: launcher と compose のフォールバックを空ファイルに替える
+### Task 1: launcher・compose・文書のフォールバックを空ファイルに替える（1 commit）
+
+挙動の変更と README の更新は同じ commit にする（root `AGENTS.md`「挙動を変えたら README.md の該当節も同じコミットで更新する」）。そのため Task 1 は最後の Step でだけ commit する。
 
 **Files:**
 - Create: `empty.gitconfig`（0 バイト）
@@ -50,6 +53,9 @@
 - Modify: `lint.sh`（`compose_mount_is_ro` の対象に `/home/node/.gitconfig` を追加）
 - Modify: `test-build.sh:1361`（runner コピー一覧に `empty.gitconfig`）、`test-build.sh` の E3（`compose-env` の検査に 1 行）
 - Test: `tests/test_c3c_launch.py`（fake podman の記録キーと新しい試験クラス）
+- Modify: `README.md:187`（環境変数表）、`README.md:405-415`（「コンテナ内 git commit（`GITCONFIG_FILE`）」）、`README.md:534`（アーキテクチャ節の同梱ファイル一覧）
+- Modify: `docs/development-invariants.md`（`compose.yml` の項と `c3c` の項に 1 項目ずつ）
+- Modify: `docs/codex-proc-investigation.md`（`git status` の行の後に #149 での対処を追記）
 
 **Interfaces:**
 - Produces: 環境変数 `C3C_GITCONFIG_SOURCE`（launcher → compose）。値は `GITCONFIG_FILE`（展開後の絶対パス）または `$RUN_DIR/empty.gitconfig`。
@@ -148,7 +154,31 @@ class GitconfigSourceTests(LaunchCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('コロン', result.stderr)
         self.assert_no_containers()
+
+    def test_colon_in_run_dir_stops(self):
+        # GITCONFIG_FILE 未設定のまま、c3c の置き場所（RUN_DIR）にコロンを含める。
+        colon_runner = self.root / 'a:b'
+        colon_runner.mkdir()
+        copy_tree_keeping_symlinks(REPO, colon_runner)
+        result = self.run_entry(colon_runner / 'c3c', 'claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('コロン', result.stderr)
+        self.assert_no_containers()
+
+    def test_every_compose_call_gets_the_source(self):
+        # 明示ビルド → Codex の preflight → 本起動の 3 種すべてに同じ bind 元が渡る。
+        self.state['image_exists'] = False
+        self.approve_codex()
+        result = self.run_c3c('codex', '-b', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        self.assertEqual(len(self.preflight_calls()), 1)
+        self.assertEqual(len(self.main_runs()), 1)
+        for call in self.compose_calls():
+            self.assertEqual(call['env']['C3C_GITCONFIG_SOURCE'], str(self.empty()), call['args'])
 ```
+
+`test_every_compose_call_gets_the_source` の呼び出し形（`codex -b <dir>`）が parser に合わない場合は、既存の `-b` 試験（`grep -n "'-b'" tests/test_c3c_launch.py`）と Codex 経路の試験（`approve_codex()` の使用箇所）の形に合わせる。fake podman の build は `state['label'] = state.get('build_label', '2')` を立てるので、ビルド後の label 検査は通る。
 
 注意: `run_c3c('claude', ...)` の初回で CLI 選択の記憶が作られる挙動は既存の `EntryResolutionTests` と同じ。既存の試験が `claude` を明示して単一 run を得ている形（`assert_run_dir`）に合わせている。`--check` の呼び出し形が既存の試験と違う場合は、既存の `--check` 試験（`grep -n "'--check'" tests/test_c3c_launch.py`）の形に合わせる。
 
@@ -224,16 +254,17 @@ guard_gitconfig_file() {
 
 `test-build.sh:1361` の `cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,...,codex-version.txt}` の波括弧内の末尾に `,empty.gitconfig` を足す（足さないと隔離 runner で guard が停止し、C0 以降が全部赤になる）。
 
-`test-build.sh` の E3 の `check "E3: 許可キー 9 件が全て compose へ届く..."` の条件の末尾（`&& grep -qxF 'CODEX_DIR=$e_codex' '$root/compose-env'"` の手前）に次を足す:
+`test-build.sh` の E3（`check "E3: 許可キーには WARNING が出ない" ...` の直後、`printf '%s\n' "$out" >> "$LOG_FILE"` の前）に、許可キーとは別の検査として次を足す（`C3C_GITCONFIG_SOURCE` は許可キーではないので E3 の件数に混ぜない）:
 
 ```bash
-      && grep -qxF 'C3C_GITCONFIG_SOURCE=$e_gitcfg' '$root/compose-env' \
+  check "E3b: GITCONFIG_FILE 設定時は ~/.gitconfig の bind 元がそのファイルになる" \
+    grep -qxF "C3C_GITCONFIG_SOURCE=$e_gitcfg" "$root/compose-env"
 ```
 
 - [ ] **Step 6: 試験を通す**
 
 Run: `python3 -m unittest tests.test_c3c_launch -v 2>&1 | tail -5`
-Expected: `OK`（新クラス 10 件を含む）。
+Expected: `OK`（新クラス 11 件を含む）。
 
 Run: `python3 -m unittest discover -s tests -p 'test_*.py' 2>&1 | tail -3`
 Expected: `OK`（`test_codex_launch.py` の runner コピーは dotfile 以外を全部コピーするので `empty.gitconfig` も入る）。
@@ -246,24 +277,20 @@ Expected: FAIL 0。
 
 - [ ] **Step 7: 修正前に戻して試験が赤になることを確かめる**
 
-Run: `git stash push c3c compose.yml && python3 -m unittest tests.test_c3c_launch.GitconfigSourceTests 2>&1 | tail -3; git stash pop`
-Expected: stash 中は FAIL/ERROR が出る（`empty.gitconfig` は追跡前でも残るので、ファイル検査の 1 件だけは通ってよい）。pop 後に Step 6 を再実行して OK。
-
-- [ ] **Step 8: Commit**
+stash は他の worktree・セッションと共有されるので使わない。変更後のファイルを一時ディレクトリへ退避し、HEAD の版に戻して試験してから書き戻す:
 
 ```bash
-git add empty.gitconfig c3c compose.yml lint.sh test-build.sh tests/test_c3c_launch.py
-git commit -m "fix: #149 GITCONFIG_FILE 未設定時の ~/.gitconfig を同梱の空ファイルの :ro bind にする"
+keep=$(mktemp -d) && cp c3c compose.yml "$keep/" \
+  && git checkout HEAD -- c3c compose.yml \
+  && { python3 -m unittest tests.test_c3c_launch.GitconfigSourceTests 2>&1 | tail -3; } ; \
+  cp "$keep/c3c" "$keep/compose.yml" . && rm -r "$keep" && git diff --stat -- c3c compose.yml
 ```
 
-### Task 2: 文書を更新する
+Expected: 退避中は FAIL/ERROR が出る（`empty.gitconfig` は残るので、ファイル検査の 1 件だけは通ってよい）。最後の `git diff --stat` に `c3c` と `compose.yml` の変更が戻っていることを確かめ、Step 6 を再実行して OK。
 
-**Files:**
-- Modify: `README.md:187`（環境変数表の `GITCONFIG_FILE` 行）、`README.md:405-415`（「コンテナ内 git commit（`GITCONFIG_FILE`）」）
-- Modify: `docs/development-invariants.md`（`compose.yml` の項と `c3c` の項に 1 項目ずつ）
-- Modify: `docs/codex-proc-investigation.md`（`git status` の行の後に #149 での対処を追記）
+ここではまだ commit しない（Step 14 で文書と一緒に commit する）。
 
-- [ ] **Step 1: README の表**
+- [ ] **Step 8: README の表**
 
 `README.md:187` の説明列を次にする:
 
@@ -271,22 +298,28 @@ git commit -m "fix: #149 GITCONFIG_FILE 未設定時の ~/.gitconfig を同梱�
 | `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス。未設定なら c3c 同梱の空ファイルを read-only マウントする（後述） |
 ```
 
-- [ ] **Step 2: README の本文**
+- [ ] **Step 9: README の本文**
 
 `README.md` の「未設定なら従来どおり（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）」の箇条を次にする:
 
 ```
-- 未設定なら、c3c 同梱の空ファイル `empty.gitconfig` を `~/.gitconfig` として read-only マウントする（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）。以前は `/dev/null` をマウントしており、Codex の sandbox 内では `~/.gitconfig` を読めず `git` が rc 128 で失敗していた（#149）。`empty.gitconfig` が欠けている・中身がある・symlink になっている場合は起動時に停止するので、c3c の checkout を git で復元する
+- 未設定なら、c3c 同梱の空ファイル `empty.gitconfig` を `~/.gitconfig` として read-only マウントする（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）。以前は `/dev/null` をマウントしており、Codex の sandbox 内では `~/.gitconfig` を読めず `git` が rc 128 で失敗していた（#149）。`empty.gitconfig` が欠けている・中身がある・symlink になっている場合は起動時に停止するので、c3c の checkout を git で復元する。c3c の置き場所と `GITCONFIG_FILE` のパスには、コロン・制御文字を含めない（compose の volume 指定を分割するため起動時に停止する）
 ```
 
 同じ箇条群の「read-only マウントのため…」の箇条は、未設定時にも当てはまるので「read-only マウントのため（未設定時の空ファイルも同じ）…」とする。
 
-- [ ] **Step 3: 不変条件**
+`README.md:534` のアーキテクチャ節の同梱ファイル一覧（`packages.txt` … の項）の直後に 1 項目足す:
+
+```
+- **`empty.gitconfig`** — 0 バイトの空ファイル。`GITCONFIG_FILE` 未設定時に `c3c` が `~/.gitconfig` の bind 元にする（read-only。前述「コンテナ内 git commit（`GITCONFIG_FILE`）」）。中身を書かない。
+```
+
+- [ ] **Step 10: 不変条件**
 
 `docs/development-invariants.md` の `compose.yml` の項（`${CODEX_DIR:-/dev/null}` の項目の直前）に足す:
 
 ```
-  - `~/.gitconfig` の bind（`${C3C_GITCONFIG_SOURCE:-/dev/null}:/home/node/.gitconfig:ro`）は `:ro` 必須（コンテナ内から `credential.helper` 等を書けるとホスト側の任意コマンド実行につながる）。bind 元は launcher の `guard_gitconfig_file()` が決め、未設定時は同梱の 0 バイトの `empty.gitconfig`（#149）。`/dev/null` へ戻さない — キャラクタデバイスになり、Codex の sandbox 内で git が読めない。既定値 `/dev/null` は launcher を通さない直接展開用に限る。
+  - `~/.gitconfig` の bind（`${C3C_GITCONFIG_SOURCE:-/dev/null}:/home/node/.gitconfig:ro`）は `:ro` 必須（コンテナ内から `credential.helper` 等を書けるとホスト側の任意コマンド実行につながる）。bind 元は launcher の `guard_gitconfig_file()` が決め、未設定時は同梱の 0 バイトの `empty.gitconfig`（#149）。`/dev/null` へ戻さない — キャラクタデバイスになり、Codex の sandbox 内で git が読めない。既定値 `/dev/null` は launcher を通さない直接展開用に限る。フォールバックの完全性は RUN_DIR にコンテナから書けないことに依存する（c3c 自身をセルフホストで開発するときは `/workspace` が RUN_DIR になり書ける。bind は inode を共有するので、ホスト側での書き換えは稼働中のコンテナにも即座に及ぶ）。
 ```
 
 `c3c` の項に足す:
@@ -295,7 +328,7 @@ git commit -m "fix: #149 GITCONFIG_FILE 未設定時の ~/.gitconfig を同梱�
   - `guard_gitconfig_file()` は `C3C_GITCONFIG_SOURCE` を無条件に代入して export する（ホスト環境の同名変数を継承しない）。`ENV_FILE_ALLOWED_KEYS` に加えない。未設定時の `$RUN_DIR/empty.gitconfig` は symlink でない 0 バイトの通常ファイルであることを確かめ、そうでなければ停止する。bind 元のコロン・制御文字も停止する。`GITCONFIG_FILE` を内部で書き換えてフォールバックを表さない（`.c3c/env` の境界キー INFO と README の「未設定」の意味が崩れる）。
 ```
 
-- [ ] **Step 4: 調査記録**
+- [ ] **Step 11: 調査記録**
 
 `docs/codex-proc-investigation.md` の表の後（「コンテナ側では、非特権の `iptables -S` が拒否され」の段落の前）に次の段落を足す:
 
@@ -303,19 +336,25 @@ git commit -m "fix: #149 GITCONFIG_FILE 未設定時の ~/.gitconfig を同梱�
 `git status` の rc 128 は #149 で対処した。`GITCONFIG_FILE` 未設定時の bind 元を c3c 同梱の空ファイル（`empty.gitconfig`、`:ro`）にし、`~/.gitconfig` が通常ファイルになるようにした。対処後の実測は `docs/superpowers/plans/2026-09-24-issue149-gitconfig-empty-fallback.md` の末尾に記録する。
 ```
 
-- [ ] **Step 5: lint**
+- [ ] **Step 12: README の表の検査（E7）が緑のままか**
 
-Run: `./lint.sh; echo rc=$?`
-Expected: `rc=0`、警告なし。
+`C3C_GITCONFIG_SOURCE` は README の環境変数表に足さない（許可キーではないため）。Run: `./test-build.sh --launcher-only 2>&1 | grep -E 'E7|FAIL' | head`
+Expected: E7 が PASS、FAIL 0。
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 13: lint と試験の再実行**
+
+Run: `./lint.sh; echo rc=$?` と `python3 -m unittest discover -s tests -p 'test_*.py' 2>&1 | tail -3`
+Expected: `rc=0`・警告なし、`OK`。
+
+- [ ] **Step 14: Commit**
 
 ```bash
-git add README.md docs/development-invariants.md docs/codex-proc-investigation.md
-git commit -m "docs: #149 GITCONFIG_FILE 未設定時の空ファイル bind を記述する"
+git add empty.gitconfig c3c compose.yml lint.sh test-build.sh tests/test_c3c_launch.py \
+  README.md docs/development-invariants.md docs/codex-proc-investigation.md
+git commit -m "fix: #149 GITCONFIG_FILE 未設定時の ~/.gitconfig を同梱の空ファイルの :ro bind にする"
 ```
 
-### Task 3: 実機受入（host、Podman）
+### Task 2: 実機受入（host、Podman）
 
 コンテナの実起動が要る。fixture は #145 の受入と同じ作り（`GITCONFIG_FILE` 未設定、Codex 導入済みのイメージ）を使う。Codex の認証は不要（`codex sandbox` の診断は #145 の受入と同じ方法で、`podman exec` から Codex と同じ PATH・同じ `setpriv` の剥奪で実行する。手順は `docs/codex-proc-investigation.md` の「sandbox の診断」段落）。
 
@@ -334,7 +373,10 @@ fixture のコンテナを起動し、コンテナ内で `stat -c %F ~/.gitconfi
 
 - [ ] **Step 4: `GITHUB_MAIN_PAT` と #25**
 
-`SECRETS_DIR` に `GITHUB_MAIN_PAT` を置いた fixture（ダミー値でよい）で、コンテナ内の `git config --show-origin --get-all credential.helper` の出力が `command line:` 由来の空値 1 件だけ（ファイル由来の helper が無い）。
+`GIT_CONFIG_*` は `entrypoint.sh` が entrypoint のプロセスの中で export するので、`podman exec` のシェルには無い。この確認は **agent のプロセス木の中**（`c3c claude <fixture>` の Claude セッションで Bash ツールから実行）で行う。
+
+1. `SECRETS_DIR` に `GITHUB_MAIN_PAT`（ダミー値でよい）を置き、`GITCONFIG_FILE` は未設定の fixture: `git config --show-origin --get-all credential.helper` の出力が `command line:` 由来の空値 1 件だけ。
+2. 同じ fixture で `GITCONFIG_FILE` に `[credential]\n\thelper = store` を書いた専用ファイルを指定: 出力が「`file:/home/node/.gitconfig` の `store` 1 件」＋「`command line:` の空値 1 件」の順（空値が後に来て helper のリストをリセットする。#25 の回帰確認）。
 
 - [ ] **Step 5: `GITCONFIG_FILE` 設定時と Claude 経路の不変**
 
@@ -352,12 +394,17 @@ git commit -m "docs: #149 の実機受入を記録する"
 ## 完了条件
 
 - Task 1 の試験・`./lint.sh`・`python3 -m unittest discover -s tests -p 'test_*.py'`・`./test-build.sh --launcher-only` がすべて成功。
-- Task 3 の Step 2 で両モード rc 0。
+- Task 2 の Step 2 で両モード rc 0。
 - `./test-build.sh`（全体）: 実行する。実行できない部分は理由とともに not run と書く。
-- SemVer: 利用者から見える既定挙動（未設定時の `~/.gitconfig` の実体）が変わるが後方互換なバグ修正で、利用側の移行作業は無い（再ビルド不要）。PATCH（v14.0.1）を提案する。
+- SemVer: 利用者から見える既定挙動（未設定時の `~/.gitconfig` の実体）が変わるが後方互換なバグ修正で、利用側の移行作業は無い（再ビルド不要）。PATCH（v14.0.1）を提案する。リリースノートには、c3c の置き場所にコロンを含む場合と、`c3c` だけを別の場所へコピーして使う場合に起動が止まるようになったことを書く。
 
 ---
 
+## 計画レビュー（1 巡目、7b07c62）
+
+- Codex（gpt-6-astra、`codex exec --sandbox read-only`）: 修正後に渡せる。Important 1（挙動変更と README が別 commit になる手順）、Minor 2（build・preflight の export を試験していない、RUN_DIR のコロンを試験していない）。すべて反映した。
+- Claude（claude-opus-5-5、headless `claude -p`、Read/Grep/Glob のみ）: 修正後に渡せる。Important 2（共有 stash を push/pop する手順、`podman exec` からは #25 の `GIT_CONFIG_*` が見えない受入手順）、Minor 6。Minor は M-1〜M-5 を反映した。M-6（`test-runtime.sh` で実マウントを検査する）は採らない: 実マウントの挙動は Task 2 の実機受入で確かめ、runtime test の compose 環境の配線を増やすほどの回帰リスクが無いため。
+
 区分: 境界 — `compose.yml` のマウント（`:ro` 保護の対象）と launcher の bind 元の決定という、`docs/development-invariants.md` に載る境界機構を変えるため。計画・実装完了時（PR 前）・PR 後の 3 段階で Claude と Codex の二重レビューを行う。
 
-推奨実装: Opus — `compose.yml:96-97` のとおりこの `:ro` はホスト側の任意コマンド実行を防ぐセキュリティ境界で、グローバル指示の「セキュリティ境界を含むときは Opus」に当たる。Task 3 はコンテナの実起動を伴う（判定基準 1 で Claude）。Sonnet は境界変更のため推さない。Codex は host の checkout で完結せず、Task 3 の実機受入を担えないため推さない。
+推奨実装: Opus — `compose.yml:96-97` のとおりこの `:ro` はホスト側の任意コマンド実行を防ぐセキュリティ境界で、グローバル指示の「セキュリティ境界を含むときは Opus」に当たる。Task 2 はコンテナの実起動を伴う（判定基準 1 で Claude）。Sonnet は境界変更のため推さない。Codex は host の checkout で完結せず、Task 2 の実機受入を担えないため推さない。

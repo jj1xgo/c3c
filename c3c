@@ -806,17 +806,35 @@ guard_legacy_vars() {
   fi
 }
 
-# ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）。任意設定のため未設定時は何もしない。
-# 設定済みでファイルが無い場合のみ起動を中止する（不存在パスを bind mount すると podman が
+# ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）と、~/.gitconfig の bind 元の決定（#149）。
+# 設定済みでファイルが無い場合は起動を中止する（不存在パスを bind mount すると podman が
 # ホスト側に空ディレクトリを誤作成し、コンテナ内 ~/.gitconfig もディレクトリになって
-# git が壊れるため）。
+# git が壊れるため）。未設定時は同梱の空ファイル $RUN_DIR/empty.gitconfig を bind 元にする
+# （/dev/null の bind はキャラクタデバイスになり、Codex の sandbox 内で git が rc 128 になる）。
+# C3C_GITCONFIG_SOURCE は無条件に代入する（ホスト環境の同名変数を継承しない。.c3c/env の
+# 許可キーにも入れない）。compose.yml の既定値 /dev/null は launcher を通さない直接展開用。
 guard_gitconfig_file() {
+  local fallback="$RUN_DIR/empty.gitconfig"
+  C3C_GITCONFIG_SOURCE=""
   if [[ -n "${GITCONFIG_FILE:-}" ]]; then
     GITCONFIG_FILE="${GITCONFIG_FILE/#\~\//$HOME/}"
     export GITCONFIG_FILE
     if [[ ! -f "$GITCONFIG_FILE" ]]; then
       guard_fail "ERROR: GITCONFIG_FILE=$GITCONFIG_FILE が見つかりません(存在しないか通常ファイルではありません)。起動を中止します。" || return 1
     fi
+    C3C_GITCONFIG_SOURCE="$GITCONFIG_FILE"
+  else
+    if [[ -L "$fallback" || ! -f "$fallback" || -s "$fallback" ]]; then
+      guard_fail "ERROR: 同梱の $fallback が 0 バイトの通常ファイルではありません（欠落・内容あり・symlink）。c3c の checkout を git で復元してください。起動を中止します。" || return 1
+    fi
+    C3C_GITCONFIG_SOURCE="$fallback"
+  fi
+  if [[ "$C3C_GITCONFIG_SOURCE" == *:* || "$C3C_GITCONFIG_SOURCE" =~ [[:cntrl:]] ]]; then
+    guard_fail "ERROR: ~/.gitconfig の bind 元 $C3C_GITCONFIG_SOURCE にコロンか制御文字が含まれます（compose の volume 指定を分割するため使えません）。起動を中止します。" || return 1
+  fi
+  export C3C_GITCONFIG_SOURCE
+  if [[ ${CHECK_MODE:-0} -eq 1 && -z "${GITCONFIG_FILE:-}" ]]; then
+    echo "[OK]   git 設定: GITCONFIG_FILE 未設定（空の $C3C_GITCONFIG_SOURCE を ~/.gitconfig へ :ro で bind）"
   fi
 }
 

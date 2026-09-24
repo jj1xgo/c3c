@@ -184,7 +184,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 | `TZ` | ホストから自動検出 | コンテナ内のタイムゾーン |
 | `CLAUDE_CONTAINER_IPV6` | `0` | `1` で IPv4/IPv6 を併用し両方に許可リストを適用する。未指定・空・0は既存IPv4モード、その他は起動と `--check` で拒否。初回は対応イメージの `-b` が必要（後述） |
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | `1` でエグレス制限（後述）を無効化 |
-| `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス（後述） |
+| `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス。未設定なら c3c 同梱の空ファイルを read-only マウントする（後述） |
 | `SECRETS_DIR` | (unset) | GitHub トークン等のシークレットをコンテナへ持ち込む唯一の機構のホスト側パス（後述「GitHub トークンの配線」節） |
 | `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「Codex CLI をセカンドオピニオンとして使う」節）。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する）。実ホストの `~/.codex` と同じ実体を指す指定（表記ゆれ・シンボリックリンクを含む）は起動を中止する |
 
@@ -408,9 +408,9 @@ legacy 変数が設定されたまま起動すると fail-closed で停止し、
 GITCONFIG_FILE=~/.gitconfig
 ```
 
-- 未設定なら従来どおり（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）
+- 未設定なら、c3c 同梱の空ファイル `empty.gitconfig` を `~/.gitconfig` として read-only マウントする（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）。以前は `/dev/null` をマウントしており、Codex の sandbox 内では `~/.gitconfig` を読めず `git` が rc 128 で失敗していた（#149）。`empty.gitconfig` が欠けている・中身がある・symlink になっている場合は起動時に停止するので、c3c の checkout を git で復元する。c3c の置き場所と `GITCONFIG_FILE` のパスには、コロン・制御文字を含めない（compose の volume 指定を分割するため起動時に停止する）。c3c の置き場所は、コンテナから書ける場所（`EXTRA_MOUNT`・`SHARED_MOUNT` の範囲など）に含めない。`empty.gitconfig` を書き換えられると、同じ置き場所から起動して稼働中のコンテナにも、その内容が即座に及ぶ（次回の起動は停止する）
 - 設定した場合、指定ファイルが存在しなければ起動時にエラーで停止する（fail-closed）。存在しないパスをそのまま bind mount すると、ホスト側にその名前の空ディレクトリが誤って作られてしまう問題を避けるため
-- read-only マウントのため、コンテナ内から `git config --global` で書き換えることはできない。編集は常にホスト側で行う（ランタイムマウントなので `-b` 再ビルドは不要、次回起動時に反映される）
+- read-only マウントのため（未設定時の空ファイルも同じ）、コンテナ内から `git config --global` で書き換えることはできない。編集は常にホスト側で行う（ランタイムマウントなので `-b` 再ビルドは不要、次回起動時に反映される）
 - `.gitconfig` に `credential.helper` や `include.path` でホスト固有の別ファイルを参照する記述があっても、`git commit` 自体には影響しない（参照先が無ければ黙って無視される、または認証操作時に警告が出る程度）。気になる場合は `user.name`/`user.email` のみを書いた専用ファイルを別途用意し、そちらのパスを `GITCONFIG_FILE` に指定するとよい
 - `GITCONFIG_FILE` を設定しても反映されない場合、`/workspace`（起動時に指定したターゲットプロジェクト）自身の `.git/config` に `user.name`/`user.email` が設定されていないか確認する。git の設定優先順位（local > global）により、マウントした `~/.gitconfig`（global 相当）より対象プロジェクトのローカル設定が優先されてしまう
 
@@ -532,6 +532,7 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 - **`agent-preference.py`**（ホスト専用）— `c3c` の CLI 選択記憶の helper。`key <dir>`（Git common directory またはパスの実体から sha256 のキー）、`read <state-dir> <key>`（strict JSON の検証だけ、書き込みなし）、`write <state-dir> <key> <agent>`（同じディレクトリの一時ファイルから `os.replace` で原子的に保存、0700/0600）。`project-images.py` と同じく `c3c` が固定パスを `python3 -I` で呼び、ビルドコンテキストへは COPY しない。秘密を読まない。終了コードは前述「c3c 入口」節。
 - **`validate-build-input.sh`** — `packages.txt`/`requirements.txt` の正規化・照合を担う POSIX sh スクリプト。ビルド時（`Dockerfile.claude` の `RUN`）・起動前診断（`--check`）・テスト（`test-build.sh`）の3者が同じスクリプトを呼ぶことで、検証ロジックが複数箇所へ複製されドリフトする事態を防ぐ（`claude-container#34`）。責務は正規化と照合のみで、インストール・ネットワークアクセスは行わない。
 - **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** / **`node-version.txt`** / **`codex-version.txt`** — claude-container 同梱のデフォルト apt/pip パッケージ・許可ドメイン一覧（空のフォールバック既定値）と、Node.js（`24.18.0`）・Codex CLI（`0.156.0`）の固定版 default。プロジェクト側で上書きする場合は `.c3c/` を使う（「利用側プロジェクトの設定」参照。`node-version.txt`・`codex-version.txt` は空ファイルが opt-out）。`allowed-ports.txt` にはこの種の同梱デフォルトは無く、プロジェクト側に無ければ `c3c` がビルドコンテキスト内に空ファイルをその場で生成する（`init-firewall.sh` 自身が既定値 `443,22` を適用する、という意味。警告は出さない）。
+- **`empty.gitconfig`** — 0 バイトの空ファイル。`GITCONFIG_FILE` 未設定時に `c3c` が `~/.gitconfig` の bind 元にする（read-only。前述「コンテナ内 git commit（`GITCONFIG_FILE`）」）。中身を書かない。
 
 定期 DNS 更新の診断コマンドとログ保持方針は [定期更新の診断とログ](docs/firewall-refresh.md) を参照。
 

@@ -1192,6 +1192,8 @@ DUMMY
       && grep -qxF 'CODEX_DIR=$e_codex' '$root/compose-env'"
   check "E3: 許可キーには WARNING が出ない" \
     bash -c "! printf '%s' \"\$0\" | grep -q '解釈しないため無視'" "$out"
+  check "E3b: GITCONFIG_FILE 設定時は ~/.gitconfig の bind 元がそのファイルになる" \
+    grep -qxF "C3C_GITCONFIG_SOURCE=$e_gitcfg" "$root/compose-env"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # E4: 廃止変数を env ファイルに書いた場合の移行案内（ERROR）は許可リスト化後も維持される
@@ -1358,7 +1360,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return

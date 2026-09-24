@@ -302,6 +302,34 @@ class RunTests(EntrypointCase):
                 self.assertIn('Codex', result.stderr)
 
 
+def volume_mounts(config_text, target):
+    """compose config の出力から target への bind を [(source, read_only)] で返す（短縮形・長形式の両方）。"""
+    found = []
+    lines = config_text.splitlines()
+    for index, line in enumerate(lines):
+        short = re.match(r'^\s*-\s*["\']?([^\s"\']+?):' + re.escape(target) + r'(?::([^\s"\']+))?["\']?\s*$', line)
+        if short:
+            found.append((short.group(1), 'ro' in (short.group(2) or '').split(',')))
+            continue
+        if not re.match(r'^\s*target:\s*["\']?' + re.escape(target) + r'["\']?\s*$', line):
+            continue
+        # 長形式: target 行と同じ項目（字下げが target 以上の連続行、先頭の "- " 行まで）から source と read_only を読む。
+        indent = len(line) - len(line.lstrip(' '))
+        start = index
+        while start > 0 and not re.match(r'^\s*-\s', lines[start]):
+            start -= 1
+        end = index + 1
+        while end < len(lines) and (len(lines[end]) - len(lines[end].lstrip(' '))) >= indent \
+                and not re.match(r'^\s*-\s', lines[end]):
+            end += 1
+        block = [re.sub(r'^(\s*)-\s', r'\1  ', l) for l in lines[start:end]]
+        source = next((m.group(1) for l in block
+                       if (m := re.match(r'^\s*source:\s*["\']?([^"\']+?)["\']?\s*$', l))), None)
+        read_only = any(re.match(r'^\s*read_only:\s*true\s*$', l) for l in block)
+        found.append((source, read_only))
+    return found
+
+
 class ComposeContractTests(EntrypointCase):
     """compose.yml の変数解決を実 provider の config で取り、その値を entrypoint に通す（正規表現の推測ではなく実解決）。"""
 
@@ -331,6 +359,45 @@ class ComposeContractTests(EntrypointCase):
                 values[match.group(1)] = value
         self.assertEqual(set(values), set(self.KEYS), result.stdout)
         return values
+
+    def gitconfig_mounts(self, overrides):
+        """#149: 実 provider の config で ~/.gitconfig の bind を (source, ro か) で取り出す。"""
+        podman = shutil.which('podman')
+        if podman is None:
+            self.skipTest('podman が無いため compose の実解決を確認できない')
+        home = Path(self.env['HOME'])
+        (home / '.claude').mkdir(parents=True, exist_ok=True)
+        (home / '.claude.json').touch()
+        env = {'PATH': os.environ['PATH'], 'HOME': self.env['HOME'], 'BUILD_CONTEXT_DIR': str(self.root),
+               'CONTEXT': str(self.workspace), 'CLAUDE_CONTAINER_DIR': str(ROOT)}
+        env.update(overrides)
+        result = subprocess.run([podman, 'compose', '-f', str(ROOT / 'compose.yml'), '--env-file', '/dev/null', 'config'],
+                                env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mounts = volume_mounts(result.stdout, '/home/node/.gitconfig')
+        self.assertEqual(len(mounts), 1, result.stdout)
+        return mounts[0]
+
+    def test_volume_mounts_reads_short_and_long_forms(self):
+        # podman-compose は短縮形、CI の Docker Compose は長形式で volume を出すので、両方を読めることを固定する。
+        short = '    volumes:\n      - /a/b.gitconfig:/home/node/.gitconfig:ro\n      - /x:/workspace\n'
+        long_form = ('    volumes:\n      - type: bind\n        source: /a/b.gitconfig\n'
+                     '        target: /home/node/.gitconfig\n        read_only: true\n        bind: {}\n'
+                     '      - type: bind\n        source: /x\n        target: /workspace\n        bind: {}\n')
+        long_rw = long_form.replace('        read_only: true\n', '')
+        self.assertEqual(volume_mounts(short, '/home/node/.gitconfig'), [('/a/b.gitconfig', True)])
+        self.assertEqual(volume_mounts(long_form, '/home/node/.gitconfig'), [('/a/b.gitconfig', True)])
+        self.assertEqual(volume_mounts(long_rw, '/home/node/.gitconfig'), [('/a/b.gitconfig', False)])
+
+    def test_gitconfig_bind_source_comes_from_launcher_variable(self):
+        source = self.root / 'bundled.gitconfig'
+        source.touch()
+        other = self.root / 'host.gitconfig'
+        other.touch()
+        self.assertEqual(self.gitconfig_mounts({'C3C_GITCONFIG_SOURCE': str(source), 'GITCONFIG_FILE': str(other)}),
+                         (str(source), True))
+        # launcher を通さない展開（GITCONFIG_FILE だけ）は既定値のまま。bind 元は launcher だけが決める。
+        self.assertEqual(self.gitconfig_mounts({'GITCONFIG_FILE': str(other)}), ('/dev/null', True))
 
     def test_unset_defaults_reach_entrypoint_as_claude_run(self):
         values = self.resolved({})

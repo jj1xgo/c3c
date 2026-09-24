@@ -92,10 +92,13 @@ services:
       # なく /dev/null になるため entrypoint.sh 側は [ -d ] で判別する）。
       - ${SECRETS_DIR:-/dev/null}:/home/node/.config/claude-container/secrets:ro
       # ホスト側 git 設定のオプトインマウント（issue #6: Author identity unknown 対策）。
-      # 未設定時は /dev/null をマウント（GH_TOKEN_FILE と同じオプトインパターン）。
+      # bind 元は launcher の guard_gitconfig_file() が C3C_GITCONFIG_SOURCE に export する:
+      # GITCONFIG_FILE 設定時はそのファイル、未設定時は同梱の空ファイル empty.gitconfig（#149。
+      # /dev/null のデバイスだと Codex の sandbox 内で git が読めない）。既定値 /dev/null は
+      # launcher を通さない直接展開（lint・試験）用。
       # :ro 必須 — コンテナ内から credential.helper 等を書き換えられるとホスト側
       # 任意コマンド実行につながるため。entrypoint.sh 側の処理は不要（git が直接読む）。
-      - ${GITCONFIG_FILE:-/dev/null}:/home/node/.gitconfig:ro
+      - ${C3C_GITCONFIG_SOURCE:-/dev/null}:/home/node/.gitconfig:ro
       # Codex CLI の認証情報ディレクトリのオプトインマウント（内部運用issue参照）。
       # auth.json はセッション中にアクセストークンが自動リフレッシュされホストへ書き戻される
       # ため rw（:ro なし、GITCONFIG_FILE とは逆）。ホストの実 ~/.codex を直接指すと、

@@ -1867,6 +1867,7 @@ log "## Claude Code ツール"
 check "定期更新 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/firewall-refresh.py --help
 check "IPv6 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/ipv6-firewall.py --help
 check "Codex 審査 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" python3 -I /usr/local/bin/codex-mcp-audit.py --help
+check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version
@@ -1874,9 +1875,7 @@ log ""
 
 # 同梱 default（c3c 第2b-2段階）の実検査。イメージ内の Node.js / Codex CLI が同梱ファイルの固定値と
 # 一致することを必須にする（存在だけでは、ベースイメージ由来の別版や npm の latest 解決を見逃す）。
-# 起動時 MCP 審査の対応版（launcher の CODEX_SUPPORTED_VERSION・helper の SUPPORTED_VERSION）と
-# 同梱 default の不一致も失敗にする — 既定イメージの Codex が審査対象外の版になると、既定構成で
-# `--agent codex` が必ず起動時に拒否されるため。
+# 起動時 MCP 審査は #150 から Codex の版に依存しないので、審査側の版との整合は検査しない。
 log "## 同梱 default（node-version.txt / codex-version.txt）の実検査"
 DEFAULT_NODE_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/node-version.txt")"
 DEFAULT_CODEX_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/codex-version.txt")"
@@ -1886,10 +1885,6 @@ check "同梱 node-version.txt が固定版（空・latest でない）" \
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
 check "同梱 codex-version.txt が固定版（空・latest でない）" \
   bash -c '[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$DEFAULT_CODEX_VERSION"
-check "launcher の CODEX_SUPPORTED_VERSION が同梱 codex-version.txt と一致" \
-  grep -qxF "CODEX_SUPPORTED_VERSION=$DEFAULT_CODEX_VERSION" "${SCRIPT_DIR}/c3c"
-check "codex-mcp-audit.py の SUPPORTED_VERSION が同梱 codex-version.txt と一致" \
-  grep -qxF "SUPPORTED_VERSION = '$DEFAULT_CODEX_VERSION'" "${SCRIPT_DIR}/codex-mcp-audit.py"
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
 check "node --version が同梱 default（v$DEFAULT_NODE_VERSION）と一致" \
   bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ]' _ "$IMAGE" "$DEFAULT_NODE_VERSION"

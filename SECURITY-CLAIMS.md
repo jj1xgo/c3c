@@ -65,39 +65,48 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 
 ## C-3
 
-**対象**: `--agent codex` の起動時 MCP 審査（codex-cli 0.156.0）。
+**対象**: `--agent codex` の起動時 MCP 審査（protocol 2、#150）。
 
 **成立条件・脅威モデル**: 信頼する launcher・イメージ・Podman を通常の起動経路で使い、利用者が
-表示されたローカル実行定義を確認する。native `codex mcp list --json` が解決した user/project/有効な
-plugin の設定を対象にする。既存の Claude 用 `.mcp.json` ゲートとは独立している。
+表示されたローカル実行定義を確認する。対象はリポジトリ同梱の `/workspace/.codex/config.toml`
+（第三者が内容を制御しうる project 設定）で、`CODEX_DIR` の user 設定は運用者自身が書く設定として
+対象外にする（Claude 経路の `.mcp.json` ゲートと同じ線引き。README「帰結の重大性で線を引いている」節）。
+既存の Claude 用 `.mcp.json` ゲートとは独立している。
 
-**保証する動作**: 対応 protocol の image label を起動前に検査する。firewall と capability 剥奪の後、
-固定 home・固定 CLI・`/workspace`・同じ秘密 export 環境で一覧を取得する。enabled stdio の名前、
-command、args、cwd、env、env_vars を正規化して hash 化し、初回・変更時はホストで確認する。
-承認記録はホスト側の agent/project/version 別に保存し、本起動には 1 ファイルだけを `:ro` で渡す。
-本起動でも再計算して一致したときだけ Codex へ進む。対象ゼロは空定義として確認なしで記録する。
-未知版・未知 schema・重複 key・設定エラー・取得失敗・期限超過・承認拒否・必要な TTY の欠如・
-再照合不一致は停止し、別 CLI へ fallback しない。版取得は 5 秒、一覧取得は 60 秒を上限とする。
+**保証する動作**: 対応 protocol の image label を起動前に検査する。検査用コンテナで project 設定を
+読み、enabled stdio の名前、command、args、cwd、env、env_vars、environment_id を正規化して hash 化し、
+初回・変更時はホストで確認する。project 設定で plugin が有効化されているか marketplace が定義されていれば、確認の前に停止する。
+承認記録はホスト側の agent/project 別に保存し、本起動には 1 ファイルだけを `:ro` で渡す。
+本起動でも同じファイルを読み直して一致したときだけ Codex へ進む。対象ゼロは空定義として確認なしで記録する。
+未知 key・壊れた TOML・型違い・command と url の併記・承認拒否・必要な TTY の欠如・再照合不一致は
+停止し、別 CLI へ fallback しない。Codex の版は判定に使わない。
 
 **限界・非対象**:
 
-- enabled HTTP に `http_headers_helper` がある場合は審査不能として拒否する。helper の無い HTTP と
+- `CODEX_DIR` の `config.toml`・plugin キャッシュ・user 層で有効化した plugin は審査しない。
+  セッションがそこへ MCP を書き足しても、次回起動の確認では検出しない（Claude 経路の `~/.claude.json` と同じ限界）。
+- enabled な定義に `http_headers_helper` がある場合は審査不能として拒否する。helper の無い HTTP と
   disabled server は hash 対象外で、HTTP URL の変更も再承認対象外。通信先は外側の firewall に従う。
+- Codex は設定層を table ごとに深く merge する。project の `url` だけのエントリが user 層の同名エントリ
+  （helper 付きを含む）の宛先を変えたり、project の `command` だけのエントリに user 層の `args`・`env` が
+  合わさったりしうる。確認表示は project 設定の内容だけで、実効の定義とは一致しない場合がある。
+- 網羅性（project 層の探索規則、MCP・plugin・marketplace 以外に repo から実行経路を持ち込める設定が無いこと、
+  許可 key の集合）は codex-cli 0.156.0 でだけ確認している。`latest` 等で入った別の版が新しい経路を取り込んでも追えない。
 - 定義の承認であり、実行ファイル・script・依存パッケージの内容や安全性を保証しない。本起動の
-  再照合後の変更、セッション中の設定変更・再接続、利用者やモデルが直接起動するコマンドは継続監視しない。
-- 一覧取得は MCP command を起動しないが、native CLI による cloud config 取得・OAuth discovery・
-  認証更新や専用 home への書込みが起きうる。秘密 export 後に実行するため、その環境も参照できる。
+  再照合後の変更、セッション中の設定変更・再接続・plugin の追加、利用者やモデルが直接起動するコマンドは継続監視しない。
 - env の値と HTTP header は表示しないが、command/args に秘密を埋め込めば確認表示に出る。
-  除去するのは ASCII 制御文字であり、Unicode の bidi 制御等は対象外。内容の秘匿ではない。永続化する承認記録は版・protocol・hash のみである。
+  除去するのは ASCII 制御文字であり、Unicode の bidi 制御等は対象外。内容の秘匿ではない。永続化する承認記録は protocol・hash のみである。
 - 固定 repo trust は `.codex/config.toml`、適用対象の hooks・exec policy・sandbox 設定も有効化する。
   MCP 承認はこれらの承認を兼ねず、hooks の信頼確認は Codex の native 機能に委ねる。
   CLI の sandbox/approval 指定は固定するが、追加の書込み先などは native 設定の影響を受ける。
+- 審査はイメージ内の python3（3.11 以上）で行う。`tomllib` が無ければ停止する。
 
 **根拠・検証範囲**: `c3c`、`entrypoint.sh`、`codex-mcp-audit.py`、`compose.yml`、
 `compose.codex-preflight.yml` と各 Codex 回帰テスト。実装の契約と実機受入は区別し、現在の受入状況は
 [README の Codex 節](README.md#codex-cli-を対話で使う) を参照する。
 
-**再確認契機**: Codex の版・native 一覧 schema・設定解決・trust、起動経路、承認保存先、マウントの変更時。
+**再確認契機**: 同梱 default の Codex 版を上げるとき。Codex の公開設定形式（`mcp_servers` の key・plugin と marketplace の設定方法）・
+project 設定の探索規則・trust、起動経路、承認保存先、マウントの変更時。
 
 ---
 

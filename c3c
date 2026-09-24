@@ -20,12 +20,11 @@ AGENT_SET=0
 AGENT_RESELECT_HINT=""
 READ_ONLY=0
 READ_ONLY_SET=0
-# Codex の起動時 MCP 審査で対応する版と protocol（codex-mcp-audit.py・Dockerfile.claude の label と同期）。
-# 未知版・未知 protocol は同じ審査方式として黙認せず、対応確認が必要と診断する。
-CODEX_SUPPORTED_VERSION=0.156.0
-CODEX_AUDIT_PROTOCOL_VERSION=1
+# Codex の起動時 MCP 審査の protocol（codex-mcp-audit.py・Dockerfile.claude の label と同期）。
+# protocol 2（#150）から Codex の版には依存しない。未知 protocol は同じ審査方式として黙認しない。
+CODEX_AUDIT_PROTOCOL_VERSION=2
 CODEX_AUDIT_PROTOCOL_LABEL=io.c3c.codex-audit-protocol
-readonly CODEX_SUPPORTED_VERSION CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
+readonly CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
 
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
@@ -458,10 +457,10 @@ freeze_project_paths() {
   # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
   MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
   MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
-  # Codex の起動時 MCP 審査の承認記録（c3c 第1段階）。既存の Claude 記録とは別に、agent 固定の
-  # subdirectory と対応版だけを採用したキーへ hash を保存する。同じく env 読込前に freeze する。
+  # Codex の起動時 MCP 審査の承認記録（#150 の protocol 2）。既存の Claude 記録とは別に、agent 固定の
+  # subdirectory へ hash を保存する。版は含めない（旧 <版>.json は読まない）。同じく env 読込前に freeze する。
   CODEX_APPROVAL_DIR="$MCP_APPROVAL_STORE/codex/$PROJECT_NAME"
-  CODEX_APPROVAL_RECORD="$CODEX_APPROVAL_DIR/$CODEX_SUPPORTED_VERSION.json"
+  CODEX_APPROVAL_RECORD="$CODEX_APPROVAL_DIR/project-config.json"
   # ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
   # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
   # クリーンアップも不要にする。
@@ -952,7 +951,7 @@ guard_codex_dir() {
 # 両方で表示する（c3c 第2b-2段階）。採用元は resolve_asset_source() の結果（project / 同梱 default）と
 # 内容（空 = 明示 opt-out）から決め、ここで別の解決規則を持たない。Node が opt-out で Codex が有効な
 # 組合せは、ベースイメージや packages.txt で npm が入るかをホスト側では判定できない（断定しない）ため
-# ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。値の妥当性（書式・対応版）は
+# ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。値の妥当性（書式）は
 # Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。
 guard_build_input_defaults() {
   local name label value origin_text
@@ -994,9 +993,9 @@ guard_build_input_defaults() {
 }
 
 # --agent codex の静的前提（c3c 第1段階）。専用 home（CODEX_DIR）と Codex の版指定
-# （codex-version.txt。c3c 第2b-2段階から同梱 default が対応版で、project 側の空ファイルは opt-out）を、
-# 通常起動と --check の両方で診断する。イメージ内の実際の版は起動時に codex-mcp-audit.py が
-# `codex --version` で厳密に照合するため、ここは静的診断に留める。
+# （codex-version.txt。同梱 default は固定版 0.156.0 で、project 側の空ファイルは opt-out）を、
+# 通常起動と --check の両方で診断する。起動時審査は Codex の版に依存しない（#150）。固定版・latest の
+# どちらも通し、空ファイル（opt-out）だけを止める。
 # 記憶した CLI が使えない場合は既存の理由に加えて明示再選択の案内（AGENT_RESELECT_HINT、memory 由来の
 # ときだけ非空）を添える。自動 fallback はしない。
 guard_codex_agent() {
@@ -1012,16 +1011,14 @@ guard_codex_agent() {
   }
   case "$value" in
     "")
-      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です（Codex の opt-out。このイメージには Codex CLI を導入しません）。Codex を使うには対応版 $CODEX_SUPPORTED_VERSION を書くか、ファイルを削除して同梱 default（$CODEX_SUPPORTED_VERSION）を使い、-b で再ビルドしてください（npm が必要なため node-version.txt も空にしないでください）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
-      ;;
-    "$CODEX_SUPPORTED_VERSION")
-      [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（対応版、採用元: $origin_text）"
-      ;;
-    latest)
-      guard_warn "WARNING: $ASSET_PATH が latest です。起動時 MCP 審査の対応版は $CODEX_SUPPORTED_VERSION で、イメージ内の版が異なると検査で拒否されます。固定版の指定を推奨します。"
+      guard_fail "ERROR: $PROJECT_CONF_DIR/codex-version.txt が空です（Codex の opt-out。このイメージには Codex CLI を導入しません）。Codex を使うには固定版（例: 0.156.0）か latest を書くか、ファイルを削除して同梱 default を使い、-b で再ビルドしてください（npm が必要なため node-version.txt も空にしないでください）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
       ;;
     *)
-      guard_fail "ERROR: $ASSET_PATH の $value は起動時 MCP 審査の対応版（$CODEX_SUPPORTED_VERSION）ではありません。未知版を同じ審査方式として扱わないため起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      # 書式は Dockerfile.claude のビルド時検証と同じ（素の X.Y.Z か latest）。ビルドで必ず止まる値を先に診断する。
+      if [[ ! "$value" =~ ^([0-9]+\.[0-9]+\.[0-9]+|latest)$ ]]; then
+        guard_fail "ERROR: $ASSET_PATH の $value は Codex の版指定の書式ではありません（0.156.0 のような素のバージョンか latest）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+      fi
+      [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 版指定: $value（採用元: $origin_text）"
       ;;
   esac
   return 0
@@ -1044,20 +1041,19 @@ guard_codex_image_support() {
 
 # 承認記録の正本の形。launcher が書き、コンテナ内の codex-mcp-audit.py verify が :ro で読む。
 codex_record_content() {
-  printf '{"protocol_version":%s,"codex_version":"%s","hash":"%s"}\n' \
-    "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" "$1"
+  printf '{"protocol_version":%s,"hash":"%s"}\n' "$CODEX_AUDIT_PROTOCOL_VERSION" "$1"
 }
 
 # 承認記録の静的検証（--check 用）。JSON 1 文書・重複 key 拒否・key 集合の完全一致・int の protocol・
-# 固定 version・小文字 hash を python3 -I で検証する（grep の正規表現では前後の garbage や
+# 小文字 hash を python3 -I で検証する（grep の正規表現では前後の garbage や
 # `.` の任意一致を通してしまう）。通常起動は codex_record_content() との完全一致で照合する。
 validate_codex_record_file() {
-  python3 -I - "$1" "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" <<'PYTHON' 2>/dev/null
+  python3 -I - "$1" "$CODEX_AUDIT_PROTOCOL_VERSION" <<'PYTHON' 2>/dev/null
 import json
 import re
 import sys
 
-path, protocol_version, codex_version = sys.argv[1:4]
+path, protocol_version = sys.argv[1:3]
 
 
 def pairs(items):
@@ -1078,9 +1074,8 @@ try:
         doc = json.loads(handle.read().decode('utf-8'), object_pairs_hook=pairs, parse_constant=reject)
 except (OSError, ValueError):
     sys.exit(1)
-ok = (isinstance(doc, dict) and set(doc) == {'protocol_version', 'codex_version', 'hash'}
+ok = (isinstance(doc, dict) and set(doc) == {'protocol_version', 'hash'}
       and type(doc['protocol_version']) is int and doc['protocol_version'] == int(protocol_version)
-      and isinstance(doc['codex_version'], str) and doc['codex_version'] == codex_version
       and isinstance(doc['hash'], str) and re.fullmatch(r'[0-9a-f]{64}', doc['hash']) is not None)
 sys.exit(0 if ok else 1)
 PYTHON
@@ -1105,7 +1100,7 @@ write_codex_record() {
   }
 }
 
-# 検査用コンテナ（非 TTY、stdin は /dev/null）を起動し、stdout の protocol 1 文書だけを厳密に検証する。
+# 検査用コンテナ（非 TTY、stdin は /dev/null）を起動し、stdout の protocol 2 文書だけを厳密に検証する。
 # 結果は CODEX_HASH / CODEX_COUNT / CODEX_DISPLAY[] に入れる。protocol には利用者が埋め込んだ秘密が
 # command/args に含まれうるため永続ログへ保存せず、0700 の一時 dir に置いて終了時に削除する。
 CODEX_PREFLIGHT_TMP=""
@@ -1130,7 +1125,7 @@ run_codex_preflight() {
   trap 'cleanup_codex_preflight' EXIT
   chmod 700 "$CODEX_PREFLIGHT_TMP"
   ( umask 077; : > "$CODEX_PREFLIGHT_TMP/protocol" ) || exit 1
-  echo "INFO: Codex 起動時 MCP 審査: 設定済み MCP の実行定義を検査用コンテナで取得します（agent と MCP command は起動しません）" >&2
+  echo "INFO: Codex 起動時 MCP 審査: リポジトリの .codex/config.toml の MCP 定義を検査用コンテナで読みます（agent と MCP command は起動しません）" >&2
   CC_CODEX_START_MODE=preflight
   export CC_CODEX_START_MODE
   # 検査と本起動で同じ mount・working directory・固定引数を使う。preflight 専用 override は
@@ -1145,12 +1140,12 @@ run_codex_preflight() {
   # stdout 全体が対応 protocol の JSON 1 文書であることを python3 -I で検証する（shell で再解釈しない）。
   # summary は 1 行目 hash、2 行目件数、以降が表示用行（制御文字は除去済み）。
   if ! python3 -I - "$CODEX_PREFLIGHT_TMP/protocol" "$CODEX_PREFLIGHT_TMP/summary" \
-      "$CODEX_AUDIT_PROTOCOL_VERSION" "$CODEX_SUPPORTED_VERSION" <<'PYTHON'
+      "$CODEX_AUDIT_PROTOCOL_VERSION" <<'PYTHON'
 import json
 import re
 import sys
 
-source, summary, protocol_version, codex_version = sys.argv[1:5]
+source, summary, protocol_version = sys.argv[1:4]
 CONTROL = re.compile(r'[\x00-\x1f\x7f]')
 
 
@@ -1193,12 +1188,10 @@ try:
     doc = json.loads(text, object_pairs_hook=pairs, parse_constant=lambda name: fail('protocol に非標準の定数があります'))
 except ValueError:
     fail('検査用コンテナの stdout が protocol の JSON 1 文書ではありません（余分な出力・破損・欠落）')
-if not isinstance(doc, dict) or set(doc) != {'protocol_version', 'codex_version', 'hash', 'count', 'servers'}:
-    fail('protocol の形式が対応版と異なります')
+if not isinstance(doc, dict) or set(doc) != {'protocol_version', 'hash', 'count', 'servers'}:
+    fail('protocol の形式が対応 protocol と異なります')
 if type(doc['protocol_version']) is not int or doc['protocol_version'] != int(protocol_version):
-    fail('protocol version が対応版と異なります')
-if not is_str(doc['codex_version']) or doc['codex_version'] != codex_version:
-    fail('Codex 版が対応版（%s）と異なります' % codex_version)
+    fail('protocol version が対応 protocol と異なります')
 if not is_str(doc['hash']) or not re.fullmatch(r'[0-9a-f]{64}', doc['hash']):
     fail('hash の形式が不正です')
 if type(doc['count']) is not int or doc['count'] < 0:
@@ -1208,22 +1201,25 @@ if not isinstance(servers, list) or doc['count'] != len(servers):
     fail('servers と count が一致しません')
 lines = []
 for server in servers:
-    if not isinstance(server, dict) or set(server) != {'name', 'command', 'args', 'cwd', 'env_keys', 'env_vars'}:
-        fail('servers の要素の形式が対応版と異なります')
+    if not isinstance(server, dict) or set(server) != {'name', 'command', 'args', 'cwd', 'env_keys', 'env_vars',
+                                                       'environment_id'}:
+        fail('servers の要素の形式が対応 protocol と異なります')
     if not (is_str(server['name']) and is_str(server['command']) and is_str_list(server['args'])
             and (server['cwd'] is None or is_str(server['cwd'])) and is_str_list(server['env_keys'])
-            and isinstance(server['env_vars'], list) and all(is_env_var(item) for item in server['env_vars'])):
-        fail('servers の要素の型が対応版と異なります')
+            and isinstance(server['env_vars'], list) and all(is_env_var(item) for item in server['env_vars'])
+            and (server['environment_id'] is None or is_str(server['environment_id']))):
+        fail('servers の要素の型が対応 protocol と異なります')
     env_vars = []
     for item in server['env_vars']:
         if is_str(item):
             env_vars.append(item)
         else:
             env_vars.append(item['name'] + ('[' + item['source'] + ']' if item.get('source') else ''))
-    line = '  - %s: %s%s（cwd: %s、env: %s、env_vars: %s）' % (
+    line = '  - %s: %s%s（cwd: %s、env: %s、env_vars: %s%s）' % (
         server['name'], server['command'], ''.join(' ' + arg for arg in server['args']),
         server['cwd'] if server['cwd'] is not None else '-',
-        ', '.join(server['env_keys']) or '-', ', '.join(env_vars) or '-')
+        ', '.join(server['env_keys']) or '-', ', '.join(env_vars) or '-',
+        '、environment: ' + server['environment_id'] if server['environment_id'] is not None else '')
     lines.append(CONTROL.sub('', line))
 # 一時ファイルは umask に依らず 0600 で作る（表示行に command/args が含まれるため）。
 import os
@@ -1266,7 +1262,7 @@ check_codex_approval() {
     echo "INFO: Codex MCP 審査: 対象のローカル command 定義は 0 件です。空定義として記録し、本起動でも照合します" >&2
     write_codex_record "$CODEX_HASH"
   else
-    echo "WARNING: Codex の設定済み MCP に、前回の承認から変わっている（または未承認の）ローカル command 定義があります。そのコードは Codex のセッション中に実行され、export された全ての秘密を読めます:" >&2
+    echo "WARNING: リポジトリの .codex/config.toml に、前回の承認から変わっている（または未承認の）ローカル command 定義があります。そのコードは Codex のセッション中に実行され、export された全ての秘密を読めます:" >&2
     if [[ -n "$recorded" ]]; then
       echo "  （注: 前回のホスト側承認から定義が変わっています）" >&2
     fi
@@ -1872,7 +1868,7 @@ check_mcp_approval() {
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
 #                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
-#                  同梱 default（24.18.0 / 対応版 Codex）を持ち、project 側の空ファイルは
+#                  同梱 default（24.18.0 / Codex 0.156.0）を持ち、project 側の空ファイルは
 #                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
 #                  （allowed-ports.txt・base-image.txt）

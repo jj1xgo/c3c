@@ -224,15 +224,17 @@ if [ "$CC_AGENT" = claude ]; then
   exec claude --permission-mode auto
 fi
 
-# Codex 経路（c3c 第1段階）。同一の secret export を終えた環境で、固定 home・固定 CLI 実体・
-# 作業基点 /workspace・固定の設定解決用 override のもとに起動時 MCP 審査を行う。
-#   preflight: snapshot の protocol 1 文書だけを fd3（元の stdout）へ出し、agent を起動せず終了する。
-#   run:       host が :ro で渡した承認記録と再計算した hash が一致した場合だけ Codex を exec する。
-# 未導入・版不一致・審査不能・不一致は停止し、Claude へ fallback しない。
+# Codex 経路（c3c 第1段階、#150 で protocol 2）。起動時 MCP 審査はリポジトリ同梱の .codex/config.toml を
+# 読む。Codex CLI は本起動の exec だけで使い、審査は CLI の版にも実行にも依存しない。
+#   preflight: snapshot の protocol 2 文書だけを fd3（元の stdout）へ出し、agent を起動せず終了する。
+#   run:       host が :ro で渡した承認記録と、同じファイルから再計算した hash が一致した場合だけ Codex を exec する。
+# 未導入・審査不能・不一致は停止し、Claude へ fallback しない。
 CODEX_AUDIT=/usr/local/bin/codex-mcp-audit.py
 CODEX_APPROVED=/etc/claude-container/codex-mcp-approved.json
+# 審査対象はリポジトリ同梱の project 設定だけ（#150）。Codex の CLI 実体や版には依存しない。
+CODEX_PROJECT_CONFIG=/workspace/.codex/config.toml
 if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then
-  echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.c3c/codex-version.txt が空（opt-out）のままビルドしたか、旧いイメージです。対応版を書くか空ファイルを削除して同梱 default を使い、-b で再ビルドしてください。起動を中止します" >&2
+  echo "ERROR: Codex CLI が導入されていません（$CODEX_CLI）。.c3c/codex-version.txt が空（opt-out）のままビルドしたか、旧いイメージです。固定版か latest を書くか空ファイルを削除して同梱 default を使い、-b で再ビルドしてください。起動を中止します" >&2
   exit 1
 fi
 # 同梱 bubblewrap の固定リンクが無い・壊れている・実行できない場合、上流の PATH 探索はその候補を飛ばして
@@ -247,20 +249,20 @@ if ! cd -- /workspace; then
   exit 1
 fi
 if [ "$CODEX_START_MODE" = preflight ]; then
-  echo "INFO: Codex 起動時 MCP 審査: 設定済み MCP の実行定義を取得します（agent は起動しません）" >&2
-  if ! python3 -I "$CODEX_AUDIT" --codex "$CODEX_CLI" snapshot >&3; then
+  echo "INFO: Codex 起動時 MCP 審査: $CODEX_PROJECT_CONFIG の MCP 定義を読みます（agent は起動しません）" >&2
+  if ! python3 -I "$CODEX_AUDIT" --config "$CODEX_PROJECT_CONFIG" snapshot >&3; then
     echo "ERROR: Codex 起動時 MCP 審査の snapshot に失敗しました。起動を中止します" >&2
     exit 1
   fi
   exec 3>&-
   exit 0
 fi
-if ! python3 -I "$CODEX_AUDIT" --codex "$CODEX_CLI" verify "$CODEX_APPROVED"; then
+if ! python3 -I "$CODEX_AUDIT" --config "$CODEX_PROJECT_CONFIG" verify "$CODEX_APPROVED"; then
   echo "ERROR: Codex の MCP 実行定義がホスト側の承認記録と一致しないか検証できません。Codex を起動しません" >&2
   exit 1
 fi
-# 固定 argv。sandbox は launcher の --read-only だけで切り替え、設定解決用 override は helper の
-# snapshot/verify（codex-mcp-audit.py の LIST_ARGS）と同じ値を渡す（検査と本起動の一致）。
+# 固定 argv。sandbox は launcher の --read-only だけで切り替える。固定の trust override は /workspace を
+# trusted project にして .codex/config.toml を有効にする値。審査は同じファイルを直接読むので、この引数とは独立。
 codex_sandbox=workspace-write
 if [ "$CODEX_READ_ONLY" = 1 ]; then
   codex_sandbox=read-only

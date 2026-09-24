@@ -76,7 +76,7 @@ elif args[:1] == ['compose']:
         if rc:
             sys.exit(rc)
         state['image_exists'] = True
-        state['label'] = state.get('build_label', '1')
+        state['label'] = state.get('build_label', '2')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
         spec = state.get('preflight', {})
@@ -109,8 +109,8 @@ exit 2
 def protocol(hash_value=HASH_A, servers=None):
     if servers is None:
         servers = [{'name': 'alpha', 'command': 'python3', 'args': ['server.py'], 'cwd': '/workspace',
-                    'env_keys': [], 'env_vars': []}]
-    doc = {'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': hash_value, 'count': len(servers), 'servers': servers}
+                    'env_keys': [], 'env_vars': [], 'environment_id': None}]
+    doc = {'protocol_version': 2, 'hash': hash_value, 'count': len(servers), 'servers': servers}
     return json.dumps(doc, ensure_ascii=False) + '\n'
 
 
@@ -159,7 +159,7 @@ class LaunchCase(unittest.TestCase):
         (self.bin / 'podman').chmod(0o755)
         (self.bin / 'curl').write_text(CURL)
         (self.bin / 'curl').chmod(0o755)
-        self.state = {'image_exists': True, 'label': '1', 'preflight': {'stdout': protocol()}}
+        self.state = {'image_exists': True, 'label': '2', 'preflight': {'stdout': protocol()}}
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
                     'TMPDIR': str(self.tmpdir), 'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
         self.state_dir = self.home / '.local/state/claude-container'
@@ -176,10 +176,9 @@ class LaunchCase(unittest.TestCase):
         return os.fsdecode(result.stdout)
 
     def approve_codex(self, hash_value=HASH_A):
-        record = self.store / 'codex' / self.project_name() / f'{SUPPORTED}.json'
+        record = self.store / 'codex' / self.project_name() / 'project-config.json'
         record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text(json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': hash_value},
-                                     separators=(',', ':')) + '\n')
+        record.write_text(json.dumps({'protocol_version': 2, 'hash': hash_value}, separators=(',', ':')) + '\n')
         return record
 
     def pref_key(self, path=None):
@@ -784,13 +783,13 @@ class MemoryUpdateTests(LaunchCase):
             self.assertEqual(self.main_runs(), [])
             self.assertEqual(self.saved_agent(), 'claude')
         with self.subTest(stage='preflight'):
-            self.state = {'image_exists': True, 'label': '1', 'preflight': {'stdout': protocol(), 'rc': 5}}
+            self.state = {'image_exists': True, 'label': '2', 'preflight': {'stdout': protocol(), 'rc': 5}}
             result = self.run_c3c('codex', str(self.proj))
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.main_runs(), [])
             self.assertEqual(self.saved_agent(), 'claude')
         with self.subTest(stage='approval rejected'):
-            self.state = {'image_exists': True, 'label': '1', 'preflight': {'stdout': protocol()}}
+            self.state = {'image_exists': True, 'label': '2', 'preflight': {'stdout': protocol()}}
             result = self.run_c3c('codex', str(self.proj), tty=True, answer='n')
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.main_runs(), [])

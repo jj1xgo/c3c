@@ -2,9 +2,10 @@
 """entrypoint の agent 分岐（c3c 第1段階 Task 3）の回帰試験。
 
 実物の entrypoint.sh を隔離 fixture で実行する（tests/test_ipv6_entrypoint.py と同じ流儀で、固定パスを
-試験用コピーへ置換する）。sudo/firewall-refresh/claude は記録だけの fake、Codex CLI は `--version` と
-`mcp list --json` に fixture を返し exec 時の argv/env/cwd を記録する dummy、MCP 審査 helper は Task 1 で
-検証済みの実物 codex-mcp-audit.py を使う。実 /home/node・/workspace・ホストの設定や認証には触れない。
+試験用コピーへ置換する）。sudo/firewall-refresh/claude は記録だけの fake、Codex CLI は exec 時の
+argv/env/cwd を記録する dummy、MCP 審査 helper は実物の codex-mcp-audit.py を使う。審査の fixture は
+試験用 workspace の `.codex/config.toml`（#150 の protocol 2 から helper は Codex CLI を呼ばない）。
+実 /home/node・/workspace・ホストの設定や認証には触れない。
 """
 
 import json
@@ -18,7 +19,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'codex-mcp-audit.py'
-SUPPORTED = '0.156.0'
 TRUST_OVERRIDE = 'projects={"/workspace"={trust_level="trusted"}}'
 FIXED_HOME = '/home/node/.codex'
 FIXED_CLI = '/usr/local/bin/codex'
@@ -27,8 +27,10 @@ FIXED_APPROVED = '/etc/claude-container/codex-mcp-approved.json'
 CLAUDE_APPROVED = '/etc/claude-container/mcp-approved-hash'
 SECRETS_MOUNT = '/home/node/.config/claude-container/secrets'
 FIXED_BWRAP_DIR = '/usr/local/libexec/c3c/codex-bwrap'
+FIXED_PROJECT_CONFIG = '/workspace/.codex/config.toml'
 
-# Codex CLI の dummy: 版と一覧は状態ファイルの fixture、それ以外の argv は exec として記録する。
+# Codex CLI の dummy: 呼び出しをすべて記録する。protocol 2 の審査は CLI を呼ばないので、'version'/'list' が
+# 記録されたら審査が CLI に依存している回帰になる。
 CODEX = '''#!/usr/bin/env python3
 import json, os, sys
 state_path = %r
@@ -42,7 +44,7 @@ with open(state['calls'], 'a') as out:
 if kind == 'version':
     sys.stdout.write(state.get('version', 'codex-cli 0.156.0\\n'))
 elif kind == 'list':
-    sys.stdout.write(json.dumps(state['listing']) + '\\n')
+    sys.stdout.write('[]\\n')
 sys.exit(0)
 '''
 
@@ -53,18 +55,10 @@ exit 0
 '''
 
 
-def stdio(name, command='python3', args=('server.py',), env=None, env_vars=('HOME',), cwd='/workspace', enabled=True):
-    return {'name': name, 'enabled': enabled, 'disabled_reason': None,
-            'transport': {'type': 'stdio', 'command': command, 'args': list(args), 'env': env,
-                          'env_vars': list(env_vars), 'cwd': cwd},
-            'startup_timeout_sec': None, 'tool_timeout_sec': None, 'auth_status': 'unsupported'}
-
-
-def http_helper(name):
-    return {'name': name, 'enabled': True, 'disabled_reason': None,
-            'transport': {'type': 'streamable_http', 'url': 'https://mcp.example/mcp', 'bearer_token_env_var': None,
-                          'http_headers': None, 'env_http_headers': None, 'http_headers_helper': '<redacted>'},
-            'startup_timeout_sec': None, 'tool_timeout_sec': None, 'auth_status': 'unsupported'}
+# リポジトリ同梱の .codex/config.toml の fixture。
+STDIO_ALPHA = ('[mcp_servers.alpha]\ncommand = "python3"\nargs = ["server.py"]\ncwd = "/workspace"\n'
+               'env_vars = ["HOME"]\nenv = { API_KEY = "v" }\n')
+HELPER_HTTP = '[mcp_servers.remote]\nurl = "https://mcp.example/mcp"\nhttp_headers_helper = "/bin/x"\n'
 
 
 class EntrypointCase(unittest.TestCase):
@@ -86,7 +80,9 @@ class EntrypointCase(unittest.TestCase):
         self.approved = self.root / 'codex-approved.json'
         self.claude_approved = self.root / 'claude-approved'
         self.state_path = self.root / 'state.json'
-        self.state = {'calls': str(self.calls), 'listing': [stdio('alpha', env={'API_KEY': 'v'})]}
+        self.state = {'calls': str(self.calls)}
+        self.config_text = STDIO_ALPHA
+        self.project_config = self.workspace / '.codex' / 'config.toml'
         self.codex = self.root / 'codex'
         self.codex.write_text(CODEX % str(self.state_path))
         self.codex.chmod(0o755)
@@ -103,10 +99,12 @@ class EntrypointCase(unittest.TestCase):
         (self.bwrap_dir / 'bwrap').symlink_to(self.bwrap_real)
         source = (ROOT / 'entrypoint.sh').read_text()
         for needle in (FIXED_HOME, FIXED_HELPER, FIXED_CLI, FIXED_APPROVED, CLAUDE_APPROVED, SECRETS_MOUNT, FIXED_BWRAP_DIR,
+                       FIXED_PROJECT_CONFIG,
                        '/usr/local/bin/firewall-refresh.py', '/workspace/.mcp.json', 'cd -- /workspace'):
             self.assertIn(needle, source, f'entrypoint.sh に固定パス {needle} がない')
         # 固定パスを試験用コピーへ置換する。trust override の "/workspace" は helper 側の固定値と一致させるため置換しない。
         source = (source.replace(FIXED_HELPER, str(HELPER)).replace(FIXED_CLI, str(self.codex))
+                  .replace(FIXED_PROJECT_CONFIG, str(self.project_config))
                   .replace(FIXED_HOME, str(self.codex_home)).replace(FIXED_APPROVED, str(self.approved))
                   .replace(CLAUDE_APPROVED, str(self.claude_approved)).replace(SECRETS_MOUNT, str(self.fixture_mount_dir))
                   .replace(FIXED_BWRAP_DIR, str(self.bwrap_dir))
@@ -118,8 +116,16 @@ class EntrypointCase(unittest.TestCase):
         self.env = {'PATH': str(self.bin) + ':' + os.defpath, 'RECORD': str(self.record), 'HOME': str(self.root / 'home'),
                     'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
 
+    def write_project_config(self, text):
+        self.config_text = text
+
     def run_entrypoint(self, agent=None, mode=None, read_only=None, tty_answer=None):
         self.state_path.write_text(json.dumps(self.state))
+        if self.config_text is None:
+            self.project_config.unlink(missing_ok=True)
+        else:
+            self.project_config.parent.mkdir(parents=True, exist_ok=True)
+            self.project_config.write_text(self.config_text)
         self.record.write_text('')
         self.calls.write_text('')
         env = dict(self.env)
@@ -139,7 +145,7 @@ class EntrypointCase(unittest.TestCase):
         result = self.run_entrypoint('codex', 'preflight')
         self.assertEqual(result.returncode, 0, result.stderr)
         protocol = json.loads(result.stdout)
-        self.approved.write_text(json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': protocol['hash']}) + '\n')
+        self.approved.write_text(json.dumps({'protocol_version': 2, 'hash': protocol['hash']}) + '\n')
         return protocol
 
 
@@ -189,25 +195,32 @@ class PreflightTests(EntrypointCase):
         result = self.run_entrypoint('codex', 'preflight')
         self.assertEqual(result.returncode, 0, result.stderr)
         protocol = json.loads(result.stdout)
-        self.assertEqual(set(protocol), {'protocol_version', 'codex_version', 'hash', 'count', 'servers'})
+        self.assertEqual(set(protocol), {'protocol_version', 'hash', 'count', 'servers'})
         self.assertEqual(protocol['count'], 1)
         self.assertIn('firewall stdout noise', result.stderr)
         self.assertNotIn('firewall stdout noise', result.stdout)
         self.assertEqual([r.split()[0] for r in self.records], ['sudo', 'refresh'])
-        self.assertEqual(self.kinds(), ['version', 'list'])
+        self.assertEqual(self.kinds(), [])
         self.assertNotIn('claude-only', result.stderr)
         self.assertNotIn('TTY', result.stderr)
 
-    def test_preflight_after_firewall_and_secret_export(self):
-        (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
+    def test_preflight_after_firewall_reads_project_config_without_cli(self):
+        # protocol 2 の snapshot は Codex CLI も MCP command も実行しないので、秘密 export との順序は
+        # 境界の要件ではない（不変条件 72 行）。firewall の後に走り、CLI を呼ばないことだけを確かめる。
         result = self.run_entrypoint('codex', 'preflight')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.records[0].startswith('sudo'))
-        self.assertEqual(self.codex_calls[0]['env']['MCP_TOKEN'], 'tok')
-        self.assertEqual(self.codex_calls[0]['env']['CODEX_HOME'], str(self.codex_home))
+        self.assertEqual(self.kinds(), [])
+        self.assertEqual(json.loads(result.stdout)['servers'][0]['name'], 'alpha')
+
+    def test_missing_project_config_is_an_empty_definition(self):
+        self.write_project_config(None)
+        result = self.run_entrypoint('codex', 'preflight')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['count'], 0)
 
     def test_preflight_failure_is_nonzero_with_empty_stdout(self):
-        self.state['listing'] = [stdio('alpha'), http_helper('remote')]
+        self.write_project_config(STDIO_ALPHA + HELPER_HTTP)
         result = self.run_entrypoint('codex', 'preflight')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, '')
@@ -224,34 +237,45 @@ class RunTests(EntrypointCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 # 本起動では stdout の分離契約は無い（firewall 等の通常出力が出る）。protocol は出ない。
                 self.assertNotIn('"hash"', result.stdout)
-                self.assertEqual(self.kinds(), ['version', 'list', 'exec'])
+                self.assertEqual(self.kinds(), ['exec'])
                 execd = self.codex_calls[-1]
                 self.assertEqual(execd['args'], ['--sandbox', sandbox, '--ask-for-approval', 'on-request', '-c', TRUST_OVERRIDE])
                 self.assertEqual([r.split()[0] for r in self.records], ['sudo', 'refresh'])
                 self.assertIn('一致', result.stderr)
 
-    def test_three_stages_share_home_cwd_override_and_cli(self):
+    def test_only_the_run_exec_calls_cli_with_fixed_home_cwd_and_override(self):
         self.approve_from_preflight()
-        preflight_list = next(c for c in self.codex_calls if c['kind'] == 'list')
+        self.assertEqual(self.kinds(), [])
+        (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
         result = self.run_entrypoint('codex', 'run', '0')
         self.assertEqual(result.returncode, 0, result.stderr)
-        verify_list = next(c for c in self.codex_calls if c['kind'] == 'list')
+        self.assertEqual(self.kinds(), ['exec'])
         execd = self.codex_calls[-1]
-        for stage in (preflight_list, verify_list, execd):
-            self.assertEqual(stage['env']['CODEX_HOME'], str(self.codex_home))
-            self.assertEqual(stage['env']['HOME'], str(self.root / 'home'))
-            self.assertEqual(stage['cwd'], str(self.workspace))
-            self.assertEqual(stage['argv0'], str(self.codex))
-            self.assertEqual(stage['args'][stage['args'].index('-c') + 1], TRUST_OVERRIDE)
+        self.assertEqual(execd['env']['CODEX_HOME'], str(self.codex_home))
+        self.assertEqual(execd['env']['HOME'], str(self.root / 'home'))
+        self.assertEqual(execd['env']['MCP_TOKEN'], 'tok')
+        self.assertEqual(execd['cwd'], str(self.workspace))
+        self.assertEqual(execd['argv0'], str(self.codex))
+        self.assertEqual(execd['args'][execd['args'].index('-c') + 1], TRUST_OVERRIDE)
+
+    def test_codex_version_is_not_consulted(self):
+        self.state['version'] = 'codex-cli 9.9.9\n'
+        self.approve_from_preflight()
+        result = self.run_entrypoint('codex', 'run', '0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.kinds(), ['exec'])
 
     def test_verify_failure_never_execs_native_cli(self):
         self.approve_from_preflight()
         cases = {
-            'changed definition': lambda: self.state.update(listing=[stdio('alpha', args=('server.py', '--evil'), env={'API_KEY': 'v'})]),
+            'config changed': lambda: self.write_project_config(STDIO_ALPHA.replace('["server.py"]', '["server.py", "--evil"]')),
             'empty record': lambda: self.approved.write_text(''),
             'missing record': lambda: self.approved.unlink(),
-            'wrong hash': lambda: self.approved.write_text(json.dumps({'protocol_version': 1, 'codex_version': SUPPORTED, 'hash': '0' * 64})),
-            'helper http appears': lambda: self.state.update(listing=[stdio('alpha', env={'API_KEY': 'v'}), http_helper('remote')]),
+            'wrong hash': lambda: self.approved.write_text(json.dumps({'protocol_version': 2, 'hash': '0' * 64})),
+            'old record shape': lambda: self.approved.write_text(json.dumps({'protocol_version': 1, 'codex_version': '0.156.0', 'hash': '0' * 64})),
+            'helper http appears': lambda: self.write_project_config(STDIO_ALPHA + HELPER_HTTP),
+            'plugin enabled': lambda: self.write_project_config(STDIO_ALPHA + '[plugins."p@m"]\n'),
+            'marketplace defined': lambda: self.write_project_config(STDIO_ALPHA + '[marketplaces.m]\nsource_type = "git"\n'),
         }
         for label, mutate in cases.items():
             with self.subTest(case=label):
@@ -263,23 +287,19 @@ class RunTests(EntrypointCase):
                 self.assertNotIn('exec', self.kinds(), label)
                 self.assertFalse(any(r.startswith('claude') for r in self.records), label)
 
-    def test_missing_cli_or_unsupported_version_has_no_fallback(self):
+    def test_missing_cli_has_no_fallback(self):
         self.approve_from_preflight()
-        for label, mutate in (('missing cli', lambda: self.codex.unlink()),
-                              ('wrong version', lambda: self.state.update(version='codex-cli 0.157.0\n'))):
-            with self.subTest(case=label):
-                mutate()
-                for mode in ('preflight', 'run'):
-                    result = self.run_entrypoint('codex', mode, '0')
-                    self.assertEqual(result.returncode, 1, mode)
-                    if mode == 'preflight':
-                        self.assertEqual(result.stdout, '')
-                    self.assertNotIn('"hash"', result.stdout)
-                    self.assertNotIn('exec', self.kinds())
-                    self.assertFalse(any(r.startswith('claude') for r in self.records))
-                    self.assertIn('Codex', result.stderr)
-                self.setUp()
-                self.approve_from_preflight()
+        self.codex.unlink()
+        for mode in ('preflight', 'run'):
+            with self.subTest(mode=mode):
+                result = self.run_entrypoint('codex', mode, '0')
+                self.assertEqual(result.returncode, 1, mode)
+                if mode == 'preflight':
+                    self.assertEqual(result.stdout, '')
+                self.assertNotIn('"hash"', result.stdout)
+                self.assertNotIn('exec', self.kinds())
+                self.assertFalse(any(r.startswith('claude') for r in self.records))
+                self.assertIn('Codex', result.stderr)
 
 
 class ComposeContractTests(EntrypointCase):
@@ -354,10 +374,12 @@ class SecretIsolationTests(EntrypointCase):
         (self.fixture_mount_dir / 'export' / 'PATH').write_text('/tmp/evil-bin\n')
         (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
         self.approve_from_preflight()
+        self.assertEqual(self.kinds(), [], 'preflight は CLI を呼ばない')
         for mode in ('preflight', 'run'):
             with self.subTest(mode=mode):
                 result = self.run_entrypoint('codex', mode, '0')
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.kinds(), [] if mode == 'preflight' else ['exec'])
                 for call in self.codex_calls:
                     self.assertEqual(call['env']['CODEX_HOME'], str(self.codex_home))
                     self.assertEqual(call['env']['HOME'], str(self.root / 'home'))
@@ -376,14 +398,12 @@ class BundledBwrapPathTests(EntrypointCase):
 
     def test_preflight_and_run_share_prepended_path(self):
         self.approve_from_preflight()
-        self.assertEqual(self.kinds(), ['version', 'list'])
-        for call in self.codex_calls:
-            self.assertEqual(call['env']['PATH'], self.codex_path())
+        self.assertEqual(self.kinds(), [])
         for read_only in ('0', '1'):
             with self.subTest(read_only=read_only):
                 result = self.run_entrypoint('codex', 'run', read_only)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(self.kinds(), ['version', 'list', 'exec'])
+                self.assertEqual(self.kinds(), ['exec'])
                 for call in self.codex_calls:
                     self.assertEqual(call['env']['PATH'], self.codex_path())
 

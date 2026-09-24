@@ -355,7 +355,7 @@ class CheckAndCleanContractTests(ConfigCase):
                 (self.build_context / name).mkdir(parents=True, exist_ok=True)
                 (self.build_context / name / 'packages.txt').write_text('')
                 record.mkdir(parents=True, exist_ok=True)
-                (record / f'{SUPPORTED}.json').write_text('{}')
+                (record / 'project-config.json').write_text('{}')
                 (self.state_dir / 'projects').write_text(f'{self.proj}\n{self.root}/keep\n')
                 self.state['image_exists'] = True
                 # 設定が不正でも通常起動は止まる…
@@ -403,7 +403,7 @@ class ResolverConsistencyTests(ConfigCase):
         (directory / 'base-image.txt').write_text('debian:testing\n')
 
     def run_and_capture(self, *args):
-        self.state = {'image_exists': False, 'label': '1', 'preflight': {}}
+        self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
         result = self.run_c3c(*args)
         run = self.assert_single_run(result, 'claude')
         self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir), '採用した配置の env を読んでいる')
@@ -503,18 +503,17 @@ class BuildInputDefaultTests(ConfigCase):
         yield 'new', self.new
 
     def launch_claude(self, *extra):
-        self.state = {'image_exists': False, 'label': '1', 'preflight': {}}
+        self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
         result = self.run_c3c('claude', *extra, str(self.proj))
         run = self.assert_single_run(result, 'claude')
         return result, run, self.staged_files()
 
-    def test_bundled_defaults_are_the_contract_values_and_match_the_codex_helper(self):
+    def test_bundled_defaults_are_the_contract_values(self):
         self.assertEqual((REPO / 'node-version.txt').read_bytes(), (DEFAULT_NODE + '\n').encode())
         self.assertEqual((REPO / 'codex-version.txt').read_bytes(), (DEFAULT_CODEX + '\n').encode())
-        launcher = (REPO / 'c3c').read_text()
-        self.assertIn(f'CODEX_SUPPORTED_VERSION={DEFAULT_CODEX}\n', launcher)
-        helper = (REPO / 'codex-mcp-audit.py').read_text()
-        self.assertIn(f"SUPPORTED_VERSION = '{DEFAULT_CODEX}'", helper)
+        # #150 から起動時審査は Codex の版に依存しない（launcher・helper に対応版の定数を持たない）。
+        self.assertNotIn('CODEX_SUPPORTED_VERSION', (REPO / 'c3c').read_text())
+        self.assertNotIn('SUPPORTED_VERSION', (REPO / 'codex-mcp-audit.py').read_text())
 
     def test_absent_files_use_bundled_defaults_in_both_layouts(self):
         hashes = {}
@@ -598,12 +597,12 @@ class BuildInputDefaultTests(ConfigCase):
                 # Codex を起動しようとすると opt-out を理由に止まり、container を起動しない。
                 for entry, runner, args in (('c3c', self.run_c3c, ['codex', str(self.proj)]),
                                             ('legacy', self.run_legacy, ['--agent', 'codex', str(self.proj)])):
-                    self.state = {'image_exists': True, 'label': '1', 'preflight': {}}
+                    self.state = {'image_exists': True, 'label': '2', 'preflight': {}}
                     result = runner(*args)
                     self.assertEqual(result.returncode, 1, f'{entry}: ' + result.stdout + result.stderr)
                     self.assertIn(f'{conf}/codex-version.txt', result.stderr)
                     self.assertIn('opt-out', result.stderr)
-                    self.assertIn(DEFAULT_CODEX, result.stderr, '使うなら対応版を案内する')
+                    self.assertIn('latest', result.stderr, '使うなら固定版か latest を案内する')
                     self.assert_no_containers()
                 check = self.run_c3c('codex', '--check', str(self.proj))
                 self.assertEqual(check.returncode, 1, check.stdout + check.stderr)

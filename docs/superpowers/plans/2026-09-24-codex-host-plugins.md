@@ -631,6 +631,8 @@ docs/superpowers/plans/2026-09-24-codex-host-plugins.md の Task 1〜3 を、ブ
 
 推奨実装: Codex（host の checkout と実 Podman で完結し、各 Step のコードと Expected を逐語で確定させたため。判定基準 4 に当たる。ただし上記のとおり Podman の検証には `danger-full-access` が要る見込みで、それを許可しない場合は Claude（Sonnet）が次点。Sonnet ならホストの Claude Code から Podman をそのまま使え、検証を分割せずに済む。Task 4 の A2〜A6 は対話操作なので持ち主か Claude の対話セッションが担う）。
 
+実装: Codex（持ち主指定、2026-09-24）。現在の workspace-write で実装し、Podman を使う必須検証は個別の権限申請で実行する。
+
 ## レビューの記録
 
 - 1 巡目（2026-09-24、対象 `63e4538`）: Codex（GPT-6 Astra、`codex exec --sandbox read-only`）「修正後に渡せる」Important 2・Minor 2。Claude（Opus 5.5、`claude -p` headless、modelUsage で確認）「修正後に渡せる」Important 3・Minor 7。

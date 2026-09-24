@@ -187,6 +187,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 | `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス。未設定なら c3c 同梱の空ファイルを read-only マウントする（後述） |
 | `SECRETS_DIR` | (unset) | GitHub トークン等のシークレットをコンテナへ持ち込む唯一の機構のホスト側パス（後述「GitHub トークンの配線」節） |
 | `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「Codex CLI をセカンドオピニオンとして使う」節）。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する）。実ホストの `~/.codex` と同じ実体を指す指定（表記ゆれ・シンボリックリンクを含む）は起動を中止する |
+| `CODEX_HOST_PLUGINS` | `0` | `1` でホストの `~/.codex/plugins/cache`（ホストの Codex が install した plugin）を、`CODEX_DIR` の内側（コンテナ内 `~/.codex/plugins/cache`）へ `:ro` で重ねる（後述「ホストの Codex plugin を使う」節）。`CODEX_DIR` の設定と、ホストにキャッシュが実在することが条件。`0`/`1` 以外の値は起動と `--check` で拒否 |
 
 `TZ` は起動スクリプトがホストの `/etc/timezone`（なければ `/etc/localtime` シンボリックリンク）から自動検出する。`.c3c/env` またはシェル環境で明示した場合はそちらが優先される。
 

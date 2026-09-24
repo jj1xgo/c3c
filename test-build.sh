@@ -674,6 +674,7 @@ run_launcher_tests() {
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
+  run_codex_host_plugins_launcher_tests
   run_env_file_launcher_tests
   run_clean_ledger_launcher_tests
   run_missing_directory_launcher_tests
@@ -1101,6 +1102,114 @@ run_codex_dir_launcher_tests() {
   launcher_sandbox_cleanup
 }
 
+# CODEX_HOST_PLUGINS（ホストの Codex plugin キャッシュを CODEX_DIR の内側へ :ro で重ねる opt-in）の検証。
+# opt-in の配線（build と run の両方）、不正値・前提欠落・symlink のマウント先を compose 前に拒否すること、
+# --check が何も作らないこと、既存内容が隠れる WARNING を見る。
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
+run_codex_host_plugins_launcher_tests() {
+  local root bin home proj out rc before_ctx value src_real
+  launcher_sandbox_init
+  log "## ホストの Codex plugin キャッシュ共有（CODEX_HOST_PLUGINS）"
+  mkdir -p "$home/.codex/plugins/cache/mk/p/1.0" "$home/.codex-container" "$proj/.claude-container.d" "$root/outside"
+  chmod 700 "$home/.codex-container"
+  src_real=$(cd "$home/.codex/plugins/cache" && pwd -P)
+
+  run_launcher CODEX_DIR="$home/.codex-container" C3C_CODEX_PLUGINS_SOURCE=/tmp/injected
+  check "未設定なら override を選ばず、注入された内部変数も破棄する" \
+    bash -c '[ "$1" = 0 ] && ! grep -q "compose\.codex-plugins" "$2/compose-args" && ! grep -q "^C3C_CODEX_PLUGINS_SOURCE=" "$2/compose-env" && [ ! -e "$3/.codex-container/plugins" ]' _ "$rc" "$root" "$home"
+
+  printf 'CODEX_DIR=~/.codex-container\nCODEX_HOST_PLUGINS=1\n' > "$proj/.claude-container.d/env"
+  local snapshot_ok=1
+  snapshot_check_targets > "$root/before" 2>> "$LOG_FILE" || snapshot_ok=0
+  run_launcher_check
+  snapshot_check_targets > "$root/after" 2>> "$LOG_FILE" || snapshot_ok=0
+  check "--check は共有を診断し、マウント先を作らない" \
+    bash -c '[ "$1" -eq 1 ] && [ "$2" = 0 ] && [[ "$3" == *"[OK]   Codex plugin 共有 (ro): $5 -> /home/node/.codex/plugins/cache"* ]] && cmp -s "$4/before" "$4/after"' _ "$snapshot_ok" "$rc" "$out" "$root" "$src_real"
+
+  run_launcher
+  check "env の opt-in で実体解決した source と override を渡し、マウント先を作る" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_CODEX_PLUGINS_SOURCE=$3" "$2/compose-env" && grep -qxF "$4/compose.codex-plugins.yml" "$2/compose-args" && [ -d "$5/.codex-container/plugins/cache" ] && [ ! -L "$5/.codex-container/plugins/cache" ]' _ "$rc" "$root" "$src_real" "$SCRIPT_DIR" "$home"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "build と run の両方に override が渡る" \
+    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.1" && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.2"' _ "$rc" "$root" "$SCRIPT_DIR"
+  : > "$proj/.claude-container.d/env"
+
+  touch "$home/.codex-container/plugins/cache/container-installed"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "マウント先に既存内容があれば隠れることを WARNING で示し、起動は続ける" \
+    bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"plugins/cache"* ]]' _ "$rc" "$out"
+  rm -f "$home/.codex-container/plugins/cache/container-installed"
+
+  for value in 2 true '1 ' yes; do
+    run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS="$value"
+    check "不正値 '$value' を起動時に拒否する" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"CODEX_HOST_PLUGINS"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS="$value"
+    check "不正値 '$value' を --check も拒否する" [ "$rc" -ne 0 ]
+  done
+
+  run_launcher CODEX_HOST_PLUGINS=1
+  check "CODEX_DIR 未設定の opt-in を拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"CODEX_DIR"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+
+  mv "$home/.codex/plugins/cache" "$home/.codex/plugins/cache.off"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "ホストに plugin キャッシュが無ければ拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*".codex/plugins/cache"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+  run_launcher_check CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "--check もキャッシュ欠落を拒否する" [ "$rc" -ne 0 ]
+  mv "$home/.codex/plugins/cache.off" "$home/.codex/plugins/cache"
+
+  rm -rf "$home/.codex-container/plugins"
+  ln -s "$root/outside" "$home/.codex-container/plugins"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "symlink のマウント先（plugins）を拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"symlink"* ]] && [ ! -e "$3/compose-env" ] && [ -z "$(ls -A "$3/outside")" ]' _ "$rc" "$out" "$root"
+  rm -f "$home/.codex-container/plugins"
+  mkdir -p "$home/.codex-container/plugins"
+  ln -s "$root/outside" "$home/.codex-container/plugins/cache"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "symlink のマウント先（plugins/cache）を拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"symlink"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+  run_launcher_check CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "--check も symlink のマウント先を拒否する" [ "$rc" -ne 0 ]
+  rm -f "$home/.codex-container/plugins/cache"
+  : > "$home/.codex-container/plugins/cache"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "ファイルのマウント先を拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+  rm -f "$home/.codex-container/plugins/cache"
+
+  # /tmp/.. は guard_codex_dir() が / に正規化する（末尾 / の除去を落とすと見落とす）。
+  for value in "$home/.codex/plugins/cache" "$home/.codex/plugins" /tmp/..; do
+    run_launcher CODEX_DIR="$value" CODEX_HOST_PLUGINS=1
+    check "source と重なる CODEX_DIR を拒否する: $value" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"重なり"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+  done
+
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1 EXTRA_MOUNT="$home"
+  check "別の rw マウントと source の重なりを WARNING で示し、起動は続ける" \
+    bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"CODEX_HOST_PLUGINS"*"rw"* ]]' _ "$rc" "$out"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "重ならなければ重なりの WARNING を出さない" \
+    bash -c '[ "$1" = 0 ] && [[ "$2" != *"CODEX_HOST_PLUGINS の source"*"rw"* ]]' _ "$rc" "$out"
+
+  # source が symlink なら、compose へは実体を渡す（未解決の綴りを渡す実装を赤にする）。
+  mkdir -p "$root/real-cache/mk"
+  mv "$home/.codex/plugins/cache" "$home/.codex/plugins/cache.orig"
+  ln -s "$root/real-cache" "$home/.codex/plugins/cache"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "symlink の source は実体へ解決して渡す" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_CODEX_PLUGINS_SOURCE=$(cd "$2/real-cache" && pwd -P)" "$2/compose-env"' _ "$rc" "$root"
+  rm -f "$home/.codex/plugins/cache"
+  mv "$home/.codex/plugins/cache.orig" "$home/.codex/plugins/cache"
+
+  launcher_sandbox_cleanup
+}
+
 # .claude-container.d/env の許可リスト（claude-container#44）と、対象プロジェクト直下の
 # .env を compose の補間に使わせない遮断（claude-container#60）の検証。env ファイルは
 # 実際に $proj/.claude-container.d/env へ書く（既存テストのようにシェル環境で渡すと、
@@ -1360,7 +1469,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return

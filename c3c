@@ -33,8 +33,8 @@ CHECK_HAS_ERROR=0
 CHECK_HAS_WARN=0
 
 # launcher が設定から選ぶ固定 Compose override の -f 引数列（compose.ipv6.yml・
-# compose.plugins-alias.yml・compose.shared-home.yml・compose.shared-host.yml・compose.agents.yml）。
-# guard_ipv6()・guard_plugins_alias()・guard_shared_home_alias()・guard_agents_dir() が += で積み、
+# compose.plugins-alias.yml・compose.shared-home.yml・compose.shared-host.yml・compose.agents.yml・compose.codex-plugins.yml）。
+# guard_ipv6()・guard_plugins_alias()・guard_shared_home_alias()・guard_agents_dir()・guard_codex_host_plugins() が += で積み、
 # dispatch の build と run の両方へ同じ配列を渡す（片方だけだと -b の build と直後の
 # run で構成が食い違う）。--check は check_one_project() の冒頭でプロジェクトごとに
 # リセットする。任意の podman 引数は受け付けない。
@@ -722,6 +722,7 @@ ENV_FILE_ALLOWED_KEYS=(
   GITCONFIG_FILE
   SECRETS_DIR
   CODEX_DIR
+  CODEX_HOST_PLUGINS
 )
 readonly -a ENV_FILE_ALLOWED_KEYS
 load_env_file() {
@@ -1679,6 +1680,82 @@ guard_agents_dir() {
   return 0
 }
 
+# ホストの Codex plugin キャッシュ（$HOME/.codex/plugins/cache）を、専用 CODEX_DIR（/home/node/.codex、rw）の
+# 内側 /home/node/.codex/plugins/cache へ :ro で重ねる opt-in（CODEX_HOST_PLUGINS=1）。ホストの Codex は
+# キャッシュの skill・hook を読むので :ro 必須（~/.claude/plugins と同じ理由）。source は $HOME に固定し、
+# 任意パスは受け付けない。plugin の有効化は CODEX_DIR/config.toml の user 層で利用者が行う（launcher は読まない・
+# 書かない）。ここでは検証と override の選択だけを行い、マウント先の作成は prepare_codex_host_plugins() が
+# Claude の placeholder と同じ位置で行う（--check は何も作らない）。マウント先は rw の CODEX_DIR の中にあるため、
+# symlink と型不一致を validate_claude_config_ro_path() で拒否する（植えられた symlink でマウント先をずらさせない）。
+guard_codex_host_plugins() {
+  unset C3C_CODEX_PLUGINS_SOURCE
+  CODEX_HOST_PLUGINS_READY=0
+  case "${CODEX_HOST_PLUGINS:-0}" in
+    ''|0) return 0 ;;
+    1) ;;
+    *) guard_fail "ERROR: CODEX_HOST_PLUGINS は 0 または 1 を指定してください。起動を中止します。" || return 1; return 1 ;;
+  esac
+  if [[ -z "${CODEX_DIR:-}" ]]; then
+    guard_fail "ERROR: CODEX_HOST_PLUGINS=1 には CODEX_DIR が必要です（plugin キャッシュは CODEX_DIR の内側へ重ねます）。起動を中止します。" || return 1
+    return 1
+  fi
+  local source="$HOME/.codex/plugins/cache" source_real codex_real path other other_real
+  if [[ ! -d "$source" ]] || ! source_real=$(CDPATH='' cd -- "$source" >/dev/null 2>&1 && pwd -P); then
+    guard_fail "ERROR: CODEX_HOST_PLUGINS=1 ですが、ホストの $source がディレクトリとして見つかりません（ホストの Codex で plugin を install してから有効にしてください）。起動を中止します。" || return 1
+    return 1
+  fi
+  # instruction_paths_overlap は末尾 / を含む値（/ 自体）を正しく比べられないので、比較用に末尾 / を除く
+  # （/ は空文字になり、"$x" == ""/* がすべての絶対パスに一致して「重なり」と判定される）。guard_codex_dir() は
+  # /tmp/.. のような値を / に正規化するため、この除去を省くと CODEX_DIR=/ の重なりを見落とす。
+  if ! codex_real=$(CDPATH='' cd -- "$CODEX_DIR" >/dev/null 2>&1 && pwd -P) ||
+     instruction_paths_overlap "${source_real%/}" "${codex_real%/}"; then
+    guard_fail "ERROR: CODEX_HOST_PLUGINS=1 の source（$source_real）と CODEX_DIR（$CODEX_DIR）に重なりがあるか、CODEX_DIR を解決できません。起動を中止します。" || return 1
+    return 1
+  fi
+  for path in "${codex_real%/}/plugins" "${codex_real%/}/plugins/cache"; do
+    validate_claude_config_ro_path "$path" dir || return 1
+  done
+  # 別の rw マウントと source の包含を警告する（guard_agents_dir() と同じ扱い。起動は止めない）。
+  # 重なる rw マウント経由ではホストのキャッシュを書けるので、:ro はこのマウントにしか効かない。
+  for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude"; do
+    other="${other/#\~\//$HOME/}"
+    [[ -d "$other" ]] || continue
+    other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
+    if instruction_paths_overlap "${source_real%/}" "${other_real%/}"; then
+      guard_warn "WARNING: CODEX_HOST_PLUGINS の source（$source_real）と $other の範囲が重なるため、別の rw マウント経由でホストの plugin キャッシュを書けます（:ro はこのマウントにしか効きません）。"
+    fi
+  done
+  if [[ -d "$codex_real/plugins/cache" && -n "$(ls -A -- "$codex_real/plugins/cache" 2>/dev/null)" ]]; then
+    guard_warn "WARNING: $codex_real/plugins/cache に既存の内容があります。CODEX_HOST_PLUGINS=1 の間はホストのキャッシュで隠れ、コンテナ内からは見えません。"
+  fi
+  export C3C_CODEX_PLUGINS_SOURCE="$source_real"
+  CODEX_HOST_PLUGINS_READY=1
+  COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.codex-plugins.yml")
+  [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[OK]   Codex plugin 共有 (ro): $source_real -> /home/node/.codex/plugins/cache"
+  return 0
+}
+
+# guard_codex_host_plugins() が選んだマウント先をユーザー権限で作る。--check では何もしない。
+# 作成の直前と直後に型と symlink を検査する（guard からここまでの間に、同じ CODEX_DIR を使う稼働中の
+# 別コンテナが symlink へ差し替えた場合に、mkdir -p がリンク先へ作る前に止める。検査と作成の間の
+# 並行変更の完全な排除は prepare_claude_config_ro() と同じく行わない）。
+prepare_codex_host_plugins() {
+  [[ "${CODEX_HOST_PLUGINS_READY:-0}" == 1 ]] || return 0
+  [[ "${CHECK_MODE:-0}" == 1 ]] && return 0
+  local path
+  for path in "$CODEX_DIR/plugins" "$CODEX_DIR/plugins/cache"; do
+    validate_claude_config_ro_path "$path" dir || return 1
+  done
+  if ! mkdir -p -- "$CODEX_DIR/plugins/cache"; then
+    guard_fail "ERROR: $CODEX_DIR/plugins/cache を作れません。起動を中止します。" || return 1
+    return 1
+  fi
+  for path in "$CODEX_DIR/plugins" "$CODEX_DIR/plugins/cache"; do
+    validate_claude_config_ro_path "$path" dir || return 1
+  done
+  return 0
+}
+
 # プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`claude-container#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
@@ -1690,7 +1767,7 @@ guard_env_boundary_keys() {
   fi
   local key
   local -a boundary_keys_found=()
-  for key in EXTRA_MOUNT SHARED_MOUNT SHARED_MOUNT_HOME_ALIAS AGENTS_DIR SECRETS_DIR GITCONFIG_FILE CODEX_DIR CLAUDE_CONFIG_DIR; do
+  for key in EXTRA_MOUNT SHARED_MOUNT SHARED_MOUNT_HOME_ALIAS AGENTS_DIR SECRETS_DIR GITCONFIG_FILE CODEX_DIR CODEX_HOST_PLUGINS CLAUDE_CONFIG_DIR; do
     if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
       boundary_keys_found+=("$key")
     fi
@@ -1898,7 +1975,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-preflight.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -1940,6 +2017,7 @@ ASSET_HASH_TARGETS=(
   compose.shared-home.yml
   compose.shared-host.yml
   compose.agents.yml
+  compose.codex-plugins.yml
   compose.codex-preflight.yml
   git-askpass.sh
   Dockerfile.claude
@@ -2178,6 +2256,7 @@ check_one_project() {
   guard_shared_mount || true
   guard_shared_home_alias || true
   guard_agents_dir || true
+  guard_codex_host_plugins || true
   guard_env_boundary_keys || true
   guard_base_image || true
   guard_ipv6 || true
@@ -2493,6 +2572,7 @@ guard_codex_agent
 guard_shared_mount
 guard_shared_home_alias
 guard_agents_dir
+guard_codex_host_plugins
 guard_env_boundary_keys
 guard_base_image
 guard_ipv6
@@ -2515,6 +2595,7 @@ fi
 # Codex 承認を拒否しても、これらや native CLI による専用 home への書込みは残りうる。
 prepare_claude_config_ro
 guard_plugins_alias
+prepare_codex_host_plugins
 
 # compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
 mkdir -p "$BUILD_CONTEXT_DIR"

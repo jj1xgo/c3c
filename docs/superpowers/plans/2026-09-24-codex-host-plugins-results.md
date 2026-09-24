@@ -3,7 +3,7 @@
 2026-09-24。対象: `41be0ff`（launcher）・`0e03e48`（Compose 検査）・`3fa0903`（文書）。
 実装計画は [2026-09-24-codex-host-plugins.md](2026-09-24-codex-host-plugins.md)。
 
-Task 1〜3 と受入前の指紋取得・A1 を実施した。A2〜A6 は計画の担当分担により、持ち主か Claude の対話セッションへ引き継ぐ。機能全体の対話受入は未完了。
+Task 1〜3 と受入前の指紋取得・A1 を 2026-09-24 に、A2〜A6 の対話受入を 2026-09-25 に実施し、すべて PASS。
 
 ## 自動検証
 
@@ -51,17 +51,47 @@ PASS。`/tmp` の隔離 fixture に専用 `CODEX_DIR` と `CLAUDE_CONFIG_DIR` �
 
 この指紋は A1 実施前の記録。A2〜A6 を別の時点で行う場合は、ホストでの通常更新と試験による変更を混同しないよう、対話受入の直前にも取得する。
 
-## 残る対話受入
+## A2〜A6: 対話受入
 
-| 項目 | 状態・理由 |
-| --- | --- |
-| A2: host/container の skill 名集合一致 | not run。計画上、対話コンテナを起動する担当へ引き継ぐ |
-| A3: TUI 起動と自動 marketplace 更新のログ確認 | not run。対話担当の実画面・ログ確認が必要。起動を妨げる場合は計画へ戻す |
-| A4: 実キャッシュへの書込み・upgrade 拒否、受入後の指紋・所有者確認 | not run。実キャッシュを使った対話受入の担当へ引き継ぐ |
-| A5: Claude 経路での skill 読込み | not run。Claude の対話起動が必要 |
-| A6: 有効化の設定を残したまま共有を無効化した起動 | not run。起動可否・警告・自動 install・書込みの観測を対話担当へ引き継ぐ |
+2026-09-25、ホスト（codex-cli 0.156.1、superpowers 6.4.1）と `c3c codex -b` で再ビルドしたイメージ（コンテナ内 codex-cli 0.156.0）。対象コードは `ef45c40`（製品コードは `744b182` から不変）。対話起動と TUI の目視は持ち主、`podman exec`・ログ・指紋の確認は Claude の対話セッション（Opus 5.5）が行った。
 
-次の担当は計画 Task 4 の A2〜A6 を実行し、README の A6 未確認表記と本記録を更新する。PR 作成・マージ・タグ作成は未実施。
+準備（fixture の不足の補い。製品コードは変更していない）:
+
+- `allowed-domains.txt` に `chatgpt.com`・`auth.openai.com`、専用 `config.toml` に `cli_auth_credentials_store = "file"` を追加した。
+- 認証は既存の認証ファイルを複製せず、TUI の device code で fixture の専用 home へ新規ログインした（持ち主の選択）。認証ファイルの内容は表示・記録していない。
+- 初回の起動は、`CLAUDE_CONFIG_DIR` の基点に `.claude.json` が無く、podman がその位置にディレクトリを作ってファイルのマウントに失敗した（検査用コンテナが rc=126 で止まり、本起動へ進まなかった）。既存の `compose.yml` の前提（基点に `.claude.json` が実在）で、本変更とは無関係。作られたディレクトリ（ホストのユーザー所有）を消して `{}` のファイルを置き、再起動した。
+
+受入直前のキャッシュ指紋（A1 時点から、ホストでの通常の更新で変化していた）:
+
+```text
+bf6acf991155b270f02ad76f03c453c3c38b0b146cd08aa1581316b880134395
+```
+
+| 項目 | 結果 | 要点 |
+| --- | --- | --- |
+| A2: skill の読み込み | PASS | ホストと `podman exec` の `codex debug prompt-input hi` がどちらも rc=0、superpowers の skill 名 15 件が一致（`diff_rc=0`） |
+| A3: 対話起動 | PASS | 下記 |
+| A4: 書けないこと | PASS | 下記 |
+| A5: Claude 経路 | PASS | `c3c claude` のコンテナ（`CC_AGENT=claude`）でもキャッシュが `ro` でマウントされ、`codex debug prompt-input hi` の skill 集合がホストと一致（rc=0、15 件、`diff_rc=0`） |
+| A6: 無効化と有効化の行の残存 | PASS（記録） | 下記 |
+
+**A3**: 起動エラーや marketplace 更新失敗の表示はなかった。TUI の警告（F2）は週の利用枠の残量だけ。`$superpowers:using-superpowers` で skill が選ばれ、実行された。起動以降の `logs_2.sqlite` を `marketplace`・`plugin`・`Permission denied`・`Read-only`・`os error` と WARN/ERROR で検索した結果:
+
+- ChatGPT ログイン後、Codex はアカウント側で install された plugin（`openai-curated-remote` の `github`・`openai-templates`・`plugin-management`。ホストのキャッシュにあるもの）の同期を 3 回行い、そのたびにキャッシュ内の一時ファイル作成が `Read-only file system (os error 30)` で失敗した（WARN `failed to persist identity for cached remote installed plugin`）。同期は `failed_remote_plugin_ids` を記録して完了し、起動と superpowers の利用を妨げなかった。書込みを止めたのは `:ro` で、firewall ではない。
+- ERROR 2 件は TUI の自己更新確認（`api.github.com` の 403 rate limit）で、本変更と無関係。ログイン前の featured plugin 取得の 401、同梱 curated marketplace の manifest の検証 WARN（`CODEX_DIR/.tmp/plugins`、rw の専用 home）も無関係。
+- 専用 `config.toml` への書込みは TUI の状態（`[tui]` の表示済みフラグ）だけ。
+
+**A4**: コンテナ内の `touch ~/.codex/plugins/cache/probe` は `Read-only file system`（rc=1）、`mount` でも `ro`。`codex plugin marketplace upgrade superpowers-dev` は rc=1 で失敗した。ただし失敗理由は ``marketplace `superpowers-dev` is not configured as a Git marketplace`` で、コンテナ用の設定に marketplace の定義がないため書込みの前に止まった（計画の背景 4 のホストでの実測の `Permission denied` とは経路が違う）。`:ro` による書込み拒否そのものは `touch`、A3 の同期の失敗、実マウント試験の 83 件で確認している。A6 まで終えた後、ホストのキャッシュ指紋は rc=0 で受入前と一致（`cmp_rc=0`）。`find <CODEX_DIR> -not -uid $(id -u)` は出力なしで rc=0（fixture 全体でも 0 件）。
+
+**A6**: `.c3c/env` から `CODEX_HOST_PLUGINS` だけを消し、専用 `config.toml` の `[plugins."superpowers@superpowers-dev"]` `enabled = true` は残して `c3c codex` で起動した。
+
+- 起動は成功し、TUI に plugin 関係の表示はなかった。コンテナ内にキャッシュのマウントはなく、`~/.codex/plugins/cache` は空（ホストの plugin は見えない）。`$` の一覧と `codex debug prompt-input hi` に superpowers は出ない（0 件）。
+- ログには `failed to load plugin: plugin is not installed plugin="superpowers@superpowers-dev"` の WARN が残るだけ。superpowers の install や marketplace の取得は試みなかった。
+- アカウント側の plugin 3 件については bundle のダウンロード（`*.oaiusercontent.com`）を試み、許可リストにないため通信で失敗した（`failed_materialization_remote_plugin_ids`）。
+- `CODEX_DIR/plugins` 配下への書込みはなかった（起動前後の一覧が一致し、起動以降の更新なし）。
+- 推測（未実測）: 利用者がダウンロード先を許可した場合、アカウント側の plugin は rw の専用 `CODEX_DIR` の中に実体化されるとみられる。ホストのキャッシュには及ばない。
+
+受入の fixture（新規ログインの認証を含む）は記録後に削除する。
 
 ## 実装レビューと修正
 
@@ -92,5 +122,5 @@ Minor の対応: 欠落 source とマウント先を作らないこと、親 `pl
 - Claude（claude-opus-5-5、同じ session を resume、`modelUsage` で確認、rc=0）: `744b182` のコードは Yes。Codex Important 1 と Claude M3〜M6 は修正・反映済み。Critical/Important の残存なし、保留の Minor 2件は上記のとおり。
 - 初回結果は互いに共有せず取得した。確認限定巡では修正対象と生ログだけを渡し、全文レビューを繰り返していない。
 
-両者とも A2〜A6 の未実施を機能全体の合格と扱っていない。対話受入が完了するまで PR 作成・マージへ進まない。
+両者とも A2〜A6 の未実施を機能全体の合格と扱っていない。対話受入が完了するまで PR 作成・マージへ進まない（A2〜A6 は上記のとおり 2026-09-25 に完了）。
 リリース時の番号案は `v14.1.0`（新しい opt-in 設定キーの追加）。タグは作成していない。

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**状態**: Task 1〜3 と Task 4 の指紋取得・A1 を実施。A2〜A6 は対話担当へ引継ぎ（[検証記録](2026-09-24-codex-host-plugins-results.md)）。計画の経緯: 2026-09-24 起草、1 巡目の二重レビュー（Codex GPT-6 Astra・Claude Opus 5.5 headless、ともに「修正後に渡せる」、Critical なし）の指摘を反映済み。確認限定巡の結果は末尾「レビューの記録」。
+**状態**: Task 1〜4 を実施（A2〜A6 は 2026-09-25 に Claude の対話セッションと持ち主が実施、すべて PASS。[検証記録](2026-09-24-codex-host-plugins-results.md)）。計画の経緯: 2026-09-24 起草、1 巡目の二重レビュー（Codex GPT-6 Astra・Claude Opus 5.5 headless、ともに「修正後に渡せる」、Critical なし）の指摘を反映済み。確認限定巡の結果は末尾「レビューの記録」。
 
 **Goal:** ホストの Codex で install した plugin（例: superpowers）を、ホストの `~/.claude/plugins` と Claude Code の関係と同じく、コンテナ内の Codex からも読み取り専用で使えるようにする。
 
@@ -576,7 +576,7 @@ cache_fingerprint > /tmp/c3c-cache-before.txt; echo rc=$?
 
 fixture の `.c3c/env` に `CODEX_HOST_PLUGINS=1` を足し、`CODEX_DIR/config.toml` に `[plugins."superpowers@superpowers-dev"]` と `enabled = true` を足す。`c3c --check <fixture>` → `[OK]   Codex plugin 共有 (ro): ...` が出て、`CODEX_DIR/plugins/cache` が作られていない。
 
-- [ ] **A2: skill の読み込み**
+- [x] **A2: skill の読み込み**
 
 `c3c codex -b <fixture>` で再ビルドして起動した状態で、ホストの別端末から実行する（コンテナ名は `podman ps` で確認）:
 
@@ -589,19 +589,19 @@ test -s /tmp/c3c-skills-host.txt && diff /tmp/c3c-skills-host.txt /tmp/c3c-skill
 
 Expected: 両方 `rc=0`、`diff_rc=0`（空でない同じ skill 名の集合。2026-09-24 時点で 15 件）。
 
-- [ ] **A3: 対話起動（Review Focus 2）**
+- [x] **A3: 対話起動（Review Focus 2）**
 
 `c3c codex <fixture>` で対話起動し、起動エラーや marketplace 更新失敗の表示が無いこと、skill 一覧（`$` 入力等）に superpowers が出ることを確認する。終了後、`CODEX_DIR` のログ（`log/` と `logs_*.sqlite` のうち起動時刻以降のもの）から `marketplace`・`plugin`・`Permission denied`・`Read-only` を検索し、自動更新を試みたか、試みたならどのエラーで終わったか（`:ro` による書込み失敗か、firewall による通信失敗か）を記録する。起動を妨げるエラーが出たら、ここで止めて計画者へ戻す（設計の前提が崩れる）。
 
-- [ ] **A4: 書けないこと**
+- [x] **A4: 書けないこと**
 
 コンテナ内で `touch ~/.codex/plugins/cache/probe` → `Read-only file system`。`codex plugin marketplace upgrade superpowers-dev` → 失敗する。受入の最後に `cache_fingerprint > /tmp/c3c-cache-after.txt; echo rc=$?; cmp /tmp/c3c-cache-before.txt /tmp/c3c-cache-after.txt; echo cmp_rc=$?` → `rc=0`・`cmp_rc=0`。`find <CODEX_DIR> -not -uid $(id -u)` の出力が空で終了コード 0。
 
-- [ ] **A5: Claude 経路**
+- [x] **A5: Claude 経路**
 
 `c3c claude <fixture>` のコンテナ内で `codex debug prompt-input hi` にも superpowers が出る（`CODEX_DIR` の mount は agent によらないため）。
 
-- [ ] **A6: 無効化と、有効化の行が残る場合**
+- [x] **A6: 無効化と、有効化の行が残る場合**
 
 `.c3c/env` から `CODEX_HOST_PLUGINS` を消し、`CODEX_DIR/config.toml` の有効化の行は残したまま `c3c codex <fixture>` で起動する。コンテナ内の `~/.codex/plugins/cache` にホストの plugin が見えないこと、Codex の起動可否・警告表示・自動 install の試行の有無と、`CODEX_DIR/plugins/cache` への書き込みの有無を記録する（同じ `CODEX_DIR` を opt-in していない別プロジェクトと共有したときの振る舞い。README「ホストの Codex plugin を使う」節へ結果を反映する）。
 

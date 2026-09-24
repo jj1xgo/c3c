@@ -61,7 +61,7 @@ PASS。`/tmp` の隔離 fixture に専用 `CODEX_DIR` と `CLAUDE_CONFIG_DIR` �
 - 認証は既存の認証ファイルを複製せず、TUI の device code で fixture の専用 home へ新規ログインした（持ち主の選択）。認証ファイルの内容は表示・記録していない。
 - 初回の起動は、`CLAUDE_CONFIG_DIR` の基点に `.claude.json` が無く、podman がその位置にディレクトリを作ってファイルのマウントに失敗した（検査用コンテナが rc=126 で止まり、本起動へ進まなかった）。既存の `compose.yml` の前提（基点に `.claude.json` が実在）で、本変更とは無関係。作られたディレクトリ（ホストのユーザー所有）を消して `{}` のファイルを置き、再起動した。
 
-受入直前のキャッシュ指紋（A1 時点から、ホストでの通常の更新で変化していた）:
+受入直前のキャッシュ指紋（A1 時点の値から変化していた。原因は未確認。受入の比較はこの値を基準にした）:
 
 ```text
 bf6acf991155b270f02ad76f03c453c3c38b0b146cd08aa1581316b880134395
@@ -80,6 +80,7 @@ bf6acf991155b270f02ad76f03c453c3c38b0b146cd08aa1581316b880134395
 - ChatGPT ログイン後、Codex はアカウント側で install された plugin（`openai-curated-remote` の `github`・`openai-templates`・`plugin-management`。ホストのキャッシュにあるもの）の同期を 3 回行い、そのたびにキャッシュ内の一時ファイル作成が `Read-only file system (os error 30)` で失敗した（WARN `failed to persist identity for cached remote installed plugin`）。同期は `failed_remote_plugin_ids` を記録して完了し、起動と superpowers の利用を妨げなかった。書込みを止めたのは `:ro` で、firewall ではない。
 - ERROR 2 件は TUI の自己更新確認（`api.github.com` の 403 rate limit）で、本変更と無関係。ログイン前の featured plugin 取得の 401、同梱 curated marketplace の manifest の検証 WARN（`CODEX_DIR/.tmp/plugins`、rw の専用 home）も無関係。
 - 専用 `config.toml` への書込みは TUI の状態（`[tui]` の表示済みフラグ）だけ。
+- アカウント側の plugin が有効化なしに読み込まれていないかを、ホストの `codex debug prompt-input hi` の全文で確認した（同じアカウントでログイン済み、キャッシュに同じ 3 件がある）。skill として載るのは `config.toml` で有効にした superpowers だけで、`github` 等は `<recommended_plugins>`（available but not installed）の一覧に出るだけだった。コンテナ側は superpowers の skill 名だけを比較しており、全名前空間の列挙はしていない。
 
 **A4**: コンテナ内の `touch ~/.codex/plugins/cache/probe` は `Read-only file system`（rc=1）、`mount` でも `ro`。`codex plugin marketplace upgrade superpowers-dev` は rc=1 で失敗した。ただし失敗理由は ``marketplace `superpowers-dev` is not configured as a Git marketplace`` で、コンテナ用の設定に marketplace の定義がないため書込みの前に止まった（計画の背景 4 のホストでの実測の `Permission denied` とは経路が違う）。`:ro` による書込み拒否そのものは `touch`、A3 の同期の失敗、実マウント試験の 83 件で確認している。A6 まで終えた後、ホストのキャッシュ指紋は rc=0 で受入前と一致（`cmp_rc=0`）。`find <CODEX_DIR> -not -uid $(id -u)` は出力なしで rc=0（fixture 全体でも 0 件）。
 

@@ -86,4 +86,11 @@ Minor の対応: 欠落 source とマウント先を作らないこと、親 `pl
 1. source の symlink 実体に追加の範囲制限を設ける案（Claude M1）。ホストが管理する symlink を実体解決して共有する承認済み仕様を変更するため、今回は追加しない。別の rw 経路による変更・読み取り範囲の拡大まで本マウントが防ぐ保証はない。なお source が `/` なら `CODEX_DIR` との包含拒否で止まる。
 2. 重なりと解決失敗のエラー文を分割する案（Claude M2）。いずれも拒否され、既存 fixture は解決可能なパスなので任意の診断改善として保留。
 
-確認限定巡の結果は後続の記録で追記する。
+確認限定巡:
+
+- Codex（gpt-6-astra、read-only、同じ session を resume、rc=0）: Yes。Important 1・Minor 1 は修正済み、Critical/Important の残存なし。確認対象は `df96db4` に対する未コミット差分で、その内容を変更せず `744b182` にコミットした（コミット準備時に sandbox の `.git` 制限があり、確認開始とコミットの順が入れ替わった）。
+- Claude（claude-opus-5-5、同じ session を resume、`modelUsage` で確認、rc=0）: `744b182` のコードは Yes。Codex Important 1 と Claude M3〜M6 は修正・反映済み。Critical/Important の残存なし、保留の Minor 2件は上記のとおり。
+- 初回結果は互いに共有せず取得した。確認限定巡では修正対象と生ログだけを渡し、全文レビューを繰り返していない。
+
+両者とも A2〜A6 の未実施を機能全体の合格と扱っていない。対話受入が完了するまで PR 作成・マージへ進まない。
+リリース時の番号案は `v14.1.0`（新しい opt-in 設定キーの追加）。タグは作成していない。

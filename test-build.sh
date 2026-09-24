@@ -470,6 +470,34 @@ if echo x > /shared/shared-probe 2>/dev/null; then echo "RW-OK /shared"; else ec
 exit $fail
 '
 
+# ホストの Codex plugin キャッシュ共有。キャッシュは読めて書けず、その親の CODEX_DIR（rw）には書けることを確認する。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+CODEX_PLUGINS_PROBE='
+set -u
+fail=0
+expect_ro() {
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+d=/home/node/.codex/plugins/cache
+if [ "$(cat "$d/seed" 2>/dev/null)" = seed ]; then echo "READ-OK $d"; else echo "READ-BROKEN $d"; fail=1; fi
+expect_ro "cache/create"  sh -c "echo x > $d/probe-new"
+expect_ro "cache/append"  sh -c "echo x >> $d/seed"
+expect_ro "cache/delete"  rm -f "$d/seed"
+expect_ro "cache/replace" sh -c "echo x > $d/seed.tmp && mv -f $d/seed.tmp $d/seed"
+expect_ro "cache/rmdir"   rmdir "$d"
+if mkdir -p /home/node/.codex/plugins/.staging-probe 2>/dev/null; then echo "RW-OK plugins/"; else echo "RW-BROKEN plugins/"; fail=1; fi
+if echo x > /home/node/.codex/rw-probe 2>/dev/null; then echo "RW-OK .codex"; else echo "RW-BROKEN .codex"; fail=1; fi
+exit $fail
+'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="${TEST_COMPOSE_PROJECT:-claude-test-config-ro}"
@@ -528,6 +556,21 @@ run_config_ro_tests() {
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "別名経由の書き込み試行後もホスト側 seed が不変で、/shared 経由の書き込みだけ残る" \
     bash -c '[ "$(cat "$1/vault/seed")" = seed ] && [ ! -e "$1/vault/probe-new" ] && [ -e "$1/vault/shared-probe" ] && [ "$(cat "$1/agents/seed")" = seed ] && [ ! -e "$1/agents/probe-new" ]' _ "$root"
+  # ホストの Codex plugin キャッシュ共有の実構成。
+  # source は CONTEXT（= $root、/workspace に rw でマウントされる）の外に置き、この override だけの経路を見る。
+  local codex_home="$root/codex-home" codex_src
+  codex_src="$(mktemp -d)"
+  mkdir -p "$codex_home/plugins/cache"
+  echo seed > "$codex_src/seed"
+  check "Codex plugin キャッシュは読めて書けず、CODEX_DIR には書ける" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CODEX_DIR="$codex_home" C3C_CODEX_PLUGINS_SOURCE="$codex_src" \
+    podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.codex-plugins.yml" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CODEX_PLUGINS_PROBE"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "書き込み試行後もホスト側 source が不変で、CODEX_DIR 側の書き込みだけ残る" \
+    bash -c '[ "$(cat "$2/seed")" = seed ] && [ "$(ls -A "$2")" = seed ] && [ -e "$1/codex-home/rw-probe" ] && [ -d "$1/codex-home/plugins/.staging-probe" ]' _ "$root" "$codex_src"
+  rm -rf "$codex_src"
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \

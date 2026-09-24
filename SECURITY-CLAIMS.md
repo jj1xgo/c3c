@@ -118,6 +118,7 @@ project 設定の探索規則・trust、起動経路、承認保存先、マウ�
 実体を指定した場合は拒否する。コンテナ側は `/home/node/.codex` に固定し、設定・認証・履歴等を rw
 で保存する。launcher は認証の本文を解析・表示・ホストから自動コピーしない。新規 ChatGPT 認証は
 [第0B-4](docs/superpowers/plans/2026-09-20-c3c-phase0b4-results.md) の専用 fixture で成立した。
+`CODEX_HOST_PLUGINS=1` のときだけ、ホストの `~/.codex/plugins/cache` を `CODEX_DIR` の内側（`/home/node/.codex/plugins/cache`）へ `:ro` で重ねる。source は launcher の `$HOME` に固定し、マウント先の symlink・型不一致は起動前に拒否する。
 
 **限界・非対象**: 専用 home は「ホストの実 Codex home を共有しない」という範囲の保護である。
 第1段階では共通 Compose の `.claude.json` と `.claude` の rw 共有を残すため、Codex セッションからも
@@ -125,7 +126,8 @@ Claude の認証・履歴等を読み書きできる。既存の Claude 設定 1
 CLI 間の認証・状態の完全隔離は未達成である。Codex 専用 home 自体もコンテナ内から変更可能なので、
 ホストの通常作業でその home を使えば、変更された設定をホストで読み込むことになる。
 第0B-4 の認証成功は現在の launcher 全体の受入や、期限切れ認証の refresh 成功を保証しない。
+共有したキャッシュの plugin は、`CODEX_DIR/config.toml`（コンテナから変更可能）で有効化されれば読み込まれる。`:ro` が防ぐのはこのマウント経由のホストのキャッシュの改変であり、別の rw マウント（`EXTRA_MOUNT` 等）がキャッシュを含む場合は WARNING を出すだけでその経路は閉じない。また、コンテナ内でどの plugin を有効にするかは制御しない。キャッシュ内の skill・hook の内容の安全性は保証しない。
 
-**根拠**: `c3c` の `CODEX_DIR` guard、`compose.yml` のマウント、`entrypoint.sh` の固定 home。
+**根拠**: `c3c` の `CODEX_DIR` guard・`guard_codex_host_plugins()`、`compose.yml`・`compose.codex-plugins.yml` のマウント、`entrypoint.sh` の固定 home。
 
 **再確認契機**: 認証・設定の全面分離、home の指定方法、CLI の認証保存方式、共有マウントの変更時。

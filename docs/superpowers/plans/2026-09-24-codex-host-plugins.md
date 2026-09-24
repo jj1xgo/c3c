@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**状態**: 計画（未レビュー）。2026-09-24 起草。
+**状態**: 計画。2026-09-24 起草、1 巡目の二重レビュー（Codex GPT-6 Astra・Claude Opus 5.5 headless、ともに「修正後に渡せる」、Critical なし）の指摘を反映済み。確認限定巡の結果は末尾「レビューの記録」。
 
 **Goal:** ホストの Codex で install した plugin（例: superpowers）を、ホストの `~/.claude/plugins` と Claude Code の関係と同じく、コンテナ内の Codex からも読み取り専用で使えるようにする。
 
@@ -50,6 +50,7 @@
 - Create: `compose.codex-plugins.yml`
 - Modify: `c3c`（`ENV_FILE_ALLOWED_KEYS`、`guard_env_boundary_keys()` のキー一覧、新関数 `guard_codex_host_plugins()`・`prepare_codex_host_plugins()`、`check_one_project()` と通常起動の呼出し、`resolve_asset_source()` の fixed 一覧、`ASSET_HASH_TARGETS`、36 行目付近の override 一覧コメント）
 - Modify: `test-build.sh`（新関数 `run_codex_host_plugins_launcher_tests()` とその登録、1363 行目付近の runner コピー一覧）
+- Modify: `tests/test_codex_launch.py`（fake podman の記録項目、`c3c codex` 経路のテストクラス）
 - Modify: `README.md`「環境変数」節の表（E7 が許可リストとの一致を検査するため、このタスクで 1 行足す。説明文の本体は Task 3）
 
 **Interfaces:**
@@ -148,11 +149,29 @@ run_codex_host_plugins_launcher_tests() {
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
   rm -f "$home/.codex-container/plugins/cache"
 
-  for value in "$home/.codex/plugins/cache" "$home/.codex/plugins"; do
+  # /tmp/.. は guard_codex_dir() が / に正規化する（末尾 / の除去を落とすと見落とす）。
+  for value in "$home/.codex/plugins/cache" "$home/.codex/plugins" /tmp/..; do
     run_launcher CODEX_DIR="$value" CODEX_HOST_PLUGINS=1
     check "source と重なる CODEX_DIR を拒否する: $value" \
       bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"重なり"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
   done
+
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1 EXTRA_MOUNT="$home"
+  check "別の rw マウントと source の重なりを WARNING で示し、起動は続ける" \
+    bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"CODEX_HOST_PLUGINS"*"rw"* ]]' _ "$rc" "$out"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "重ならなければ重なりの WARNING を出さない" \
+    bash -c '[ "$1" = 0 ] && [[ "$2" != *"CODEX_HOST_PLUGINS の source"*"rw"* ]]' _ "$rc" "$out"
+
+  # source が symlink なら、compose へは実体を渡す（未解決の綴りを渡す実装を赤にする）。
+  mkdir -p "$root/real-cache/mk"
+  mv "$home/.codex/plugins/cache" "$home/.codex/plugins/cache.orig"
+  ln -s "$root/real-cache" "$home/.codex/plugins/cache"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "symlink の source は実体へ解決して渡す" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_CODEX_PLUGINS_SOURCE=$(cd "$2/real-cache" && pwd -P)" "$2/compose-env"' _ "$rc" "$root"
+  rm -f "$home/.codex/plugins/cache"
+  mv "$home/.codex/plugins/cache.orig" "$home/.codex/plugins/cache"
 
   launcher_sandbox_cleanup
 }
@@ -160,10 +179,61 @@ run_codex_host_plugins_launcher_tests() {
 
 注: `launcher_sandbox_init`・`launcher_sandbox_cleanup`・`snapshot_check_targets`・`check`・`log`・`run_launcher`・`run_launcher_check` は既存（`run_instruction_mount_launcher_tests()` と同じ使い方）。`run_launcher` は `c3c claude` で起動するが、CODEX_DIR の mount は agent によらず compose.yml にあるので、この opt-in も agent によらず効く（Claude セッションからの `codex exec` でも使える）。
 
+- [ ] **Step 2b: `c3c codex` 経路の失敗するテストを書く**
+
+Codex 経路は、build・検査用コンテナ（preflight）・本起動の 3 回とも同じ override を積み、preflight は `prepare_codex_host_plugins` の後に走る必要がある（`create_host_path: false` のため、マウント先が無いと podman が失敗する）。`run_launcher`（`c3c claude`）ではこの経路を通らないので、`tests/test_codex_launch.py` に足す。
+
+1. fake podman（`PODMAN` 文字列）の記録を拡張する。`record = {...}` の行を次に置き換える:
+
+```python
+record = {'args': args, 'stdin': stdin,
+          'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
+                                                  'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
+                                                  'C3C_CODEX_PLUGINS_SOURCE')},
+          'plugins_mountpoint': os.path.isdir(os.path.join(os.environ.get('CODEX_DIR') or '/nonexistent',
+                                                           'plugins', 'cache'))}
+```
+
+2. ファイル末尾の `if __name__ == '__main__':` の前に追加する:
+
+```python
+class HostPluginsTests(LaunchCase):
+    def test_host_plugins_override_reaches_build_preflight_and_run_after_mountpoint(self):
+        (self.home / '.codex/plugins/cache/mk/p/1.0').mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCODEX_HOST_PLUGINS=1\n')
+        self.approve()
+        self.state['image_exists'] = False
+        result = self.run_launcher('--agent', 'codex', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        source = str((self.home / '.codex/plugins/cache').resolve())
+        builds, pres, runs = self.compose_calls('build'), self.preflight_calls(), self.main_runs()
+        self.assertEqual((len(builds), len(pres), len(runs)), (1, 1, 1))
+        for call in (*builds, *pres, *runs):
+            self.assertTrue(any(a.endswith('compose.codex-plugins.yml') for a in call['args']), call['args'])
+            self.assertEqual(call['env']['C3C_CODEX_PLUGINS_SOURCE'], source)
+        for call in (*pres, *runs):
+            self.assertTrue(call['plugins_mountpoint'], 'preflight / 本起動の時点でマウント先が無い')
+
+    def test_without_opt_in_codex_path_has_no_override(self):
+        self.approve()
+        result = self.run_launcher('--agent', 'codex', str(self.proj),
+                                   env_extra={'C3C_CODEX_PLUGINS_SOURCE': '/tmp/injected'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for call in self.compose_calls():
+            self.assertFalse(any(a.endswith('compose.codex-plugins.yml') for a in call['args']), call['args'])
+            self.assertIsNone(call['env']['C3C_CODEX_PLUGINS_SOURCE'])
+            self.assertFalse(call['plugins_mountpoint'])
+```
+
+注: `LaunchCase` は実アセットを `REPO.iterdir()` で runner へコピーするので、`compose.codex-plugins.yml` も自動で入る。`image_exists=False` のとき launcher は `-b` なしでも明示ビルドする（README「起動フロー」(1)）。
+
 - [ ] **Step 3: テストが失敗することを確かめる**
 
 Run: `TMPDIR=/tmp ./test-build.sh --launcher-only 2>&1 | grep -E 'FAIL|PASS:|結果' | head -40`
 Expected: 新関数の check の大半が `[FAIL]`（未実装のため。未設定ケースと「CODEX_DIR 未設定」の一部は偶然 PASS しうる）。既存テストは PASS のまま。README の E7 は、許可リストをまだ変えていないので PASS のまま。
+
+Run: `python3 -m unittest tests.test_codex_launch.HostPluginsTests -v`
+Expected: `test_host_plugins_override_reaches_build_preflight_and_run_after_mountpoint` が FAIL（override が無い）、`test_without_opt_in_codex_path_has_no_override` は PASS。
 
 - [ ] **Step 4: override ファイルを作る**
 
@@ -224,18 +294,31 @@ guard_codex_host_plugins() {
     guard_fail "ERROR: CODEX_HOST_PLUGINS=1 には CODEX_DIR が必要です（plugin キャッシュは CODEX_DIR の内側へ重ねます）。起動を中止します。" || return 1
     return 1
   fi
-  local source="$HOME/.codex/plugins/cache" source_real codex_real path
+  local source="$HOME/.codex/plugins/cache" source_real codex_real path other other_real
   if [[ ! -d "$source" ]] || ! source_real=$(CDPATH='' cd -- "$source" >/dev/null 2>&1 && pwd -P); then
     guard_fail "ERROR: CODEX_HOST_PLUGINS=1 ですが、ホストの $source がディレクトリとして見つかりません（ホストの Codex で plugin を install してから有効にしてください）。起動を中止します。" || return 1
     return 1
   fi
+  # instruction_paths_overlap は末尾 / を含む値（/ 自体）を正しく比べられないので、比較用に末尾 / を除く
+  # （/ は空文字になり、"$x" == ""/* がすべての絶対パスに一致して「重なり」と判定される）。guard_codex_dir() は
+  # /tmp/.. のような値を / に正規化するため、この除去を省くと CODEX_DIR=/ の重なりを見落とす。
   if ! codex_real=$(CDPATH='' cd -- "$CODEX_DIR" >/dev/null 2>&1 && pwd -P) ||
-     instruction_paths_overlap "$source_real" "$codex_real"; then
+     instruction_paths_overlap "${source_real%/}" "${codex_real%/}"; then
     guard_fail "ERROR: CODEX_HOST_PLUGINS=1 の source（$source_real）と CODEX_DIR（$CODEX_DIR）に重なりがあるか、CODEX_DIR を解決できません。起動を中止します。" || return 1
     return 1
   fi
-  for path in "$codex_real/plugins" "$codex_real/plugins/cache"; do
+  for path in "${codex_real%/}/plugins" "${codex_real%/}/plugins/cache"; do
     validate_claude_config_ro_path "$path" dir || return 1
+  done
+  # 別の rw マウントと source の包含を警告する（guard_agents_dir() と同じ扱い。起動は止めない）。
+  # 重なる rw マウント経由ではホストのキャッシュを書けるので、:ro はこのマウントにしか効かない。
+  for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude"; do
+    other="${other/#\~\//$HOME/}"
+    [[ -d "$other" ]] || continue
+    other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
+    if instruction_paths_overlap "${source_real%/}" "${other_real%/}"; then
+      guard_warn "WARNING: CODEX_HOST_PLUGINS の source（$source_real）と $other の範囲が重なるため、別の rw マウント経由でホストの plugin キャッシュを書けます（:ro はこのマウントにしか効きません）。"
+    fi
   done
   if [[ -d "$codex_real/plugins/cache" && -n "$(ls -A -- "$codex_real/plugins/cache" 2>/dev/null)" ]]; then
     guard_warn "WARNING: $codex_real/plugins/cache に既存の内容があります。CODEX_HOST_PLUGINS=1 の間はホストのキャッシュで隠れ、コンテナ内からは見えません。"
@@ -248,12 +331,16 @@ guard_codex_host_plugins() {
 }
 
 # guard_codex_host_plugins() が選んだマウント先をユーザー権限で作る。--check では何もしない。
-# 作成後にもう一度型と symlink を検査する（検査と作成の間に置き換えられた場合を拒否する。
+# 作成の直前と直後に型と symlink を検査する（guard からここまでの間に、同じ CODEX_DIR を使う稼働中の
+# 別コンテナが symlink へ差し替えた場合に、mkdir -p がリンク先へ作る前に止める。検査と作成の間の
 # 並行変更の完全な排除は prepare_claude_config_ro() と同じく行わない）。
 prepare_codex_host_plugins() {
   [[ "${CODEX_HOST_PLUGINS_READY:-0}" == 1 ]] || return 0
   [[ "${CHECK_MODE:-0}" == 1 ]] && return 0
   local path
+  for path in "$CODEX_DIR/plugins" "$CODEX_DIR/plugins/cache"; do
+    validate_claude_config_ro_path "$path" dir || return 1
+  done
   if ! mkdir -p -- "$CODEX_DIR/plugins/cache"; then
     guard_fail "ERROR: $CODEX_DIR/plugins/cache を作れません。起動を中止します。" || return 1
     return 1
@@ -277,13 +364,13 @@ prepare_codex_host_plugins() {
 
 - [ ] **Step 9: テストが通ることを確かめる**
 
-Run: `./lint.sh && TMPDIR=/tmp ./test-build.sh --launcher-only 2>&1 | tail -5`
-Expected: lint 終了コード 0・警告ゼロ（Task 2 の lint 追加前なので、compose 検査は既存分のみ）。launcher-only は FAIL 0。E7（許可リストと README 表の一致）も PASS。
+Run: `./lint.sh; echo lint_rc=$?; TMPDIR=/tmp ./test-build.sh --launcher-only > /tmp/c3c-launcher.log 2>&1; echo launcher_rc=$?; tail -5 /tmp/c3c-launcher.log; python3 -m unittest tests.test_codex_launch -v 2>&1 | tail -3`
+Expected: `lint_rc=0`・警告ゼロ（Task 2 の lint 追加前なので、compose 検査は既存分のみ）。`launcher_rc=0` で FAIL 0。E7（許可リストと README 表の一致）も PASS。`tests.test_codex_launch` は `OK`。
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add c3c compose.codex-plugins.yml test-build.sh README.md
+git add c3c compose.codex-plugins.yml test-build.sh tests/test_codex_launch.py README.md
 git commit -m "feat: CODEX_HOST_PLUGINS でホストの Codex plugin キャッシュを CODEX_DIR の内側へ :ro で重ねる"
 ```
 
@@ -358,8 +445,10 @@ exit $fail
 
 ```bash
   # ホストの Codex plugin キャッシュ共有の実構成。
-  local codex_home="$root/codex-home" codex_src="$root/codex-plugins-src"
-  mkdir -p "$codex_home/plugins/cache" "$codex_src"
+  # source は CONTEXT（= $root、/workspace に rw でマウントされる）の外に置き、この override だけの経路を見る。
+  local codex_home="$root/codex-home" codex_src
+  codex_src="$(mktemp -d)"
+  mkdir -p "$codex_home/plugins/cache"
   echo seed > "$codex_src/seed"
   check "Codex plugin キャッシュは読めて書けず、CODEX_DIR には書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
@@ -368,15 +457,16 @@ exit $fail
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CODEX_PLUGINS_PROBE"
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "書き込み試行後もホスト側 source が不変で、CODEX_DIR 側の書き込みだけ残る" \
-    bash -c '[ "$(cat "$1/codex-plugins-src/seed")" = seed ] && [ "$(ls -A "$1/codex-plugins-src")" = seed ] && [ -e "$1/codex-home/rw-probe" ] && [ -d "$1/codex-home/plugins/.staging-probe" ]' _ "$root"
+    bash -c '[ "$(cat "$2/seed")" = seed ] && [ "$(ls -A "$2")" = seed ] && [ -e "$1/codex-home/rw-probe" ] && [ -d "$1/codex-home/plugins/.staging-probe" ]' _ "$root" "$codex_src"
+  rm -rf "$codex_src"
 ```
 
 （既存の「全エントリが実行ユーザー所有」check が `$root` 全体を見るので、`codex-home` にサブ uid の残骸が無いこともそこで確認される。）
 
 - [ ] **Step 5: 実 podman の検査を回す（ホスト）**
 
-Run: `TMPDIR=/tmp ./test-build.sh --config-ro-only 2>&1 | tail -15`
-Expected: `Codex plugin キャッシュは読めて書けず…` と `書き込み試行後もホスト側 source が不変…` が PASS、FAIL 0。テストイメージが無い場合は `./test-build.sh --build-only` を先に回す（README「変更後の確認」節）。コンテナ内では podman が無いため `not run`。
+Run: `TMPDIR=/tmp ./test-build.sh --config-ro-only > /tmp/c3c-config-ro.log 2>&1; echo rc=$?; tail -15 /tmp/c3c-config-ro.log`
+Expected: `rc=0`。`Codex plugin キャッシュは読めて書けず…` と `書き込み試行後もホスト側 source が不変…` が PASS、FAIL 0。テストイメージが無い場合は `./test-build.sh --build-only` を先に回す（README「変更後の確認」節）。コンテナ内では podman が無いため `not run`。
 
 - [ ] **Step 6: Commit**
 
@@ -398,11 +488,11 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 「Codex CLI を対話で使う」節の「**`--check` と `--clean`**」段落の直前に:
 
 ```markdown
-**ホストの Codex plugin を使う**: `.c3c/env` に `CODEX_HOST_PLUGINS=1` を書くと、ホストの `~/.codex/plugins/cache`（ホストの Codex が install した plugin の実体）が、コンテナ内の `~/.codex/plugins/cache` に `:ro` で重なる。ホストの Codex はこのキャッシュの skill・hook を読むため、コンテナから書けないようにしている（`~/.claude/plugins` の `:ro` と同じ理由）。マウントだけでは plugin は有効にならない。コンテナ用の `CODEX_DIR/config.toml` に、ホストの `~/.codex/config.toml` と同じ有効化の行を書く（例: `[plugins."superpowers@superpowers-dev"]` と `enabled = true`。marketplace の定義は不要）。
+**ホストの Codex plugin を使う**: `.c3c/env` に `CODEX_HOST_PLUGINS=1` を書くと、ホストの `~/.codex/plugins/cache`（ホストの Codex が install した plugin の実体）が、コンテナ内の `~/.codex/plugins/cache` に `:ro` で重なる。ホストの Codex はこのキャッシュの skill・hook を読むため、このマウント経由では書けないようにしている（`~/.claude/plugins` の `:ro` と同じ理由）。`EXTRA_MOUNT` 等の別の rw マウントがキャッシュを含む場合は、その経路から書けるので WARNING を出す（起動は止めない。`AGENTS_DIR` と同じ扱い）。マウントだけでは plugin は有効にならない。コンテナ用の `CODEX_DIR/config.toml` に、ホストの `~/.codex/config.toml` と同じ有効化の行を書く（例: `[plugins."superpowers@superpowers-dev"]` と `enabled = true`。marketplace の定義は不要）。
 
-- 更新はホストで行う（ホストの `codex plugin marketplace upgrade` 等）。コンテナ内の `codex plugin add`・`upgrade` はキャッシュに書けず失敗する。ホストでの更新は、bind が inode を共有するため稼働中のコンテナにも見える。
+- 更新はホストで行う（ホストの `codex plugin marketplace upgrade` 等）。コンテナ内の `codex plugin add`・`upgrade` はキャッシュに書けず失敗する。`cache` 配下へのホストでの追加・更新は稼働中のコンテナにも見えるが、`cache` ディレクトリ自体が置き換えられた場合は再起動まで反映されないことがある。
 - ホストのキャッシュにある plugin はすべてコンテナから読めるが、読み込まれるのは `CODEX_DIR/config.toml` で有効にしたものだけ。有効化は user 層の設定で、起動時の MCP 審査（C-3）の対象外。plugin の hook の信頼確認は Codex 自身に委ねる。
-- 条件: `CODEX_DIR` の設定と、ホストに `~/.codex/plugins/cache` が実在すること。`CODEX_DIR/plugins` または `CODEX_DIR/plugins/cache` が symlink かディレクトリ以外なら起動と `--check` で拒否する（rw の `CODEX_DIR` に置かれた symlink でマウント先をずらさせない）。マウント先はランチャーが作る（`--check` は作らない）。コンテナ内で入れた plugin が `CODEX_DIR/plugins/cache` に既にあれば、有効な間は隠れる旨の WARNING を出す。
+- 条件: `CODEX_DIR` の設定と、ホストに `~/.codex/plugins/cache` が実在すること（source は launcher の `$HOME/.codex` に固定。ホストで `CODEX_HOME` を別の場所にしている構成は対象外）。有効化の行は同じ `CODEX_DIR` を使う全プロジェクトで共有されるので、`CODEX_HOST_PLUGINS` を付けないプロジェクトでの Codex の振る舞いは受入 A6 の記録を参照する。`CODEX_DIR/plugins` または `CODEX_DIR/plugins/cache` が symlink かディレクトリ以外なら起動と `--check` で拒否する（rw の `CODEX_DIR` に置かれた symlink でマウント先をずらさせない）。マウント先はランチャーが作る（`--check` は作らない）。コンテナ内で入れた plugin が `CODEX_DIR/plugins/cache` に既にあれば、有効な間は隠れる旨の WARNING を出す。
 - ランタイムの bind mount なので `-b` は不要だが、override ファイルが境界アセットのハッシュ対象なので、既存イメージでは `-b` するまでドリフトの WARNING が出る。`--check` は有効時に `[OK]   Codex plugin 共有 (ro): ...` を表示する。
 ```
 
@@ -427,7 +517,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 「**限界・非対象**」段落の末尾に次の文を足す:
 
 ```markdown
-共有したキャッシュの plugin は、`CODEX_DIR/config.toml`（コンテナから変更可能）で有効化されれば読み込まれる。`:ro` が防ぐのはホストのキャッシュの改変であり、コンテナ内でどの plugin を有効にするかは制御しない。キャッシュ内の skill・hook の内容の安全性は保証しない。
+共有したキャッシュの plugin は、`CODEX_DIR/config.toml`（コンテナから変更可能）で有効化されれば読み込まれる。`:ro` が防ぐのはこのマウント経由のホストのキャッシュの改変であり、別の rw マウント（`EXTRA_MOUNT` 等）がキャッシュを含む場合は WARNING を出すだけでその経路は閉じない。また、コンテナ内でどの plugin を有効にするかは制御しない。キャッシュ内の skill・hook の内容の安全性は保証しない。
 ```
 
 「**根拠**」に `guard_codex_host_plugins()`、`compose.codex-plugins.yml` を足す。
@@ -437,7 +527,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 34 行目の override 一覧に `compose.codex-plugins.yml` を、`guard_*` 一覧に `guard_codex_host_plugins()` を足す。52 行目（`${CODEX_DIR:-/dev/null}:/home/node/.codex` は rw 必須…）の直後に:
 
 ```markdown
-  - `compose.codex-plugins.yml` の `${C3C_CODEX_PLUGINS_SOURCE:?}:/home/node/.codex/plugins/cache` は `:ro` 必須（ホストの Codex がキャッシュの skill・hook を読むため）。source は `guard_codex_host_plugins()` が `$HOME/.codex/plugins/cache` から実体解決した値だけで、任意パスを受け付けるキーを作らない。`C3C_CODEX_PLUGINS_SOURCE` は `ENV_FILE_ALLOWED_KEYS` に加えず、guard の冒頭で unset する。マウント先（`$CODEX_DIR/plugins`・`$CODEX_DIR/plugins/cache`）は rw の `CODEX_DIR` 内にあるので、`validate_claude_config_ro_path()` による symlink・型不一致の拒否を外さない。作成は `prepare_codex_host_plugins()` が `prepare_claude_config_ro()` の後で行い、`--check` では作らない。launcher は `CODEX_DIR/config.toml` を読み書きしない。
+  - `compose.codex-plugins.yml` の `${C3C_CODEX_PLUGINS_SOURCE:?}:/home/node/.codex/plugins/cache` は `:ro` 必須（ホストの Codex がキャッシュの skill・hook を読むため）。source は `guard_codex_host_plugins()` が `$HOME/.codex/plugins/cache` から実体解決した値だけで、任意パスを受け付けるキーを作らない。`C3C_CODEX_PLUGINS_SOURCE` は `ENV_FILE_ALLOWED_KEYS` に加えず、guard の冒頭で unset する。マウント先（`$CODEX_DIR/plugins`・`$CODEX_DIR/plugins/cache`）は rw の `CODEX_DIR` 内にあるので、`validate_claude_config_ro_path()` による symlink・型不一致の拒否を外さない。作成は `prepare_codex_host_plugins()` が `prepare_claude_config_ro()` の後、Codex 経路の build・preflight より前で行い（作成の前後に検査）、`--check` では作らない。source と `CODEX_DIR` の重なりは拒否し、比較は末尾 `/` を除いて行う（`/` に正規化された `CODEX_DIR` を見落とさない）。他の rw マウントとの重なりは `guard_agents_dir()` と同じく WARNING に留める。launcher は `CODEX_DIR/config.toml` を読み書きしない。
 ```
 
 - [ ] **Step 5: env.example**
@@ -465,7 +555,19 @@ git commit -m "docs: CODEX_HOST_PLUGINS（ホストの Codex plugin キャッシ
 **Files:**
 - Create: `docs/superpowers/plans/2026-09-24-codex-host-plugins-results.md`（ホストのパスと private の名前を書かない。`~` 表記を使う）
 
-前提: ホストの `~/.codex/plugins/cache/superpowers-dev/superpowers/<版>` が存在し、fixture（Codex が使えるプロジェクト。専用 `CODEX_DIR` 設定済み、`allowed-domains.txt` に `chatgpt.com`）がある。ホストの `~/.codex/plugins/cache` の受入前後の `find ~/.codex/plugins/cache -printf '%y %m %U %T@ %p\n' | sort | sha256sum` を記録する。
+前提: ホストの `~/.codex/plugins/cache/superpowers-dev/superpowers/<版>` が存在し、fixture（Codex が使えるプロジェクト。専用 `CODEX_DIR` 設定済み、`allowed-domains.txt` に `chatgpt.com`）がある。以下のコマンドは `set -o pipefail` のシェルで実行し、各コマンドの終了コードも記録する（末尾の `sort`・`wc` の成功で失敗を隠さない）。
+
+ホストのキャッシュの指紋（受入の前後で取り、一致を見る。型・mode・uid・mtime・パス・リンク先・通常ファイルの内容を含む）:
+
+```bash
+cache_fingerprint() (
+  set -o pipefail
+  cd ~/.codex/plugins || exit 1
+  { find cache -printf '%y %m %U %T@ %p -> %l\n' | LC_ALL=C sort &&
+    find cache -type f -exec sha256sum -- {} + | LC_ALL=C sort; } | sha256sum
+)
+cache_fingerprint > /tmp/c3c-cache-before.txt; echo rc=$?
+```
 
 - [ ] **A1: 有効化**
 
@@ -473,23 +575,32 @@ fixture の `.c3c/env` に `CODEX_HOST_PLUGINS=1` を足し、`CODEX_DIR/config.
 
 - [ ] **A2: skill の読み込み**
 
-`c3c codex -b <fixture>` で再ビルドして起動した状態で、ホストの別端末から `podman exec <コンテナ名> codex debug prompt-input hi | grep -o 'superpowers:[a-z-]*' | sort -u | wc -l` → ホストで同じコマンドを実行した件数と一致（2026-09-24 時点 15）。コンテナ名は `podman ps` で確認する。
+`c3c codex -b <fixture>` で再ビルドして起動した状態で、ホストの別端末から実行する（コンテナ名は `podman ps` で確認）:
+
+```bash
+set -o pipefail
+podman exec <コンテナ名> codex debug prompt-input hi | grep -o 'superpowers:[a-z-]*' | LC_ALL=C sort -u > /tmp/c3c-skills-container.txt; echo rc=$?
+codex debug prompt-input hi | grep -o 'superpowers:[a-z-]*' | LC_ALL=C sort -u > /tmp/c3c-skills-host.txt; echo rc=$?
+test -s /tmp/c3c-skills-host.txt && diff /tmp/c3c-skills-host.txt /tmp/c3c-skills-container.txt; echo diff_rc=$?
+```
+
+Expected: 両方 `rc=0`、`diff_rc=0`（空でない同じ skill 名の集合。2026-09-24 時点で 15 件）。
 
 - [ ] **A3: 対話起動（Review Focus 2）**
 
-`c3c codex <fixture>` で対話起動し、起動エラーや marketplace 更新失敗の表示が無いこと、`$` などで skill 一覧に superpowers が出ることを確認する。起動を妨げるエラーが出たら、ここで止めて計画者へ戻す（設計の前提が崩れる）。
+`c3c codex <fixture>` で対話起動し、起動エラーや marketplace 更新失敗の表示が無いこと、skill 一覧（`$` 入力等）に superpowers が出ることを確認する。終了後、`CODEX_DIR` のログ（`log/` と `logs_*.sqlite` のうち起動時刻以降のもの）から `marketplace`・`plugin`・`Permission denied`・`Read-only` を検索し、自動更新を試みたか、試みたならどのエラーで終わったか（`:ro` による書込み失敗か、firewall による通信失敗か）を記録する。起動を妨げるエラーが出たら、ここで止めて計画者へ戻す（設計の前提が崩れる）。
 
 - [ ] **A4: 書けないこと**
 
-コンテナ内で `touch ~/.codex/plugins/cache/probe` → `Read-only file system`。`codex plugin marketplace upgrade superpowers-dev` → 失敗し、キャッシュは不変。受入後のホスト側 `sha256sum` が受入前と一致。`CODEX_DIR` 配下に自分以外の uid 所有のエントリが無い（`find <CODEX_DIR> -not -uid $(id -u)` が空）。
+コンテナ内で `touch ~/.codex/plugins/cache/probe` → `Read-only file system`。`codex plugin marketplace upgrade superpowers-dev` → 失敗する。受入の最後に `cache_fingerprint > /tmp/c3c-cache-after.txt; echo rc=$?; cmp /tmp/c3c-cache-before.txt /tmp/c3c-cache-after.txt; echo cmp_rc=$?` → `rc=0`・`cmp_rc=0`。`find <CODEX_DIR> -not -uid $(id -u)` の出力が空で終了コード 0。
 
 - [ ] **A5: Claude 経路**
 
-`c3c claude <fixture>` のコンテナ内で `codex debug prompt-input hi` にも superpowers が出る（CODEX_DIR の mount は agent によらないため）。
+`c3c claude <fixture>` のコンテナ内で `codex debug prompt-input hi` にも superpowers が出る（`CODEX_DIR` の mount は agent によらないため）。
 
-- [ ] **A6: 無効化で元に戻る**
+- [ ] **A6: 無効化と、有効化の行が残る場合**
 
-`CODEX_HOST_PLUGINS` を消して起動 → `~/.codex/plugins/cache` にホストの plugin が見えない（`CODEX_DIR` 側の空ディレクトリだけ）。
+`.c3c/env` から `CODEX_HOST_PLUGINS` を消し、`CODEX_DIR/config.toml` の有効化の行は残したまま `c3c codex <fixture>` で起動する。コンテナ内の `~/.codex/plugins/cache` にホストの plugin が見えないこと、Codex の起動可否・警告表示・自動 install の試行の有無と、`CODEX_DIR/plugins/cache` への書き込みの有無を記録する（同じ `CODEX_DIR` を opt-in していない別プロジェクトと共有したときの振る舞い。README「ホストの Codex plugin を使う」節へ結果を反映する）。
 
 - [ ] **Step: 結果を記録して Commit**
 
@@ -502,9 +613,26 @@ git commit -m "docs: CODEX_HOST_PLUGINS の実機受入を記録する"
 
 ## 完了後
 
-- 利用者から見える新しい env キーの追加なので、SemVer は minor（現行 `v14.0.1` → `v14.1.0` を提案）。移行作業は不要（opt-in、既定は従来どおり）。タグは持ち主の承認後。
+- 利用者から見える新しい env キーの追加なので、SemVer は minor（現行 `v14.0.1` → `v14.1.0` を提案）。移行作業は不要（opt-in、既定は従来どおり）。ただし `compose.codex-plugins.yml` を `ASSET_HASH_TARGETS` に加えるので、opt-in しない利用者も含め、既存イメージでは `-b` するまで起動時と `--check` にドリフトの WARNING が出る（fail-open で起動は止まらない）。タグの提案文と Release の説明にこれを書く。タグは持ち主の承認後。
 - PR 後の二重レビュー（Codex `--sandbox read-only` と、作成に関わっていない Claude の対話セッション）。
+
+## Codex で実装する場合の実行条件
+
+- sandbox: `danger-full-access`。`./lint.sh` の Compose 検査、`test-build.sh --config-ro-only`、Task 4 は rootless Podman を使い、Codex の workspace-write sandbox（bubblewrap）の中では user namespace を作れず動かない見込み（推測。未実測）。持ち主がこれを許可しない場合は、Task 1〜3 を workspace-write で実装し、Podman を使う検証（Task 1 Step 9 と Task 3 Step 6 の lint、Task 2 Step 2・3・5、Task 4）を `not run` として Claude の対話セッションへ渡す。
+- ネットワーク: Task 1〜3 は不要。Task 2 Step 5 のテストイメージが無い場合の `--build-only` と Task 4 の `-b` はパッケージ取得のため必要。
+- 対話が要る A3 は Codex では行わず、持ち主か Claude の対話セッションが担う。
+- `/goal` に渡す文面:
+
+```text
+docs/superpowers/plans/2026-09-24-codex-host-plugins.md の Task 1〜3 を、ブランチ feat/codex-host-plugins の上で Step 順に実装する。各 Step の Run を実行し、Expected と一致しなければその場で止めて、実行したコマンドと出力を報告する。計画にない設計変更はしない（必要なら止めて報告）。続けて Task 4 を A3 以外について実行し、結果を docs/superpowers/plans/2026-09-24-codex-host-plugins-results.md に記録する。A3 は not run として理由を書く。commit は計画の各 Step のとおり行い、push と PR 作成はしない。
+```
 
 区分: 境界（`compose.yml` 系の境界マウント・ホストで実行される内容の書込み経路・`docs/development-invariants.md` の不変条件を変えるため）。計画・PR 前・PR 後の 3 段階の二重レビューを行う。
 
-推奨実装: Codex（host の checkout と実 Podman で完結し、各 Step のコードと Expected を逐語で確定させたため。Task 4 の A3 は対話操作なので持ち主か Claude の対話セッションが担う。Sonnet を推さない理由は、逐語手順が確定していて設計判断が残らず、判定基準 4 に当たるため）。
+推奨実装: Codex（host の checkout と実 Podman で完結し、各 Step のコードと Expected を逐語で確定させたため。判定基準 4 に当たる。ただし上記のとおり Podman の検証には `danger-full-access` が要る見込みで、それを許可しない場合は Claude（Sonnet）が次点。Sonnet ならホストの Claude Code から Podman をそのまま使え、検証を分割せずに済む。A3 は対話操作なので持ち主か Claude の対話セッションが担う）。
+
+## レビューの記録
+
+- 1 巡目（2026-09-24、対象 `63e4538`）: Codex（GPT-6 Astra、`codex exec --sandbox read-only`）「修正後に渡せる」Important 2・Minor 2。Claude（Opus 5.5、`claude -p` headless、modelUsage で確認）「修正後に渡せる」Important 3・Minor 7。
+  - 反映: 他の rw マウントとの重なりの WARNING と文書の保証範囲の限定（両者 Important）、`/` に正規化された `CODEX_DIR` の重なり見落とし（Codex I-2）、Codex 実行条件と `/goal` 文面（Claude I-2）、`c3c codex` 経路のテスト（Claude I-3）、実 Podman fixture の source を CONTEXT の外へ（Codex I-1）、キャッシュ指紋に内容とリンク先を含める（Codex M-3）、pipefail と skill 集合の比較（Codex M-4）、作成前の検査（Claude M-1）、symlink の source の実体解決テスト（Claude M-2）、A3 のログ確認と A6 の有効化行の残存（Claude M-3）、inode 共有の記述を弱める（Claude M-4）、ドリフト WARNING の告知（Claude M-6）、`CODEX_HOME` 変更構成は対象外（Claude M-7）。
+  - Claude M-5（キャッシュ内の絶対 symlink）は実測で解消: 2026-09-24 のホストの `~/.codex/plugins/cache` に絶対パスの symlink は 0 件（`find -type l -lname '/*'`）。

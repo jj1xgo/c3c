@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**状態**: 計画。2026-09-24 起草、1 巡目の二重レビュー（Codex GPT-6 Astra・Claude Opus 5.5 headless、ともに「修正後に渡せる」、Critical なし）の指摘を反映済み。確認限定巡の結果は末尾「レビューの記録」。
+**状態**: Task 1〜3 と Task 4 の指紋取得・A1 を実施。A2〜A6 は対話担当へ引継ぎ（[検証記録](2026-09-24-codex-host-plugins-results.md)）。計画の経緯: 2026-09-24 起草、1 巡目の二重レビュー（Codex GPT-6 Astra・Claude Opus 5.5 headless、ともに「修正後に渡せる」、Critical なし）の指摘を反映済み。確認限定巡の結果は末尾「レビューの記録」。
 
 **Goal:** ホストの Codex で install した plugin（例: superpowers）を、ホストの `~/.claude/plugins` と Claude Code の関係と同じく、コンテナ内の Codex からも読み取り専用で使えるようにする。
 
@@ -56,14 +56,14 @@
 **Interfaces:**
 - Produces: env キー `CODEX_HOST_PLUGINS`、内部 export `C3C_CODEX_PLUGINS_SOURCE`（実体解決済みの source の絶対パス）、グローバル `CODEX_HOST_PLUGINS_READY`（`0`/`1`）、override `compose.codex-plugins.yml`、`--check` の表示 `[OK]   Codex plugin 共有 (ro): <source> -> /home/node/.codex/plugins/cache`
 
-- [ ] **Step 1: 既存アセット名の全参照を数える**
+- [x] **Step 1: 既存アセット名の全参照を数える**
 
 `docs/development-invariants.md` 22 行目の規則に従い、新 override の登録先を漏らさないよう既存の override 名で参照箇所を数える。
 
 Run: `grep -rn 'compose\.agents\.yml' --include='*' . | grep -v '^./docs/superpowers/' | grep -v '^./\.git/'`
 Expected: `c3c`（コメント 36 行目付近・`guard_agents_dir()`・`resolve_asset_source()`・`ASSET_HASH_TARGETS`）、`test-build.sh`（runner コピー一覧、launcher テスト、実 podman 検査）、`lint.sh`、`README.md`、`docs/development-invariants.md` が出る。以下の各 Step と Task 2・3 でこのすべてに `compose.codex-plugins.yml` を対応させる。一覧に上記以外の箇所があれば、同じ扱いで追加する。
 
-- [ ] **Step 2: 失敗するランチャーテストを書く**
+- [x] **Step 2: 失敗するランチャーテストを書く**
 
 `test-build.sh` の `run_codex_dir_launcher_tests()` の直後に次の関数を追加し、`run_launcher_tests` 内の `run_codex_dir_launcher_tests` の次の行に `run_codex_host_plugins_launcher_tests` を登録する。
 
@@ -179,7 +179,7 @@ run_codex_host_plugins_launcher_tests() {
 
 注: `launcher_sandbox_init`・`launcher_sandbox_cleanup`・`snapshot_check_targets`・`check`・`log`・`run_launcher`・`run_launcher_check` は既存（`run_instruction_mount_launcher_tests()` と同じ使い方）。`run_launcher` は `c3c claude` で起動するが、CODEX_DIR の mount は agent によらず compose.yml にあるので、この opt-in も agent によらず効く（Claude セッションからの `codex exec` でも使える）。
 
-- [ ] **Step 2b: `c3c codex` 経路の失敗するテストを書く**
+- [x] **Step 2b: `c3c codex` 経路の失敗するテストを書く**
 
 Codex 経路は、build・検査用コンテナ（preflight）・本起動の 3 回とも同じ override を積み、preflight は `prepare_codex_host_plugins` の後に走る必要がある（`create_host_path: false` のため、マウント先が無いと podman が失敗する）。`run_launcher`（`c3c claude`）ではこの経路を通らないので、`tests/test_codex_launch.py` に足す。
 
@@ -227,7 +227,7 @@ class HostPluginsTests(LaunchCase):
 
 注: `LaunchCase` は実アセットを `REPO.iterdir()` で runner へコピーするので、`compose.codex-plugins.yml` も自動で入る。`image_exists=False` のとき launcher は `-b` なしでも明示ビルドする（README「起動フロー」(1)）。
 
-- [ ] **Step 3: テストが失敗することを確かめる**
+- [x] **Step 3: テストが失敗することを確かめる**
 
 Run: `TMPDIR=/tmp ./test-build.sh --launcher-only 2>&1 | grep -E 'FAIL|PASS:|結果' | head -40`
 Expected: 新関数の check の大半が `[FAIL]`（未実装のため。未設定ケースと「CODEX_DIR 未設定」の一部は偶然 PASS しうる）。既存テストは PASS のまま。README の E7 は、許可リストをまだ変えていないので PASS のまま。
@@ -235,7 +235,7 @@ Expected: 新関数の check の大半が `[FAIL]`（未実装のため。未設
 Run: `python3 -m unittest tests.test_codex_launch.HostPluginsTests -v`
 Expected: 両方 FAIL。1 つ目は override が無いため、2 つ目は注入した `C3C_CODEX_PLUGINS_SOURCE` をまだ破棄しないため（`assertIsNone` が失敗する）。
 
-- [ ] **Step 4: override ファイルを作る**
+- [x] **Step 4: override ファイルを作る**
 
 `compose.codex-plugins.yml`:
 
@@ -260,7 +260,7 @@ services:
           create_host_path: false
 ```
 
-- [ ] **Step 5: 許可リストと境界キー一覧に足す**
+- [x] **Step 5: 許可リストと境界キー一覧に足す**
 
 `c3c` の `ENV_FILE_ALLOWED_KEYS` の `CODEX_DIR` の次の行に `CODEX_HOST_PLUGINS` を追加する。`guard_env_boundary_keys()` の `for key in ... CODEX_DIR CLAUDE_CONFIG_DIR; do` を `for key in ... CODEX_DIR CODEX_HOST_PLUGINS CLAUDE_CONFIG_DIR; do` にする。
 
@@ -270,7 +270,7 @@ services:
 | `CODEX_HOST_PLUGINS` | `0` | `1` でホストの `~/.codex/plugins/cache`（ホストの Codex が install した plugin）を、`CODEX_DIR` の内側（コンテナ内 `~/.codex/plugins/cache`）へ `:ro` で重ねる（後述「ホストの Codex plugin を使う」節）。`CODEX_DIR` の設定と、ホストにキャッシュが実在することが条件。`0`/`1` 以外の値は起動と `--check` で拒否 |
 ```
 
-- [ ] **Step 6: ガードと準備の関数を書く**
+- [x] **Step 6: ガードと準備の関数を書く**
 
 `c3c` の `guard_agents_dir()` の直後に追加する:
 
@@ -354,20 +354,20 @@ prepare_codex_host_plugins() {
 
 注: `validate_claude_config_ro_path` の ERROR 文言は「読み取り専用保護」を含み汎用に使える（symlink は「symlink です」を含む。テストはこれを見る）。`instruction_paths_overlap` は既存。`guard_fail` は通常起動では exit する。
 
-- [ ] **Step 7: 呼出しを足す**
+- [x] **Step 7: 呼出しを足す**
 
 `check_one_project()` の `guard_agents_dir || true` の次の行に `guard_codex_host_plugins || true` を追加する。通常起動の `guard_agents_dir` の次の行に `guard_codex_host_plugins` を追加する。通常起動の `guard_plugins_alias`（`prepare_claude_config_ro` の直後）の次の行に `prepare_codex_host_plugins` を追加する。
 
-- [ ] **Step 8: アセット登録**
+- [x] **Step 8: アセット登録**
 
 `c3c` の `resolve_asset_source()` の fixed の `case` に `| compose.codex-plugins.yml` を `compose.agents.yml` の後へ足す。`ASSET_HASH_TARGETS` の `compose.agents.yml` の次の行に `compose.codex-plugins.yml` を足す。36 行目付近のコメントの override 一覧に `compose.codex-plugins.yml` を、37 行目付近の `guard_*` 一覧に `guard_codex_host_plugins()` を足す。`test-build.sh` の runner コピー一覧（`cp -- "${SCRIPT_DIR}/"{c3c,...,compose.agents.yml,...}`）に `compose.codex-plugins.yml` を `compose.agents.yml` の次へ足す。
 
-- [ ] **Step 9: テストが通ることを確かめる**
+- [x] **Step 9: テストが通ることを確かめる**
 
 Run: `./lint.sh; echo lint_rc=$?; TMPDIR=/tmp ./test-build.sh --launcher-only > /tmp/c3c-launcher.log 2>&1; echo launcher_rc=$?; tail -5 /tmp/c3c-launcher.log; python3 -m unittest tests.test_codex_launch > /tmp/c3c-codex-launch.log 2>&1; echo unittest_rc=$?; tail -3 /tmp/c3c-codex-launch.log`
 Expected: `lint_rc=0`・警告ゼロ（Task 2 の lint 追加前なので、compose 検査は既存分のみ）。`launcher_rc=0` で FAIL 0。E7（許可リストと README 表の一致）も PASS。`unittest_rc=0` で末尾が `OK`。
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add c3c compose.codex-plugins.yml test-build.sh tests/test_codex_launch.py README.md
@@ -383,7 +383,7 @@ git commit -m "feat: CODEX_HOST_PLUGINS でホストの Codex plugin キャッ�
 **Interfaces:**
 - Consumes: Task 1 の `compose.codex-plugins.yml`（`C3C_CODEX_PLUGINS_SOURCE`、target `/home/node/.codex/plugins/cache`）
 
-- [ ] **Step 1: lint に override の検査を足す**
+- [x] **Step 1: lint に override の検査を足す**
 
 `lint.sh` の `AGENTS_DIR=/tmp podman compose -f compose.yml -f compose.agents.yml config >/dev/null || status=1` の直後に:
 
@@ -398,16 +398,16 @@ git commit -m "feat: CODEX_HOST_PLUGINS でホストの Codex plugin キャッ�
 
 6 ファイル同時の config を 7 ファイルにする: 環境に `C3C_CODEX_PLUGINS_SOURCE=/tmp` を足し、`-f compose.agents.yml` の後に `-f compose.codex-plugins.yml` を足し、needle 一覧に `'/home/node/\.codex/plugins/cache'` を足し、ERROR 文言の「6 ファイル」を「7 ファイル」にする。`${VAR:?}` の検査ループの対に `compose.codex-plugins.yml:C3C_CODEX_PLUGINS_SOURCE` を足す。上のコメント「6 ファイル同時のマージ」も「7 ファイル」に直す。
 
-- [ ] **Step 2: lint を回す**
+- [x] **Step 2: lint を回す**
 
 Run: `./lint.sh; echo rc=$?`
 Expected: `rc=0`、警告ゼロ。podman の無い環境では compose 検査がスキップされる（その場合は `not run` として報告し、ホストで実行する）。
 
-- [ ] **Step 3: lint の検査が効くことを確かめる（一時的な破壊）**
+- [x] **Step 3: lint の検査が効くことを確かめる（一時的な破壊）**
 
 `compose.codex-plugins.yml` の `read_only: true` を一時的に `read_only: false` にして `./lint.sh` → `rc=1` で compose_mount_is_ro の ERROR が出る。`git checkout compose.codex-plugins.yml` で戻す。
 
-- [ ] **Step 4: 実 podman の検査を書く**
+- [x] **Step 4: 実 podman の検査を書く**
 
 `test-build.sh` の `SHARED_ALIAS_PROBE` 定義の後に:
 
@@ -463,12 +463,12 @@ exit $fail
 
 （既存の「全エントリが実行ユーザー所有」check が `$root` 全体を見るので、`codex-home` にサブ uid の残骸が無いこともそこで確認される。）
 
-- [ ] **Step 5: 実 podman の検査を回す（ホスト）**
+- [x] **Step 5: 実 podman の検査を回す（ホスト）**
 
 Run: `TMPDIR=/tmp ./test-build.sh --config-ro-only > /tmp/c3c-config-ro.log 2>&1; echo rc=$?; tail -15 /tmp/c3c-config-ro.log`
 Expected: `rc=0`。`Codex plugin キャッシュは読めて書けず…` と `書き込み試行後もホスト側 source が不変…` が PASS、FAIL 0。テストイメージが無い場合は `./test-build.sh --build-only` を先に回す（README「変更後の確認」節）。コンテナ内では podman が無いため `not run`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lint.sh test-build.sh
@@ -483,7 +483,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 - Modify: `docs/development-invariants.md`（34 行目の override 一覧、52 行目の直後に新項目）
 - Modify: `examples/c3c/env.example`（CODEX_DIR の説明の後）
 
-- [ ] **Step 1: README の Codex 節に小節を足す**
+- [x] **Step 1: README の Codex 節に小節を足す**
 
 「Codex CLI を対話で使う」節の「**`--check` と `--clean`**」段落の直前に:
 
@@ -496,7 +496,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 - ランタイムの bind mount なので `-b` は不要だが、override ファイルが境界アセットのハッシュ対象なので、既存イメージでは `-b` するまでドリフトの WARNING が出る。`--check` は有効時に `[OK]   Codex plugin 共有 (ro): ...` を表示する。
 ```
 
-- [ ] **Step 2: README の他の箇所**
+- [x] **Step 2: README の他の箇所**
 
 1. 「変更後の確認」節の `SHARED_MOUNT` の別名マウントと `AGENTS_DIR` の段落の直後に:
 
@@ -506,7 +506,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 
 2. Step 1 の `grep -rn 'compose\.agents\.yml' README.md` で出た残りの箇所（アーキテクチャの override 一覧、セキュリティモデル 662 行目付近の境界キー一覧の `AGENTS_DIR` の並び）に、`compose.codex-plugins.yml` / `CODEX_HOST_PLUGINS` を同じ形で足す。
 
-- [ ] **Step 3: SECURITY-CLAIMS C-4**
+- [x] **Step 3: SECURITY-CLAIMS C-4**
 
 「**保証する動作**」段落の末尾に次の文を足す:
 
@@ -522,7 +522,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 
 「**根拠**」に `guard_codex_host_plugins()`、`compose.codex-plugins.yml` を足す。
 
-- [ ] **Step 4: development-invariants**
+- [x] **Step 4: development-invariants**
 
 34 行目の override 一覧に `compose.codex-plugins.yml` を、`guard_*` 一覧に `guard_codex_host_plugins()` を足す。52 行目（`${CODEX_DIR:-/dev/null}:/home/node/.codex` は rw 必須…）の直後に:
 
@@ -530,7 +530,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
   - `compose.codex-plugins.yml` の `${C3C_CODEX_PLUGINS_SOURCE:?}:/home/node/.codex/plugins/cache` は `:ro` 必須（ホストの Codex がキャッシュの skill・hook を読むため）。source は `guard_codex_host_plugins()` が `$HOME/.codex/plugins/cache` から実体解決した値だけで、任意パスを受け付けるキーを作らない。`C3C_CODEX_PLUGINS_SOURCE` は `ENV_FILE_ALLOWED_KEYS` に加えず、guard の冒頭で unset する。マウント先（`$CODEX_DIR/plugins`・`$CODEX_DIR/plugins/cache`）は rw の `CODEX_DIR` 内にあるので、`validate_claude_config_ro_path()` による symlink・型不一致の拒否を外さない。作成は `prepare_codex_host_plugins()` が `prepare_claude_config_ro()` の後、Codex 経路の build・preflight より前で行い（作成の前後に検査）、`--check` では作らない。source と `CODEX_DIR` の重なりは拒否し、比較は末尾 `/` を除いて行う（`/` に正規化された `CODEX_DIR` を見落とさない）。他の rw マウントとの重なりは `guard_agents_dir()` と同じく WARNING に留める。launcher は `CODEX_DIR/config.toml` を読み書きしない。
 ```
 
-- [ ] **Step 5: env.example**
+- [x] **Step 5: env.example**
 
 `examples/c3c/env.example` の `CODEX_DIR` の説明ブロックの後に:
 
@@ -540,7 +540,7 @@ git commit -m "test: Codex plugin キャッシュ共有の Compose 設定と実�
 # CODEX_HOST_PLUGINS=1
 ```
 
-- [ ] **Step 6: lint と Commit**
+- [x] **Step 6: lint と Commit**
 
 Run: `./lint.sh; echo rc=$?`
 Expected: `rc=0`、警告ゼロ。
@@ -569,7 +569,7 @@ cache_fingerprint() (
 cache_fingerprint > /tmp/c3c-cache-before.txt; echo rc=$?
 ```
 
-- [ ] **A1: 有効化**
+- [x] **A1: 有効化**
 
 fixture の `.c3c/env` に `CODEX_HOST_PLUGINS=1` を足し、`CODEX_DIR/config.toml` に `[plugins."superpowers@superpowers-dev"]` と `enabled = true` を足す。`c3c --check <fixture>` → `[OK]   Codex plugin 共有 (ro): ...` が出て、`CODEX_DIR/plugins/cache` が作られていない。
 
@@ -602,7 +602,7 @@ Expected: 両方 `rc=0`、`diff_rc=0`（空でない同じ skill 名の集合。
 
 `.c3c/env` から `CODEX_HOST_PLUGINS` を消し、`CODEX_DIR/config.toml` の有効化の行は残したまま `c3c codex <fixture>` で起動する。コンテナ内の `~/.codex/plugins/cache` にホストの plugin が見えないこと、Codex の起動可否・警告表示・自動 install の試行の有無と、`CODEX_DIR/plugins/cache` への書き込みの有無を記録する（同じ `CODEX_DIR` を opt-in していない別プロジェクトと共有したときの振る舞い。README「ホストの Codex plugin を使う」節へ結果を反映する）。
 
-- [ ] **Step: 結果を記録して Commit**
+- [x] **Step: 結果を記録して Commit**
 
 各項目の実行コマンド・出力の要点・PASS/FAIL を結果ファイルに書く。実行できなかった項目は `not run` と理由を書く。
 

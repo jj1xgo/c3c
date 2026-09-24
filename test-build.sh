@@ -1198,12 +1198,15 @@ run_codex_host_plugins_launcher_tests() {
   check "CODEX_DIR 未設定の opt-in を拒否する" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"CODEX_DIR"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
 
+  rm -rf "$home/.codex-container/plugins"
   mv "$home/.codex/plugins/cache" "$home/.codex/plugins/cache.off"
   run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
   check "ホストに plugin キャッシュが無ければ拒否する" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*".codex/plugins/cache"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
   run_launcher_check CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
   check "--check もキャッシュ欠落を拒否する" [ "$rc" -ne 0 ]
+  check "キャッシュ欠落を拒否した起動/check は source とマウント先を作らない" \
+    bash -c '[ ! -e "$1/.codex/plugins/cache" ] && [ ! -e "$1/.codex-container/plugins" ]' _ "$home"
   mv "$home/.codex/plugins/cache.off" "$home/.codex/plugins/cache"
 
   rm -rf "$home/.codex-container/plugins"
@@ -1211,6 +1214,16 @@ run_codex_host_plugins_launcher_tests() {
   run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
   check "symlink のマウント先（plugins）を拒否する" \
     bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"symlink"* ]] && [ ! -e "$3/compose-env" ] && [ -z "$(ls -A "$3/outside")" ]' _ "$rc" "$out" "$root"
+  run_launcher_check CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "--check も symlink の親マウント先（plugins）を拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"symlink"* ]] && [ -z "$(ls -A "$3/outside")" ]' _ "$rc" "$out" "$root"
+  rm -f "$home/.codex-container/plugins"
+  : > "$home/.codex-container/plugins"
+  run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "ファイルの親マウント先（plugins）を拒否する" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+  run_launcher_check CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
+  check "--check もファイルの親マウント先（plugins）を拒否する" [ "$rc" -ne 0 ]
   rm -f "$home/.codex-container/plugins"
   mkdir -p "$home/.codex-container/plugins"
   ln -s "$root/outside" "$home/.codex-container/plugins/cache"

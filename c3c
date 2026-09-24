@@ -1704,6 +1704,8 @@ guard_codex_host_plugins() {
     guard_fail "ERROR: CODEX_HOST_PLUGINS=1 ですが、ホストの $source がディレクトリとして見つかりません（ホストの Codex で plugin を install してから有効にしてください）。起動を中止します。" || return 1
     return 1
   fi
+  # pwd -P は先頭 // を保持する。CODEX_DIR と同じ規則で正規化して包含を比較する。
+  while [[ "$source_real" == //* ]]; do source_real="${source_real#/}"; done
   # instruction_paths_overlap は末尾 / を含む値（/ 自体）を正しく比べられないので、比較用に末尾 / を除く
   # （/ は空文字になり、"$x" == ""/* がすべての絶対パスに一致して「重なり」と判定される）。guard_codex_dir() は
   # /tmp/.. のような値を / に正規化するため、この除去を省くと CODEX_DIR=/ の重なりを見落とす。
@@ -1721,6 +1723,7 @@ guard_codex_host_plugins() {
     other="${other/#\~\//$HOME/}"
     [[ -d "$other" ]] || continue
     other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
+    while [[ "$other_real" == //* ]]; do other_real="${other_real#/}"; done
     if instruction_paths_overlap "${source_real%/}" "${other_real%/}"; then
       guard_warn "WARNING: CODEX_HOST_PLUGINS の source（$source_real）と $other の範囲が重なるため、別の rw マウント経由でホストの plugin キャッシュを書けます（:ro はこのマウントにしか効きません）。"
     fi

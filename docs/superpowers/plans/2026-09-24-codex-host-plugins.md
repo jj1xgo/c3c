@@ -299,6 +299,8 @@ guard_codex_host_plugins() {
     guard_fail "ERROR: CODEX_HOST_PLUGINS=1 ですが、ホストの $source がディレクトリとして見つかりません（ホストの Codex で plugin を install してから有効にしてください）。起動を中止します。" || return 1
     return 1
   fi
+  # pwd -P は先頭 // を保持する。CODEX_DIR と同じ規則で正規化して包含を比較する。
+  while [[ "$source_real" == //* ]]; do source_real="${source_real#/}"; done
   # instruction_paths_overlap は末尾 / を含む値（/ 自体）を正しく比べられないので、比較用に末尾 / を除く
   # （/ は空文字になり、"$x" == ""/* がすべての絶対パスに一致して「重なり」と判定される）。guard_codex_dir() は
   # /tmp/.. のような値を / に正規化するため、この除去を省くと CODEX_DIR=/ の重なりを見落とす。
@@ -316,6 +318,7 @@ guard_codex_host_plugins() {
     other="${other/#\~\//$HOME/}"
     [[ -d "$other" ]] || continue
     other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
+    while [[ "$other_real" == //* ]]; do other_real="${other_real#/}"; done
     if instruction_paths_overlap "${source_real%/}" "${other_real%/}"; then
       guard_warn "WARNING: CODEX_HOST_PLUGINS の source（$source_real）と $other の範囲が重なるため、別の rw マウント経由でホストの plugin キャッシュを書けます（:ro はこのマウントにしか効きません）。"
     fi
@@ -640,3 +643,5 @@ docs/superpowers/plans/2026-09-24-codex-host-plugins.md の Task 1〜3 を、ブ
   - 確認限定巡（対象 `9adba9a`）: Codex「修正後に渡せる」。Important 2 件は修正済み、Minor 2 件の残り（指紋を NUL 区切りに、unittest の終了コード）を次の commit で反映（Minor のみのため再確認は省略）。
   - 確認限定巡（対象 `9adba9a`）: Claude（Opus 5.5、`--resume`）「修正後に渡せる」。Important・Minor はすべて修正済み。修正で入った Minor 2 件（Step 3 の Expected の誤り、`/goal` に対話が要る受入項目を含めていた）を反映。Critical・Important が残らないため、これ以上の確認巡は回さない。
   - Claude M-5（キャッシュ内の絶対 symlink）は実測で解消: 2026-09-24 のホストの `~/.codex/plugins/cache` に絶対パスの symlink は 0 件（`find -type l -lname '/*'`）。
+
+- 実装レビューで判明した計画の修正: source と WARNING 用比較対象の `pwd -P` が先頭 `//` を保持すると、`guard_codex_dir()` で正規化したパスとの包含比較を見逃す。既存ガードと同じ先頭 `/` の正規化を Task 1 のコード例に反映した。回帰の再現と修正後の検証は検証記録を参照。

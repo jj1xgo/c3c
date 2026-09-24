@@ -776,6 +776,37 @@ class HostPluginsTests(LaunchCase):
             self.assertIsNone(call['env']['C3C_CODEX_PLUGINS_SOURCE'])
             self.assertFalse(call['plugins_mountpoint'])
 
+    def test_duplicate_leading_slashes_in_home_cannot_hide_source_overlap(self):
+        source = self.home / '.codex/plugins/cache'
+        source.mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={source.parent}\nCODEX_HOST_PLUGINS=1\n')
+        for mode in ('claude', '--check'):
+            with self.subTest(mode=mode):
+                result = self.run_launcher(mode, str(self.proj), env_extra={'HOME': '/' + str(self.home)})
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('重なり', result.stdout + result.stderr)
+                self.assert_no_containers()
+
+    def test_duplicate_leading_slashes_in_home_export_canonical_source(self):
+        source = self.home / '.codex/plugins/cache'
+        source.mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCODEX_HOST_PLUGINS=1\n')
+        result = self.run_launcher('claude', str(self.proj), env_extra={'HOME': '/' + str(self.home)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.compose_calls())
+        for call in self.compose_calls():
+            self.assertEqual(call['env']['C3C_CODEX_PLUGINS_SOURCE'], str(source))
+
+    def test_duplicate_leading_slashes_in_other_rw_mount_still_warn(self):
+        (self.home / '.codex/plugins/cache').mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCODEX_HOST_PLUGINS=1\n')
+        for mode in ('claude', '--check'):
+            with self.subTest(mode=mode):
+                result = self.run_launcher(mode, str(self.proj),
+                                           env_extra={'EXTRA_MOUNT': '/' + str(self.home)})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('WARNING: CODEX_HOST_PLUGINS の source', result.stdout + result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

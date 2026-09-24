@@ -204,7 +204,7 @@ elif command -v podman >/dev/null 2>&1; then
   fi
   # 指示ファイル・スキルの追加共有 override（claude-container#99）。source と destination は
   # launcher が export するので lint ではダミー値を与える。7 ファイル同時のマージで plugin 別名・
-  # IPv6・3 本の別名 volume が消えないことも見る。
+  # IPv6・3 本の指示ファイル別名 volume・Codex キャッシュが消えないことも見る。
   SHARED_MOUNT=/tmp CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home \
     podman compose -f compose.yml -f compose.shared-home.yml config >/dev/null || status=1
   SHARED_MOUNT=/tmp CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host \

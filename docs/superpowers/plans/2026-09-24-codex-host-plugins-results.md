@@ -7,6 +7,8 @@ Task 1〜3 と受入前の指紋取得・A1 を実施した。A2〜A6 は計画�
 
 ## 自動検証
 
+以下の初回検証は Task 1〜3 の実装時に実行した（launcher は `41be0ff` の内容、実マウントは `0e03e48` の内容）。レビュー後の修正に対する検証は末尾に別記する。
+
 | コマンド | 結果 |
 | --- | --- |
 | `./lint.sh` | rc=0、警告ゼロ。Compose の単独・7 ファイル同時の設定、source 未設定・空の拒否を含む |
@@ -60,3 +62,28 @@ PASS。`/tmp` の隔離 fixture に専用 `CODEX_DIR` と `CLAUDE_CONFIG_DIR` �
 | A6: 有効化の設定を残したまま共有を無効化した起動 | not run。起動可否・警告・自動 install・書込みの観測を対話担当へ引き継ぐ |
 
 次の担当は計画 Task 4 の A2〜A6 を実行し、README の A6 未確認表記と本記録を更新する。PR 作成・マージ・タグ作成は未実施。
+
+## 実装レビューと修正
+
+初回対象: `d5f9cd1..df96db4`。作成に関与していない Codex（gpt-6-astra、read-only）を先に background 起動し、Claude（claude-opus-5-5、Read/Grep/Glob のみ）と独立にレビューした。
+
+- Codex: With fixes。Important 1・Minor 1。`HOME` の先頭 `//` を `pwd -P` が保持し、正規化済み `CODEX_DIR` との包含比較で重なりを見逃すことを再現した。これは計画のコード例にもある欠陥。
+- Claude: コードは Yes、Minor 6。A2〜A6 の完了前に機能全体の合格とはしない。初回 JSON は `subtype=success` / `is_error=false`、`modelUsage` で実効モデルを確認したが、ユーザーの継続入力時に元のコマンドの終了コード取得を失ったため、確認限定巡の終了も別途確認する。
+
+修正: source と WARNING 用比較対象の先頭の重複 `/` を、既存の `guard_codex_dir()` と同じ規則で正規化した。新規回帰テスト3本（通常起動と `--check` の subtest を含む）で修正前に5失敗を再現し、修正後は plugin の5テストすべて成功。計画のコード例と不変条件も揃えた。
+
+Minor の対応: 欠落 source とマウント先を作らないこと、親 `plugins` の symlink を `--check` で拒否すること、親が通常ファイルの場合の起動・診断の拒否を追加検査した。lint のコメント、opt-in しない利用者にもドリフト WARNING が出る旨、検証時点を明記した。
+
+修正後の検証（この節を追加した commit のコードに対して実行）:
+
+- `./lint.sh`: rc=0、警告ゼロ。
+- `TMPDIR=/tmp ./test-build.sh --launcher-only`: rc=0、PASS=341 / FAIL=0。Codex launcher 38 tests を含む。
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_codex_launch.HostPluginsTests -v`: 5 tests、OK。
+- Compose override と実マウントの定義は変更していないため、成功済みの実マウント83件とビルド17件は再実行していない。
+
+保留した Minor:
+
+1. source の symlink 実体に追加の範囲制限を設ける案（Claude M1）。ホストが管理する symlink を実体解決して共有する承認済み仕様を変更するため、今回は追加しない。別の rw 経路による変更・読み取り範囲の拡大まで本マウントが防ぐ保証はない。なお source が `/` なら `CODEX_DIR` との包含拒否で止まる。
+2. 重なりと解決失敗のエラー文を分割する案（Claude M2）。いずれも拒否され、既存 fixture は解決可能なパスなので任意の診断改善として保留。
+
+確認限定巡の結果は後続の記録で追記する。

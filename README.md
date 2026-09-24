@@ -498,7 +498,7 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 - 更新はホストで行う（ホストの `codex plugin marketplace upgrade` 等）。コンテナ内の `codex plugin add`・`upgrade` はキャッシュに書けず失敗する。`cache` 配下へのホストでの追加・更新は稼働中のコンテナにも見えるが、`cache` ディレクトリ自体が置き換えられた場合は再起動まで反映されないことがある。
 - ホストのキャッシュにある plugin はすべてコンテナから読めるが、読み込まれるのは `CODEX_DIR/config.toml` で有効にしたものだけ。有効化は user 層の設定で、起動時の MCP 審査（C-3）の対象外。plugin の hook の信頼確認は Codex 自身に委ねる。
 - 条件: `CODEX_DIR` の設定と、ホストに `~/.codex/plugins/cache` が実在すること（source は launcher の `$HOME/.codex` に固定。ホストで `CODEX_HOME` を別の場所にしている構成は対象外）。有効化の行は同じ `CODEX_DIR` を使う全プロジェクトで共有されるので、`CODEX_HOST_PLUGINS` を付けないプロジェクトでの Codex の振る舞いは[受入 A6 の記録](docs/superpowers/plans/2026-09-24-codex-host-plugins-results.md)を参照する（対話受入は未実施）。`CODEX_DIR/plugins` または `CODEX_DIR/plugins/cache` が symlink かディレクトリ以外なら起動と `--check` で拒否する（rw の `CODEX_DIR` に置かれた symlink でマウント先をずらさせない）。マウント先はランチャーが作る（`--check` は作らない）。コンテナ内で入れた plugin が `CODEX_DIR/plugins/cache` に既にあれば、有効な間は隠れる旨の WARNING を出す。
-- ランタイムの bind mount なので `-b` は不要だが、override ファイルが境界アセットのハッシュ対象なので、既存イメージでは `-b` するまでドリフトの WARNING が出る。`--check` は有効時に `[OK]   Codex plugin 共有 (ro): ...` を表示する。
+- ランタイムの bind mount なので `-b` は不要だが、override ファイルが境界アセットのハッシュ対象なので、opt-in していない利用者も含め、既存イメージでは `-b` するまでドリフトの WARNING が出る。`--check` は有効時に `[OK]   Codex plugin 共有 (ro): ...` を表示する。
 
 **`--check` と `--clean`**: `--check --agent codex` は検査用コンテナを起動せず、`CODEX_DIR`・版指定・イメージの label・承認記録の存在と形式だけを報告し、実効 MCP の動的照合は `not run` と明示する（承認済みとは報告しない）。`--clean <ディレクトリ>` はそのプロジェクトの Claude の記録と Codex の記録ディレクトリ全体（過去版を含む）を削除し、他プロジェクトは残す。`--clean` は記録全体を削除する。
 

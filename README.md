@@ -408,7 +408,7 @@ legacy 変数が設定されたまま起動すると fail-closed で停止し、
 GITCONFIG_FILE=~/.gitconfig
 ```
 
-- 未設定なら、c3c 同梱の空ファイル `empty.gitconfig` を `~/.gitconfig` として read-only マウントする（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）。以前は `/dev/null` をマウントしており、Codex の sandbox 内では `~/.gitconfig` を読めず `git` が rc 128 で失敗していた（#149）。`empty.gitconfig` が欠けている・中身がある・symlink になっている場合は起動時に停止するので、c3c の checkout を git で復元する。c3c の置き場所と `GITCONFIG_FILE` のパスには、コロン・制御文字を含めない（compose の volume 指定を分割するため起動時に停止する）
+- 未設定なら、c3c 同梱の空ファイル `empty.gitconfig` を `~/.gitconfig` として read-only マウントする（`git commit` が `Author identity unknown` で失敗するだけで、他への影響はない）。以前は `/dev/null` をマウントしており、Codex の sandbox 内では `~/.gitconfig` を読めず `git` が rc 128 で失敗していた（#149）。`empty.gitconfig` が欠けている・中身がある・symlink になっている場合は起動時に停止するので、c3c の checkout を git で復元する。c3c の置き場所と `GITCONFIG_FILE` のパスには、コロン・制御文字を含めない（compose の volume 指定を分割するため起動時に停止する）。c3c の置き場所は、コンテナから書ける場所（`EXTRA_MOUNT`・`SHARED_MOUNT` の範囲など）に含めない。`empty.gitconfig` を書き換えられると、同じ置き場所から起動して稼働中のコンテナにも、その内容が即座に及ぶ（次回の起動は停止する）
 - 設定した場合、指定ファイルが存在しなければ起動時にエラーで停止する（fail-closed）。存在しないパスをそのまま bind mount すると、ホスト側にその名前の空ディレクトリが誤って作られてしまう問題を避けるため
 - read-only マウントのため（未設定時の空ファイルも同じ）、コンテナ内から `git config --global` で書き換えることはできない。編集は常にホスト側で行う（ランタイムマウントなので `-b` 再ビルドは不要、次回起動時に反映される）
 - `.gitconfig` に `credential.helper` や `include.path` でホスト固有の別ファイルを参照する記述があっても、`git commit` 自体には影響しない（参照先が無ければ黙って無視される、または認証操作時に警告が出る程度）。気になる場合は `user.name`/`user.email` のみを書いた専用ファイルを別途用意し、そちらのパスを `GITCONFIG_FILE` に指定するとよい

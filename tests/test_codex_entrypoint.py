@@ -332,6 +332,34 @@ class ComposeContractTests(EntrypointCase):
         self.assertEqual(set(values), set(self.KEYS), result.stdout)
         return values
 
+    def gitconfig_mounts(self, overrides):
+        """#149: 実 provider の config で ~/.gitconfig の bind を取り出す（短縮形・長形式のどちらでも）。"""
+        podman = shutil.which('podman')
+        if podman is None:
+            self.skipTest('podman が無いため compose の実解決を確認できない')
+        home = Path(self.env['HOME'])
+        (home / '.claude').mkdir(parents=True, exist_ok=True)
+        (home / '.claude.json').touch()
+        env = {'PATH': os.environ['PATH'], 'HOME': self.env['HOME'], 'BUILD_CONTEXT_DIR': str(self.root),
+               'CONTEXT': str(self.workspace), 'CLAUDE_CONTAINER_DIR': str(ROOT)}
+        env.update(overrides)
+        result = subprocess.run([podman, 'compose', '-f', str(ROOT / 'compose.yml'), '--env-file', '/dev/null', 'config'],
+                                env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mounts = re.findall(r'^\s*-\s*([^\s]+?):/home/node/\.gitconfig:([^\s]+)\s*$', result.stdout, re.M)
+        self.assertEqual(len(mounts), 1, result.stdout)
+        return mounts[0]
+
+    def test_gitconfig_bind_source_comes_from_launcher_variable(self):
+        source = self.root / 'bundled.gitconfig'
+        source.touch()
+        other = self.root / 'host.gitconfig'
+        other.touch()
+        self.assertEqual(self.gitconfig_mounts({'C3C_GITCONFIG_SOURCE': str(source), 'GITCONFIG_FILE': str(other)}),
+                         (str(source), 'ro'))
+        # launcher を通さない展開（GITCONFIG_FILE だけ）は既定値のまま。bind 元は launcher だけが決める。
+        self.assertEqual(self.gitconfig_mounts({'GITCONFIG_FILE': str(other)}), ('/dev/null', 'ro'))
+
     def test_unset_defaults_reach_entrypoint_as_claude_run(self):
         values = self.resolved({})
         self.assertEqual(values, {'CC_AGENT': 'claude', 'CC_CODEX_START_MODE': 'run', 'CC_CODEX_READ_ONLY': '0'})

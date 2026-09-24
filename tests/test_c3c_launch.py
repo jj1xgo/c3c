@@ -966,8 +966,12 @@ class GitconfigSourceTests(LaunchCase):
     def test_check_reports_broken_fallback(self):
         self.empty().write_text('x\n')
         result = self.run_c3c('--check', str(self.proj))
-        self.assertNotEqual(result.returncode, 0)
+        # fixture は packages.txt 等が無く壊れていなくても WARN なので、rc≠0 だけでは判定にならない。FAIL の集計まで見る。
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('→ 結果: FAIL', result.stdout)
+        self.assertIn('FAIL: 1', result.stdout)
         self.assertIn('empty.gitconfig', result.stdout + result.stderr)
+        self.assertNotIn('git 設定: GITCONFIG_FILE 未設定', result.stdout)
         self.assert_no_containers()
 
     def test_check_reports_the_fallback(self):
@@ -980,7 +984,7 @@ class GitconfigSourceTests(LaunchCase):
         self.append_env(f'GITCONFIG_FILE={gitconfig}')
         result = self.run_c3c('claude', str(self.proj))
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('コロン', result.stderr)
+        self.assertIn('~/.gitconfig の bind 元', result.stderr)
         self.assert_no_containers()
 
     def test_colon_in_run_dir_stops(self):
@@ -990,7 +994,7 @@ class GitconfigSourceTests(LaunchCase):
         copy_tree_keeping_symlinks(REPO, colon_runner)
         result = self.run_entry(colon_runner / 'c3c', 'claude', str(self.proj))
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('コロン', result.stderr)
+        self.assertIn('~/.gitconfig の bind 元', result.stderr)
         self.assert_no_containers()
 
     def test_every_compose_call_gets_the_source(self):

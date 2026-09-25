@@ -1,0 +1,18 @@
+# launcher が guard_codex_host_plugins() の条件（CODEX_HOST_PLUGINS=1）を満たすときだけ追加する固定設定。
+# ホストの Codex が install した plugin キャッシュ（~/.codex/plugins/cache）を、専用 CODEX_DIR
+# （コンテナ内 /home/node/.codex、rw）の内側へ :ro で重ねる。ホストの Codex はこのキャッシュの
+# skill・hook を読み込むため、コンテナから書けるとホストで任意の指示・コマンドを読ませる経路になる
+# （compose.yml の ~/.claude/plugins の :ro と同じ理由）。plugin の有効化は CODEX_DIR/config.toml の
+# user 層で利用者が行い、このマウントだけでは何も有効にならない。
+# source は launcher が実体へ解決して export する。マウント先は launcher がユーザー権限で作る
+# （create_host_path: false。無いと podman がサブ uid 所有の実体を作って残骸になる）。
+# ${VAR:?} は export 漏れを config 段階で失敗させるための保険（compose.agents.yml と同じ）。
+services:
+  claude-auth-workspace:
+    volumes:
+      - type: bind
+        source: ${C3C_CODEX_PLUGINS_SOURCE:?launcher が export する}
+        target: /home/node/.codex/plugins/cache
+        read_only: true
+        bind:
+          create_host_path: false

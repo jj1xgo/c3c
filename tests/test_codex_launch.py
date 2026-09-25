@@ -42,7 +42,10 @@ except OSError:
     stdin = '?'
 record = {'args': args, 'stdin': stdin,
           'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
-                                                  'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR')}}
+                                                  'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
+                                                  'C3C_CODEX_PLUGINS_SOURCE')},
+          'plugins_mountpoint': os.path.isdir(os.path.join(os.environ.get('CODEX_DIR') or '/nonexistent',
+                                                           'plugins', 'cache'))}
 with open(os.path.join(root, 'calls'), 'a') as out:
     out.write(json.dumps(record) + '\\n')
 def save():
@@ -744,6 +747,65 @@ class CheckAndCleanTests(LaunchCase):
         result = self.run_launcher('--clean')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(self.store.exists())
+
+
+class HostPluginsTests(LaunchCase):
+    def test_host_plugins_override_reaches_build_preflight_and_run_after_mountpoint(self):
+        (self.home / '.codex/plugins/cache/mk/p/1.0').mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCODEX_HOST_PLUGINS=1\n')
+        self.approve()
+        self.state['image_exists'] = False
+        result = self.run_launcher('--agent', 'codex', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        source = str((self.home / '.codex/plugins/cache').resolve())
+        builds, pres, runs = self.compose_calls('build'), self.preflight_calls(), self.main_runs()
+        self.assertEqual((len(builds), len(pres), len(runs)), (1, 1, 1))
+        for call in (*builds, *pres, *runs):
+            self.assertTrue(any(a.endswith('compose.codex-plugins.yml') for a in call['args']), call['args'])
+            self.assertEqual(call['env']['C3C_CODEX_PLUGINS_SOURCE'], source)
+        for call in (*pres, *runs):
+            self.assertTrue(call['plugins_mountpoint'], 'preflight / 本起動の時点でマウント先が無い')
+
+    def test_without_opt_in_codex_path_has_no_override(self):
+        self.approve()
+        result = self.run_launcher('--agent', 'codex', str(self.proj),
+                                   env_extra={'C3C_CODEX_PLUGINS_SOURCE': '/tmp/injected'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for call in self.compose_calls():
+            self.assertFalse(any(a.endswith('compose.codex-plugins.yml') for a in call['args']), call['args'])
+            self.assertIsNone(call['env']['C3C_CODEX_PLUGINS_SOURCE'])
+            self.assertFalse(call['plugins_mountpoint'])
+
+    def test_duplicate_leading_slashes_in_home_cannot_hide_source_overlap(self):
+        source = self.home / '.codex/plugins/cache'
+        source.mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={source.parent}\nCODEX_HOST_PLUGINS=1\n')
+        for mode in ('claude', '--check'):
+            with self.subTest(mode=mode):
+                result = self.run_launcher(mode, str(self.proj), env_extra={'HOME': '/' + str(self.home)})
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('重なり', result.stdout + result.stderr)
+                self.assert_no_containers()
+
+    def test_duplicate_leading_slashes_in_home_export_canonical_source(self):
+        source = self.home / '.codex/plugins/cache'
+        source.mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCODEX_HOST_PLUGINS=1\n')
+        result = self.run_launcher('claude', str(self.proj), env_extra={'HOME': '/' + str(self.home)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.compose_calls())
+        for call in self.compose_calls():
+            self.assertEqual(call['env']['C3C_CODEX_PLUGINS_SOURCE'], str(source))
+
+    def test_duplicate_leading_slashes_in_other_rw_mount_still_warn(self):
+        (self.home / '.codex/plugins/cache').mkdir(parents=True)
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\nCODEX_HOST_PLUGINS=1\n')
+        for mode in ('claude', '--check'):
+            with self.subTest(mode=mode):
+                result = self.run_launcher(mode, str(self.proj),
+                                           env_extra={'EXTRA_MOUNT': '/' + str(self.home)})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('WARNING: CODEX_HOST_PLUGINS の source', result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

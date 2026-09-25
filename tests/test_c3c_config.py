@@ -440,7 +440,7 @@ class ResolverConsistencyTests(ConfigCase):
         self.use_new_layout()
         baseline_run, baseline_staged = self.run_and_capture('claude', str(self.proj))
         for name in ('entrypoint.sh', 'init-firewall.sh', 'git-askpass.sh', 'validate-build-input.sh',
-                     'Dockerfile.claude', 'codex-mcp-audit.py', 'ipv6-firewall.py', 'firewall-refresh.py',
+                     'Dockerfile.claude', 'codex-mcp-audit.py', 'codex-launcher.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
                      'compose.ipv6.yml', 'compose.codex-preflight.yml'):
             (self.new / name).write_text('#!/bin/sh\nexit 99\n')
         run, staged = self.run_and_capture('claude', str(self.proj))

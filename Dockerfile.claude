@@ -276,6 +276,34 @@ RUN set -e; \
     fi
 # <<< c3c codex-bwrap
 
+# >>> c3c codex-launcher
+# 名前で呼ぶ codex（Claude 経路の Bash ツール、ログインシェル、podman exec）も同梱 bubblewrap を選ぶよう、
+# npm の symlink /usr/local/bin/codex を c3c の起動口 codex-launcher.sh に置き換える（#152）。上の
+# codex-bwrap RUN は npm の symlink を起点に vendor を解決するので、その後に置く。置き換える前に symlink の
+# 実体が起動口の固定パス（CODEX_JS）と一致することを確かめ、npm の配置が変わったら黙って別物を exec しない
+# ようビルドを止める。起動口は一時パスへ COPY し、opt-out（空の codex-version.txt）では置かずに消す。
+COPY codex-launcher.sh /tmp/codex-launcher.sh
+RUN set -e; \
+    CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)"; \
+    if [ -z "$CODEX_VERSION" ]; then \
+      echo "INFO: Codex は opt-out のため起動口を置きません"; \
+    else \
+      expected=/usr/local/lib/node_modules/@openai/codex/bin/codex.js; \
+      grep -qxF "readonly CODEX_JS=$expected" /tmp/codex-launcher.sh || { \
+        echo "ERROR: codex-launcher.sh の CODEX_JS が $expected ではありません" >&2; exit 1; }; \
+      [ -L /usr/local/bin/codex ] || { \
+        echo "ERROR: /usr/local/bin/codex が npm の symlink ではありません" >&2; exit 1; }; \
+      real="$(readlink -e /usr/local/bin/codex)" && [ "$real" = "$expected" ] || { \
+        echo "ERROR: /usr/local/bin/codex の実体が $expected ではありません（${real:-解決不能}）" >&2; exit 1; }; \
+      [ -f "$expected" ] && [ -x "$expected" ] || { \
+        echo "ERROR: $expected が実行可能な通常ファイルではありません" >&2; exit 1; }; \
+      rm -f /usr/local/bin/codex; \
+      install -o root -g root -m 0755 /tmp/codex-launcher.sh /usr/local/bin/codex; \
+      echo "INFO: Codex 起動口: /usr/local/bin/codex -> exec $expected"; \
+    fi; \
+    rm -f /tmp/codex-launcher.sh
+# <<< c3c codex-launcher
+
 # エグレスファイアウォールのアセット: root 所有にし、node ユーザーが実行時に
 # 許可リストやスクリプト自体を変更できないようにする。node は sudo 経由で
 # このスクリプトのみを実行できる。

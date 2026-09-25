@@ -1526,7 +1526,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -1967,6 +1967,7 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/ipv6-firewall.py" "$dest/ipv6-firewall.py"
   cp "${SCRIPT_DIR}/firewall-refresh.py" "$dest/firewall-refresh.py"
   cp "${SCRIPT_DIR}/codex-mcp-audit.py" "$dest/codex-mcp-audit.py"
+  cp "${SCRIPT_DIR}/codex-launcher.sh" "$dest/codex-launcher.sh"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
@@ -2061,7 +2062,7 @@ check "npm --version" podman run --rm --network=none "$IMAGE" npm --version
 check "codex --version が同梱 default（codex-cli $DEFAULT_CODEX_VERSION）と一致" \
   bash -c 'actual=$(podman run --rm --network=none "$1" codex --version) && echo "$actual" && [ "$actual" = "codex-cli $2" ]' _ "$IMAGE" "$DEFAULT_CODEX_VERSION"
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
-check "codex の実体が entrypoint.sh の固定パス /usr/local/bin/codex にある" \
+check "codex の起動口が entrypoint.sh の固定パス /usr/local/bin/codex にある" \
   bash -c 'podman run --rm --network=none "$1" sh -c "[ -x /usr/local/bin/codex ] && [ -x /usr/local/bin/node ] && [ -x /usr/local/bin/npm ]"' _ "$IMAGE"
 # Codex 同梱 bubblewrap の固定リンク（#145）。Dockerfile.claude のビルド時検査と同じ条件を、最終
 # イメージで node ユーザーとして確かめ直す（ビルド後の層で所有者・mode が変わっていないことの確認）。
@@ -2091,6 +2092,23 @@ done
 [ "$(id -u)" != 0 ]'
 check "Codex 同梱 bubblewrap の固定リンク（唯一の symlink・npm の対応 triple・help 4 項目・root 所有・node から書込不可）" \
   podman run --rm --network=none "$IMAGE" sh -c "$CODEX_BWRAP_PROBE"
+# Codex 起動口（#152）。npm の symlink を置き換えた通常ファイルで、実体 codex.js は上書きされずに残り、
+# ログインシェル（/etc/profile が PATH を作り直す）から名前で呼んでも起動口を通る。
+# shellcheck disable=SC2016  # コンテナ内の sh で評価する
+CODEX_LAUNCHER_PROBE='set -e
+f=/usr/local/bin/codex; js=/usr/local/lib/node_modules/@openai/codex/bin/codex.js
+[ -f "$f" ] && ! [ -L "$f" ] || { echo "起動口が symlink でない通常ファイルではない"; exit 1; }
+[ "$(stat -c %u:%g:%a "$f")" = 0:0:755 ] || { echo "起動口が root:root 0755 ではない: $(stat -c %u:%g:%a "$f")"; exit 1; }
+! [ -w "$f" ] || { echo "起動口が node から書込可"; exit 1; }
+grep -qxF "readonly CODEX_JS=$js" "$f" || { echo "起動口の CODEX_JS が固定パスではない"; exit 1; }
+[ -f "$js" ] && [ -x "$js" ] || { echo "codex.js が実行可能な通常ファイルではない"; exit 1; }
+! cmp -s "$f" "$js" || { echo "codex.js が起動口で上書きされている"; exit 1; }
+head -n 1 "$js" | grep -q node || { echo "codex.js の先頭が node の shebang ではない"; exit 1; }
+[ "$(bash -lc "command -v codex")" = "$f" ] || { echo "ログインシェルの codex が起動口に解決されない"; exit 1; }
+bash -lc "codex --version"
+[ "$(id -u)" != 0 ]'
+check "Codex 起動口（通常ファイル・root:root 0755・node から書込不可・codex.js が残る・ログインシェルから起動口に解決）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$CODEX_LAUNCHER_PROBE"
 log ""
 
 # 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。

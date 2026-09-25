@@ -404,6 +404,12 @@ for d in '"${CONFIG_RO_DIRS[*]}"'; do
   expect_ro "$d/create"  sh -c "echo x > $d/probe-new"
   expect_ro "$d/append"  sh -c "echo x >> $d/seed"
   expect_ro "$d/delete"  rm -f "$d/seed"
+  # マウントポイント自体の削除・置換（#132）。漏れたら FAIL を記録したうえで元に戻し、
+  # 同じ root を使う 2 回目の probe を崩さない。
+  expect_ro "$d/rmdir"   rmdir "$d"
+  [ -d "$d" ] || mkdir "$d"
+  expect_ro "$d/rename"  mv "$d" "$d.moved"
+  if [ -e "$d.moved" ]; then mv "$d.moved" "$d" 2>/dev/null || true; fi
 done
 for f in '"${CONFIG_RO_FILES[*]}"'; do
   expect_ro "$f/append"  sh -c "echo x >> $f"
@@ -592,6 +598,8 @@ run_config_ro_tests() {
 launcher_sandbox_init() {
   root="$(mktemp -d)"; bin="$root/bin"; home="$root/home"; proj="$root/proj"
   mkdir -p "$bin" "$home/.claude" "$proj"
+  # 基点の .claude.json（#159 のガードが compose より前に検査する。ホストで Claude Code を使えば作られる）
+  printf '{}\n' > "$home/.claude.json"
   # ダミー podman: compose 呼び出し時の環境と引数を記録する（ランチャー → compose の
   # 接続部 — CLAUDE_CONFIG_DIR の export 等 — を検証するため）。compose-env は最後の
   # 呼び出しの環境（従来互換）、compose-args は全呼び出しの引数の連結。加えて
@@ -599,6 +607,11 @@ launcher_sandbox_init() {
   # run で export や override が片方だけ漏れていないかを見分けるため。#98）。
   cat > "$bin/podman" <<DUMMY
 #!/bin/bash
+# 実 Podman 5.8.6 は cwd が削除済みだと getcwd 失敗で rc 1 を返す（#126 混在ケース）。
+if ! pwd -P >/dev/null 2>&1; then
+  echo "Error getting current working directory: No such file or directory" >&2
+  exit 1
+fi
 if [[ "\${1:-}" == --remote=false ]]; then shift; fi
 case "\$1 \$2" in
   "images --all") printf '%s\\n' '[]'; exit 0 ;;
@@ -674,6 +687,7 @@ config_ro_fixture_setup() {
   local base="$1" name="$2" kind="$3"
   rm -rf "$base" || return 1
   mkdir -p "$base/.claude" || return 1
+  printf '{}\n' > "$base/.claude.json" || return 1
   case "$kind" in
     file) printf 'gitdir: %s\n' "$base/elsewhere/.git" > "$base/.claude/$name" ;;
     dir) mkdir -p "$base/.claude/$name" ;;
@@ -694,12 +708,112 @@ launcher_sandbox_cleanup() {
   rm -rf "$root"
 }
 
+# 基点の .claude.json の欠落・型違いを compose より前に止める（#159）。podman は bind source が
+# 無いと空のディレクトリを作り、イメージ内の通常ファイル /home/node/.claude.json へのマウントが
+# rc=126 で分かりにくく失敗する。通常ファイルとそれへの symlink は通す。ガードと 12 項目の準備と
+# compose が同じ基点（論理 cd の後の pwd -P）を見ることも、symlink と .. の組み合わせで確かめる。
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
+run_claude_json_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local j_base="$root/cj" j_case j_kind j_expect j_mode
+  while IFS='|' read -r j_case j_kind j_expect; do
+    for j_mode in run check; do
+      rm -rf "$j_base"; mkdir -p "$j_base/.claude"
+      case "$j_kind" in
+        missing) ;;
+        dangling) ln -s missing-target.json "$j_base/.claude.json" ;;
+        dir) mkdir "$j_base/.claude.json" ;;
+        fifo) mkfifo "$j_base/.claude.json" ;;
+        linkdir) mkdir -p "$root/cj-dir-target" && ln -s "$root/cj-dir-target" "$j_base/.claude.json" ;;
+      esac
+      if [[ "$j_mode" == run ]]; then
+        run_launcher CLAUDE_CONFIG_DIR="$j_base"
+      else
+        # run_launcher_check は記録をリセットしないので、直前の run の記録を持ち越さない
+        launcher_sandbox_reset_records
+        run_launcher_check CLAUDE_CONFIG_DIR="$j_base"
+      fi
+      check "J: $j_case は ERROR で止まる（$j_mode、rc=$rc）" \
+        bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -F "ERROR" | grep -F ".claude.json" | grep -qF "$3"' \
+          _ "$rc" "$out" "$j_expect"
+      check "J: $j_case は compose を呼ばない（$j_mode）" [ ! -e "$root/compose-calls" ]
+      check "J: $j_case は 12 項目を作らない（$j_mode）" [ ! -e "$j_base/.claude/hooks" ]
+      if [[ "$j_mode" == check ]]; then
+        check "J: $j_case は --check の結果を FAIL にする" \
+          bash -c 'printf "%s" "$1" | grep -qF "→ 結果: FAIL"' _ "$out"
+      fi
+      printf '%s\n' "$out" >> "$LOG_FILE"
+    done
+  done <<'JCASES'
+J1 欠落|missing|がありません
+J2 壊れた symlink|dangling|壊れた symlink
+J3 ディレクトリ|dir|ディレクトリです
+J4 FIFO|fifo|通常ファイルではありません
+J5 ディレクトリへの symlink|linkdir|リンク先がディレクトリです
+JCASES
+
+  # 成功: 通常ファイルと、通常ファイルへの symlink は通り、compose に届く。
+  for j_kind in file link; do
+    rm -rf "$j_base"; mkdir -p "$j_base/.claude"
+    if [[ "$j_kind" == file ]]; then
+      printf '{}\n' > "$j_base/.claude.json"
+    else
+      printf '{}\n' > "$root/real-claude.json"
+      ln -s "$root/real-claude.json" "$j_base/.claude.json"
+    fi
+    run_launcher CLAUDE_CONFIG_DIR="$j_base"
+    check "J: .claude.json が $j_kind なら compose に届く（rc=$rc）" \
+      bash -c '[ "$1" -eq 0 ] && [ -e "$2/compose-calls" ] && ! printf "%s" "$3" | grep -F "ERROR" | grep -qF ".claude.json"' \
+        _ "$rc" "$root" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
+
+  # 基点の一致: <root>/lk は別の場所を指す symlink。<root>/lk/../cfgL は、論理解決では <root>/cfgL、
+  # 物理解決では <root>/phys/cfgL。-d は元の綴りを物理解決するので両方にディレクトリを作る。
+  # 期待する基点は論理側（今の規則）。.claude.json を論理側だけに置けば通り、物理側だけなら止まる。
+  # 実装は pwd -P の値を出すので、TMPDIR が symlink の下でも一致するよう実体の root で照合する
+  local j_real_root
+  j_real_root="$(cd "$root" && pwd -P)"
+  mkdir -p "$root/phys/sub" "$root/phys/cfgL/.claude" "$root/cfgL/.claude"
+  ln -sfn "$root/phys/sub" "$root/lk"
+  printf '{}\n' > "$root/cfgL/.claude.json"
+  run_launcher CLAUDE_CONFIG_DIR="$root/lk/../cfgL"
+  check "J: symlink と .. の基点は論理側の .claude.json を見て通る（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_CONFIG_DIR=$3/cfgL" "$2/compose-env" && [ -d "$2/cfgL/.claude/hooks" ] && [ ! -e "$2/phys/cfgL/.claude/hooks" ]' \
+      _ "$rc" "$root" "$j_real_root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$root/cfgL/.claude.json"; printf '{}\n' > "$root/phys/cfgL/.claude.json"
+  rm -rf "$root/cfgL/.claude" "$root/phys/cfgL/.claude"; mkdir -p "$root/cfgL/.claude" "$root/phys/cfgL/.claude"
+  run_launcher CLAUDE_CONFIG_DIR="$root/lk/../cfgL"
+  check "J: symlink と .. の基点で物理側にだけ .claude.json があれば止まる（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-calls" ] && printf "%s" "$3" | grep -F "ERROR" | grep -qF "$4/cfgL/.claude.json"' \
+      _ "$rc" "$root" "$out" "$j_real_root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # Codex 経路も同じ compose サービスを使うので、検査用コンテナより前に止まる。
+  # CODEX_DIR が無いと guard_codex_agent が先に止めるので、専用の認証ディレクトリを用意する。
+  rm -rf "$j_base"; mkdir -p "$j_base/.claude" "$root/codex-home" "$proj/.c3c"
+  printf 'CODEX_DIR=%s\n' "$root/codex-home" > "$proj/.c3c/env"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONFIG_DIR="$j_base" "${SCRIPT_DIR}/c3c" codex "$proj" 2>&1) && rc=0 || rc=$?
+  rm -rf "$proj/.c3c"
+  check "J: Codex 経路も .claude.json の欠落で preflight より前に止まる（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-calls" ] && printf "%s" "$3" | grep -F "ERROR" | grep -qF ".claude.json"' \
+      _ "$rc" "$root" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  rm -rf "$j_base"
+  launcher_sandbox_cleanup
+}
+
 # ランチャーテストの実行入口。通常実行と --launcher-only の双方がこの関数をちょうど
 # 1 回呼ぶ（個別テスト関数を直接呼ばない。呼び出しがここに一本化されていないと、
 # 入口を増やしたときに一方からだけ新テストが漏れる）。
 run_launcher_tests() {
   log "## ランチャー（c3c）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
+  run_claude_json_launcher_tests
   run_plugins_alias_launcher_tests
   run_instruction_mount_launcher_tests
   run_ipv6_launcher_tests
@@ -959,9 +1073,13 @@ SHIM
   # cwd が削除済みだと bash は cd . / .. を成功させ、pwd -L が引数「.」「..」をそのまま返す（#122）。
   # 幽霊名（「.」の sha256 由来 project-cdb4ee2a 等）で清掃・台帳記録・診断を始めず、PWD の有無に
   # 関わらず絶対パスの指定を求めて止める。
+  # #126: --check ..、--check --clean-missing .（targets を result.json で置き換える唯一の経路）、
+  # 実在する隣への相対パス（bash は削除済み cwd から cd ../sibling を成功させ、pwd -L は相対の
+  # ../sibling を返す。2026-09-25 に実測）も同じく止める。
   printf '%s\n' "/victim" > "$ledger"
   cp "$ledger" "$root/ledger-before-dot"
-  for input in "--clean ." "--clean .." "claude ." "--check ."; do
+  mkdir -p "$root/sibling"
+  for input in "--clean ." "--clean .." "claude ." "--check ." "--check .." "--check --clean-missing ." "--clean ../sibling"; do
     for pwd_env in none stale; do
       read -ra args <<<"$input"
       mkdir -p "$root/gone"
@@ -976,7 +1094,28 @@ SHIM
       check "cwd 削除済み（PWD $pwd_env）の '$input' は幽霊名で進めず止める" \
         bash -c '[ "$1" != 0 ] && [[ "$2" == *"現在のディレクトリを特定できない"* && "$2" != *"project-cdb4ee2a"* && "$2" != *"project-5ec1f7e7"* ]] && ! grep -Eq "^(rmi|rm|prune|compose|network)$" "$3/podman-args" 2>/dev/null && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-dot"
       printf '%s\n' "$out" >> "$LOG_FILE"
+      # #126-4: 解決できない対象の FAIL は check_one_project の 1 行だけにする（ヘルパーの行と二重にしない）
+      if [[ "${args[0]}" == --check ]]; then
+        check "cwd 削除済み（PWD $pwd_env）の '$input' の FAIL は 1 行" \
+          [ "$(printf '%s\n' "$out" | grep -c '^\[FAIL\]')" -eq 1 ]
+      fi
     done
+  done
+  # #126-4: 削除済み cwd でも、絶対パスの対象の診断は消さない（単独・台帳・混在）。
+  printf '%s\n' "$original_proj" > "$ledger"
+  for input in "--check $original_proj" "--check" "--check . $original_proj" "--check --clean-missing . $original_proj"; do
+    read -ra args <<<"$input"
+    mkdir -p "$root/gone"
+    rm -f "$home/podman-args"
+    out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$root/gone" \
+      "${SCRIPT_DIR}/c3c" "${args[@]}" 2>&1) && rc=0 || rc=$?
+    check "cwd 削除済みでも '$input' は絶対パスの対象を診断する" \
+      bash -c 'printf "%s\n" "$1" | grep -qxF "=== $2 ===" && printf "%s\n" "$1" | grep -qF "[OK]   プロジェクトディレクトリ実在: $2" && grep -qxF images "$3/podman-args"' _ "$out" "$original_proj" "$home"
+    if [[ "$input" == *" . "* ]]; then
+      check "cwd 削除済みの '$input' は . の FAIL を 1 行だけ出し、rc≠0" \
+        bash -c '[ "$1" -ne 0 ] && [ "$(printf "%s\n" "$2" | grep -c "^\[FAIL\] 現在のディレクトリを特定できない")" -eq 1 ] && ! printf "%s\n" "$2" | grep -qF "イメージ診断・清掃に失敗" && ! printf "%s\n" "$2" | grep -qF "清掃診断の結果を読み取れません"' _ "$rc" "$out"
+    fi
+    printf '%s\n' "$out" >> "$LOG_FILE"
   done
   proj="$original_proj"
   launcher_sandbox_cleanup
@@ -1325,7 +1464,7 @@ DUMMY
   # 3 件だけを見ていると、マウント境界を決める CLAUDE_CONFIG_DIR・EXTRA_MOUNT・SHARED_MOUNT・
   # SECRETS_DIR が配列から消えても緑のままになる（レビュー指摘に基づく拡張）。
   : > "$root/gitconfig"
-  mkdir -p "$root/extra" "$root/shared" "$root/secrets" "$home/cfgx/.claude"
+  mkdir -p "$root/extra" "$root/shared" "$root/secrets" "$home/cfgx/.claude" && printf '{}\n' > "$home/cfgx/.claude.json"
   local e_cfg e_extra e_shared e_secrets e_gitcfg e_codex
   e_cfg="$(cd "$home/cfgx" && pwd -P)"
   e_extra="$(cd "$root/extra" && pwd -P)"
@@ -1630,7 +1769,7 @@ run_config_ro_launcher_tests() {
 
   # E: ~/ 始まりは $HOME に展開され、その基点の .claude/ 配下に作られる
   # （基点ディレクトリ自体は存在が必須。無ければ他のマウント変数と同じく ERROR）
-  mkdir -p "$home/cfgx"
+  mkdir -p "$home/cfgx" && printf '{}\n' > "$home/cfgx/.claude.json"
   run_launcher CLAUDE_CONFIG_DIR='~/cfgx'
   check "E: ~/ の CLAUDE_CONFIG_DIR を基点に作成する（rc=$rc）" \
     [ "$rc" -eq 0 -a -d "$home/cfgx/.claude/hooks" -a -f "$home/cfgx/.claude/settings.json" ]
@@ -1668,6 +1807,14 @@ run_config_ro_launcher_tests() {
       check "G: $g_case は ERROR で起動中止（$g_mode、rc=$rc）" \
         bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "ERROR" && printf "%s" "$2" | grep -qF "$3"' \
           _ "$rc" "$out" "$g_name"
+      # #159 の .claude.json のガードで止まって、本来の型検査に届かないまま通ることを防ぐ
+      check "G: $g_case は .claude.json のガードで止まっていない（$g_mode）" \
+        bash -c '! printf "%s" "$1" | grep -F "ERROR" | grep -qF ".claude.json"' _ "$out"
+      # #132: gitfile の .git（worktree・submodule）は原因が分かるよう、.git 固有の案内を添える
+      if [[ "$g_name" == .git && "$g_kind" == file ]]; then
+        check "G: $g_case は gitfile の案内と README の限界 (8) を示す（$g_mode）" \
+          bash -c 'printf "%s" "$1" | grep -F "ERROR" | grep -qF "gitfile" && printf "%s" "$1" | grep -qF "限界 (8)"' _ "$out"
+      fi
       check "G: $g_case は保護対象を変更しない（$g_mode）" \
         bash -c '[ "$1" -eq 1 ] && cmp -s "$2" "$3"' _ "$g_snap_ok" "$root/g-before" "$root/g-after"
       check "G: $g_case は先行項目を作成しない（$g_mode）" \
@@ -1782,7 +1929,7 @@ CURL
   rm -f "$proj/.claude-container.d/env"
 
   # P4: CLAUDE_CONFIG_DIR=~/cfg/（末尾スラッシュ）→ 正規化した綴りで別名を付ける
-  mkdir -p "$home/cfg"
+  mkdir -p "$home/cfg" && printf '{}\n' > "$home/cfg/.claude.json"
   run_launcher CLAUDE_CONFIG_DIR='~/cfg/'
   check "P4: ~/cfg/ の別名は正規化した綴り（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/cfg/.claude/plugins" "$3/compose-env"' _ "$rc" "$home" "$root"
@@ -1798,7 +1945,7 @@ CURL
 
   # P6: 範囲外（基点が $HOME 配下でない）→ WARNING を出し、override も export も無い。
   # 起動は止めない（plugin が読めないだけで境界には影響しない）。--check も同じ WARNING。
-  mkdir -p "$root/outside"
+  mkdir -p "$root/outside" && printf '{}\n' > "$root/outside/.claude.json"
   run_launcher CLAUDE_CONFIG_DIR="$root/outside" CLAUDE_PLUGINS_HOST_PATH=/workspace
   check "P6: HOME 配下でない基点は WARNING で別名を付けない（注入値も残さない、rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && [[ "$2" == *WARNING*plugins/* ]] \
@@ -1914,6 +2061,48 @@ run_instruction_mount_launcher_tests() {
   run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$home/vault-link"
   check "symlink の SHARED_MOUNT は綴りを別名に、実体を /shared の source にする" \
     bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/vault-link" "$2/compose-env" && grep -qxF "CLAUDE_SHARED_HOST_PATH=$3/vault-link" "$2/compose-env" && grep -qxF "SHARED_MOUNT=$(cd "$3/obsidian-vault" && pwd -P)" "$2/compose-env"' _ "$rc" "$root" "$home"
+
+  # #112-1: AGENTS_DIR は -d（カーネル）と同じ物理解決にする。<root>/alk は別の場所を指す symlink で、
+  # <root>/alk/../agx は論理解決なら <root>/agx、物理解決なら <root>/p/agx。両方を作って区別する。
+  local real_root
+  real_root="$(cd "$root" && pwd -P)"
+  mkdir -p "$root/p/sub" "$root/p/agx" "$root/agx"
+  ln -s "$root/p/sub" "$root/alk"
+  run_launcher AGENTS_DIR="$root/alk/../agx"
+  check "AGENTS_DIR の symlink の後の .. は物理解決する（rc=$rc）" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "AGENTS_DIR=$3/p/agx" "$2/compose-env"' _ "$rc" "$root" "$real_root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # #112-2: 実体名のコロン・末尾の改行は、綴りの検査を通っても実体の検査で止める。末尾の改行を
+  # 落とした同名のディレクトリも作り、そちらへ黙って流れないことを見る。
+  mkdir -p "$home/real:vault" "$root/ag:colon" "$home/nlvault"$'\n' "$home/nlvault" "$root/agnl"$'\n' "$root/agnl"
+  ln -s "$home/real:vault" "$home/colon-link"
+  ln -s "$root/ag:colon" "$home/ag-colon-link"
+  ln -s "$home/nlvault"$'\n' "$home/nl-link"
+  ln -s "$root/agnl"$'\n' "$home/ag-nl-link"
+  for value in "$home/colon-link" "$home/nl-link"; do
+    run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$value"
+    check "実体名にコロンか末尾の改行がある SHARED_MOUNT を拒否する: ${value##*/}（rc=$rc）" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"SHARED_MOUNT"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$value"
+    check "--check も同じ SHARED_MOUNT を拒否する: ${value##*/}" [ "$rc" -ne 0 ]
+  done
+  for value in "$home/ag-colon-link" "$home/ag-nl-link"; do
+    run_launcher AGENTS_DIR="$value"
+    check "実体名にコロンか末尾の改行がある AGENTS_DIR を拒否する: ${value##*/}（rc=$rc）" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"AGENTS_DIR"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check AGENTS_DIR="$value"
+    check "--check も同じ AGENTS_DIR を拒否する: ${value##*/}" [ "$rc" -ne 0 ]
+  done
+
+  # #112-3: AGENTS_DIR が / そのもの、または / を指す symlink でも、rw の source との重なりを警告する（拒否しない）。
+  ln -s / "$home/rootlink"
+  for value in / "$home/rootlink"; do
+    run_launcher AGENTS_DIR="$value"
+    check "AGENTS_DIR=$value は rw の重なりを WARNING にする（rc=$rc）" \
+      bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"AGENTS_DIR"*"rw"* ]]' _ "$rc" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
   launcher_sandbox_cleanup
 }
 
@@ -2309,6 +2498,8 @@ log "## .claude-container.d/env の非混入確認（ランタイム設定はビ
 # 実地で検出できる（コピー処理を模倣するだけのテストは本体が壊れても検知できない）。
 ENV_TESTROOT="$(mktemp -d)"
 mkdir -p "$ENV_TESTROOT/bin"
+# 基点の .claude.json（#159 のガードが compose より前に検査する）
+printf '{}\n' > "$ENV_TESTROOT/.claude.json"
 cat > "$ENV_TESTROOT/bin/podman" <<'DUMMY'
 #!/bin/bash
 case "$1" in

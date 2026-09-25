@@ -151,8 +151,9 @@ SECRETS_MOUNT=/home/node/.config/claude-container/secrets
 # Codex の固定 home と CLI 実体（c3c 第1段階）。firewall と capability 剥奪の後、秘密の export より前に
 # 確定する。下の export ループは「既に設定済みの名前」をスキップするため、secrets/export/CODEX_HOME・
 # HOME・PATH で差し替えることはできず、検査（preflight）・再照合（verify）・本起動が同じ home と
-# CLI 実体を使う。CODEX_HOME は compose.yml が CODEX_DIR を rw で載せる固定マウント先。CLI 実体は
-# Dockerfile.claude の `npm install -g @openai/codex` が置く npm global bin の固定絶対パス。
+# CLI 実体を使う。CODEX_HOME は compose.yml が CODEX_DIR を rw で載せる固定マウント先。CODEX_CLI は
+# Dockerfile.claude が npm の symlink を置き換えた c3c の起動口 codex-launcher.sh（#152）の固定絶対パスで、
+# 起動口は PATH の先頭が既に CODEX_BWRAP_DIR なら PATH を変えずに npm の codex.js を exec する。
 # CODEX_BWRAP_DIR は Codex 同梱 bubblewrap の固定 symlink だけを置く root 所有の専用ディレクトリ
 # （Dockerfile.claude が作る。#145）。Codex 経路の PATH の先頭へここで一度だけ加え、snapshot・verify・
 # 本起動へ同じ PATH を継承させる。Codex の PATH 探索が最初に見つける bwrap を同梱版にし、システム版

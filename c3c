@@ -1962,7 +1962,7 @@ check_mcp_approval() {
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
 #                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
-#                    codex-mcp-audit.py・固定 Compose override 群）
+#                    codex-mcp-audit.py・codex-launcher.sh・固定 Compose override 群）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
 #                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
@@ -1978,7 +1978,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | codex-launcher.sh | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -2015,6 +2015,7 @@ ASSET_HASH_TARGETS=(
   ipv6-firewall.py
   firewall-refresh.py
   codex-mcp-audit.py
+  codex-launcher.sh
   compose.ipv6.yml
   compose.plugins-alias.yml
   compose.shared-home.yml
@@ -2057,7 +2058,7 @@ compute_asset_hash() {
   ASSET_HASH=$(printf '%s' "$combined" | sha256sum | cut -d' ' -f1)
 }
 
-# entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh（fixed）・
+# entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh / codex-launcher.sh 等（fixed）・
 # packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt
 # （overridable）・allowed-ports.txt（optional）をビルドコンテキストへ集約する。
 # packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
@@ -2071,7 +2072,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py git-askpass.sh validate-build-input.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py codex-launcher.sh git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done

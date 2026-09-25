@@ -121,6 +121,32 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 - arm64 は fixture の単体試験だけで、実機は未確認。IPv6 の実通信も未確認。
 - 外側プロセスの `environ` が読めないという結果は、上記 2 プロセスとこの版に限る。全プロセスが不可視とは主張しない。
 
+## #152: Claude 経路などから名前で呼ぶ codex
+
+#145 の PATH 変更は `entrypoint.sh` の Codex 経路の中だけにあり、Claude 経路のセッション（Claude の Bash ツール）や、ログインシェル、`podman exec` から名前で呼ぶ `codex` には効かなかった。ログインシェルでは Debian の `/etc/profile` が PATH を作り直すので、entrypoint が PATH の先頭に足した要素も消える。そこで c3c は、npm の symlink `/usr/local/bin/codex` を起動口 `codex-launcher.sh` に置き換えた。起動口は、固定リンクの置き場を PATH の先頭へ加えてから `codex.js` を exec する。設計は README「Codex CLI を対話で使う」節の sandbox の bubblewrap、計画は `docs/superpowers/plans/2026-09-25-issue152-codex-launcher.md` にある。
+
+### #152 の受入
+
+2026-09-25、ホスト（x86_64、Podman）で確認した。c3c はブランチ `fix/issue152-codex-launcher`（`d864526`）、Codex は 0.156.0。対象は隔離した fixture プロジェクトで、`.c3c/packages.txt` に `glycin-loaders` と `libgdk-pixbuf2.0-bin` を入れて `-b` でビルドした（image `3598024aa7c1`、`/usr/bin/bwrap` 0.12.0 が残る）。
+
+コンテナは compose と同じ実行時の条件で起動した（`--userns=keep-id`、`NET_ADMIN`/`NET_RAW`、製品の ENTRYPOINT による capability 剥奪、`--network=none`）。node の CapEff は 0。`entrypoint.sh` は通らないので、呼び出し側の PATH はイメージ既定のまま（コンテナ内 Claude セッションの transcript に残る Bash ツールの PATH と同じ並び）。Codex の sandbox は `codex sandbox -- <コマンド>` で動かした。このコマンドはモデルも認証も使わず、bwrap の選択と `/proc` の扱いだけを通る。
+
+| 確認 | 修正前（#145 のイメージ、sotlas-frontend） | 修正後（fixture） |
+| --- | --- | --- |
+| `/usr/local/bin/codex` | npm の symlink | 通常ファイル（起動口） |
+| 呼び出し側の `command -v bwrap` | `/usr/bin/bwrap` | `/usr/bin/bwrap`（変わらない） |
+| `codex sandbox -- /bin/pwd` | rc 1、`bwrap: Can't mount proc on /proc: Operation not permitted` | rc 0、`/tmp` |
+| `bash -lc 'codex sandbox -- /bin/pwd'` | rc 1、同じエラー | rc 0、`/tmp` |
+| sandbox 内の PATH | （起動できず） | `codex-arg0…`・`codex-path` の後に `/usr/local/libexec/c3c/codex-bwrap` |
+
+- **Codex 経路と同じ PATH**: 呼び出し側の PATH の先頭に `/usr/local/libexec/c3c/codex-bwrap` を足した状態でも、sandbox 内の PATH にこのディレクトリは 1 回しか現れなかった（起動口は PATH を変えない）。`git status --short --branch` は read-only・workspace-write とも rc 0（`GIT_CONFIG_GLOBAL=/dev/null`。理由は #145 の受入の表を参照）。
+- **fail-closed**: 使い捨てコンテナの書込み層で固定リンクを別名へ移し、node で `codex sandbox -- /bin/pwd` を実行すると、`ERROR: Codex 同梱の bubblewrap がありません。-b で再ビルドしてください。` で rc 1 になり、Codex は起動しなかった。
+- **版と更新案内**: `codex --version` は `codex-cli 0.156.0` で、置き換え前と同じ。起動時の更新案内は実行して比べていない。`codex.js` の `detectPackageManager()` は `codex.js` の実体の位置と `process.argv[1]` の両方の祖先をたどる。起動口から実体を直接 exec すると後者が `/usr/local/bin` から `@openai/codex/bin` に変わるが、どちらも npm の配置で、pnpm・Vite+ の目印は無いので判定は変わらない（静的な確認）。
+- **`--check`**: 修正前にビルドした sotlas-frontend のイメージについて、`c3c --check` は境界アセットのドリフトを WARNING で報告した。
+- **テスト**: `./lint.sh` rc 0。`./test-build.sh --launcher-only` PASS=342、`--build-only` PASS=18、引数なしの全体実行 PASS=476（opt-out の実ビルドで起動口が無いことを含む）。いずれも FAIL=0。
+
+**持ち主の協力で確かめる項目**: Issue の完了条件（`-b` で再ビルドした Claude 経路のコンテナで、実際の Claude セッションの Bash ツールから `codex exec --sandbox read-only` がシェルコマンドを実行できること）は、認証済みのセッションと OpenAI への通信が要るので、この記録の時点では not run。`c3c codex -b` の通常起動による #145 の受入のやり直し（read-only の `pwd`、workspace-write の `git status`、通信と mount の保護）も not run。TUI の起動と認証が要るためで、持ち主の協力で行う。代わりの根拠として、`entrypoint.sh` の変更はコメントだけで、Codex 経路の firewall・mount・capability と PATH の組み立ては #145 の受入時と同じ。起動口はその PATH を変えない（上の「Codex 経路と同じ PATH」と `tests/test_codex_entrypoint.py`・`tests/test_codex_launcher.py`）。通信と mount の保護は #145 の受入の結果が有効と判断した（推論であり、今回の実測ではない）。
+
 ## ホストでの切り分け
 
 Podman のあるホストで、問題が起きたローカルの c3c イメージを指定する。対象には Codex と `/usr/bin/bwrap` が導入されている必要がある。システム版を削除済みのイメージでは、比較用の移動元がないためこの診断は完走しない。

@@ -37,7 +37,7 @@ apt/pip パッケージは `.c3c/`（後述。旧名 `.claude-container.d/` も�
 - 残存イメージの診断・清掃にホストの Python 3.9 以上とローカル Podman（`rmi --no-prune` / `ps --external` 対応版）
 - `c3c` の CLI 選択の記憶（前回の CLI を同じリポジトリで既定にする機能）に同じホストの Python 3。無くても `c3c claude` / `c3c codex` の明示指定は動く（後述「c3c 入口」節）
   - 実機検証は Podman 5.8.6。非対応オプションや未知の JSON 形式は清掃を失敗として報告し、強制削除へ切り替えない。
-- ホストに `~/.claude.json`（Claude 認証情報）が存在すること
+- ホストに `~/.claude.json`（Claude Code の設定。`CLAUDE_CONFIG_DIR` を設定した場合はその基点の `.claude.json`）が通常ファイル（通常ファイルへの symlink も可）として存在すること。ホストで Claude Code に一度ログインすれば作られる。Codex だけを使う場合は、中身が `{}` のファイルを置けばよい。欠けている・壊れた symlink・ディレクトリ・通常ファイル以外のときは、通常起動（`c3c claude`・`c3c codex`）と `--check` が compose より前に `ERROR` で止まる（[`#159`](https://github.com/jj1xgo/c3c/issues/159)。以前は podman が空のディレクトリを作り、`crun: ... Not a directory` の rc=126 で分かりにくく失敗していた）
 
 ## 使い方
 
@@ -166,7 +166,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 ### 通常診断の契約
 
 - **起動台帳**: 通常起動（`--clean`/`--check` を除く）のたびに、対象ディレクトリのホスト絶対パスが `~/.local/state/claude-container/projects` へ自動記録される（手動メンテ不要）。`--check` を引数なしで実行すると、この台帳に記録された全プロジェクトを一括診断する。`--clean <directory>` はそのプロジェクトを台帳からも削除し、`--clean`（引数なし）は台帳自体を削除する。シンボリックリンク経由と実体パスで起動すると別エントリとして記録される点に注意（`compute_project_name()` のプロジェクト識別基準と同じ）。
-- **検査項目**: 設定ディレクトリの選択（`.c3c/` と旧 `.claude-container.d/` の有無・型・二重配置。前述「利用側プロジェクトの設定」節）・legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無（`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
+- **検査項目**: 設定ディレクトリの選択（`.c3c/` と旧 `.claude-container.d/` の有無・型・二重配置。前述「利用側プロジェクトの設定」節）・legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・基点の `.claude.json` の有無と型（前述「前提」）・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無（`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
 - **非対話・対象リポジトリは不変**: `--check` は TTY 確認を一切行わない（MCP stdio 型サーバーが未承認の場合は「初回起動時に確認プロンプトが出ます」と報告するのみ）。台帳に記録があるが実体が見つからないプロジェクトも FAIL として報告するだけで、台帳を黙って書き換えない。**保証の範囲は「対象リポジトリと `.build-context/` を変更しない」こと**（内容診断は `mktemp` 経由で `/tmp` 配下に作業ファイルを必ず作るため、無限定の「書き込みゼロ」ではない）。
 - **終了コード**: 診断対象のいずれかが FAIL の場合は非0、それ以外は0で終了する。`-b` は `--check` と併用しても無視される。
 

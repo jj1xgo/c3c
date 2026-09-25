@@ -1377,38 +1377,80 @@ validate_claude_config_ro_path() {
 # 子 placeholder の作成前に拒否する（claude-container#131。作成途中の I/O エラーや並行変更に
 # 対する全ロールバックは行わない）。
 # --check（CHECK_MODE=1）では何も作らず報告だけ行う（--check は書き込みをしない契約）。
+# 基点の .claude.json を compose より前に検査する（#159）。compose.yml は短い書式で bind するので、
+# source が無いと podman が空のディレクトリを作り、イメージ内の通常ファイル /home/node/.claude.json
+# へのマウントが crun の Not a directory（rc=126）で分かりにくく失敗する。作られたディレクトリは
+# 残り、利用者が手で消すまで同じ失敗が続く。Codex 経路も同じ compose サービスを使うので同じ扱い。
+# 通常ファイルへの symlink は通す（:ro 保護の 12 項目と違い、もともと rw の共有で、ホストの dotfile
+# 管理で symlink にしている構成を壊さないため）。基点が解決できないときは何も言わずに通し、
+# 診断は prepare_claude_config_ro() に任せる。{} の自動作成はしない。
+guard_claude_json() {
+  local f
+  resolve_claude_config_base || return 0
+  f="$CLAUDE_CONFIG_BASE_REAL/.claude.json"
+  if [[ -L "$f" && ! -e "$f" ]]; then
+    guard_fail "ERROR: $f は壊れた symlink です（リンク先 $(readlink -- "$f") がありません）。リンク先を直すか、実ファイルに置き換えてください。起動を中止します。" || return 1
+  elif [[ ! -e "$f" && ! -L "$f" ]]; then
+    guard_fail "ERROR: $f がありません。ホストで Claude Code に一度ログインすると作られます（Codex だけを使う場合は、中身が {} のファイルを置いてください）。起動を中止します。" || return 1
+  elif [[ -d "$f" ]]; then
+    guard_fail "ERROR: $f がディレクトリです。以前の起動で podman が作った空のディレクトリかもしれません。中身を確かめてから rmdir し、Claude Code の設定ファイルを置き直してください。起動を中止します。" || return 1
+  elif [[ ! -f "$f" ]]; then
+    guard_fail "ERROR: $f が通常ファイルではありません。Claude Code の設定ファイル（通常ファイル）に置き換えてください。起動を中止します。" || return 1
+  fi
+  return 0
+}
+
+# CLAUDE_CONFIG_DIR（未設定なら HOME）の基点を解決する。guard_fail も export もしない
+# （guard_claude_json() と prepare_claude_config_ro() が同じ基点を見るための共通処理。#159）。
+# 成功時は CLAUDE_CONFIG_BASE_REAL（compose に渡す実体）と CLAUDE_CONFIG_BASE_HOST（plugin
+# 別名用の「~ 展開済み・実体未解決」の綴り）を設定して 0 を返す。失敗時は種類を返す:
+# 2 = 相対パス、3 = 見つからない（存在しないかディレクトリでない）、4 = ディレクトリに入れない。
+# 失敗時の CLAUDE_CONFIG_BASE_HOST は展開済みの綴り（呼び出し側の文言用）。
+# 解決は論理 cd の後の pwd -P（従来どおり。AGENTS_DIR の cd -P とは別の規則）。
+resolve_claude_config_base() {
+  local base
+  CLAUDE_CONFIG_BASE_REAL=""
+  CLAUDE_CONFIG_BASE_HOST=""
+  if [[ -z "${CLAUDE_CONFIG_DIR:-}" ]]; then
+    CLAUDE_CONFIG_BASE_REAL="$HOME"
+    CLAUDE_CONFIG_BASE_HOST="$HOME"
+    return 0
+  fi
+  base="${CLAUDE_CONFIG_DIR}"
+  [[ "$base" == "~" ]] && base="$HOME"
+  base="${base/#\~\//$HOME/}"
+  CLAUDE_CONFIG_BASE_HOST="$base"
+  # 相対パスは拒否する。compose は相対 bind source を compose.yml のディレクトリ基準で
+  # 解決し、ランチャーの解釈と食い違って親マウントと 12 項目が別実体を指しうるため。
+  [[ "$base" == /* ]] || return 2
+  [[ -d "$base" ]] || return 3
+  base="$(cd "$base" 2>/dev/null && pwd -P)" || return 4
+  CLAUDE_CONFIG_BASE_REAL="$base"
+  return 0
+}
+
 prepare_claude_config_ro() {
-  local base cfg name path created=0 host_base
+  local base cfg name path created=0 resolve_rc=0
   # plugin 別名（guard_plugins_alias()、claude-container#98）用に、基点の「~ 展開済み・
   # 実体未解決」の綴りを残す。plugin のメタデータはホストの Claude Code が見た綴りを
-  # 記録するため、下の pwd -P で実体解決した値では symlink 経由の HOME と食い違う。
+  # 記録するため、pwd -P で実体解決した値では symlink 経由の HOME と食い違う。
   # 基点の検証に失敗した経路では空のまま（別名の判定を行わない）。
   CLAUDE_CONFIG_HOST_BASE=""
+  resolve_claude_config_base || resolve_rc=$?
+  case "$resolve_rc" in
+    0) ;;
+    2) guard_fail "ERROR: CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1 ;;
+    3) guard_fail "ERROR: CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_BASE_HOST が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1 ;;
+    *) guard_fail "ERROR: CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_BASE_HOST を解決できません（ディレクトリに入れません）。起動を中止します。" || return 1 ;;
+  esac
+  base="$CLAUDE_CONFIG_BASE_REAL"
   if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
-    base="${CLAUDE_CONFIG_DIR}"
-    [[ "$base" == "~" ]] && base="$HOME"
-    base="${base/#\~\//$HOME/}"
-    host_base="$base"
-    # 相対パスは拒否する。compose は相対 bind source を compose.yml のディレクトリ基準で
-    # 解決し、ランチャーの解釈と食い違って親マウントと 12 項目が別実体を指しうるため。
-    if [[ "$base" != /* ]]; then
-      guard_fail "ERROR: CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1
-    fi
-    if [[ ! -d "$base" ]]; then
-      guard_fail "ERROR: CLAUDE_CONFIG_DIR=$base が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
-    fi
-    if ! base="$(cd "$base" 2>/dev/null && pwd -P)"; then
-      guard_fail "ERROR: CLAUDE_CONFIG_DIR=$base を解決できません（ディレクトリに入れません）。起動を中止します。" || return 1
-    fi
     # 親マウント（compose.yml の ${CLAUDE_CONFIG_DIR:-~}/.claude）と同じ実体を指すよう、
     # 展開・正規化済みの絶対パスを渡す。
     CLAUDE_CONFIG_DIR="$base"
     export CLAUDE_CONFIG_DIR
-    CLAUDE_CONFIG_HOST_BASE="$host_base"
-  else
-    base="$HOME"
-    CLAUDE_CONFIG_HOST_BASE="$HOME"
   fi
+  CLAUDE_CONFIG_HOST_BASE="$CLAUDE_CONFIG_BASE_HOST"
   cfg="$base/.claude"
 
   if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
@@ -2264,6 +2306,7 @@ check_one_project() {
   guard_env_boundary_keys || true
   guard_base_image || true
   guard_ipv6 || true
+  guard_claude_json || true
   prepare_claude_config_ro || true
   guard_plugins_alias || true
 
@@ -2580,6 +2623,7 @@ guard_codex_host_plugins
 guard_env_boundary_keys
 guard_base_image
 guard_ipv6
+guard_claude_json
 guard_asset_drift
 
 # 選択した CLI 側のゲートだけを通す。Claude の .mcp.json ゲートは従来どおり、Codex は

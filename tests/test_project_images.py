@@ -92,6 +92,8 @@ class ImageTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.home = self.root / 'home'
         self.home.mkdir()
+        # 基点の .claude.json（#159 のガードが --check でも検査する）
+        (self.home / '.claude.json').write_text('{}\n')
         self.ledger = self.home / '.local/state/claude-container/projects'
         self.ledger.parent.mkdir(parents=True)
         self.missing = str(self.root / '旧 project')

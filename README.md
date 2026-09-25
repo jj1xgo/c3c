@@ -179,8 +179,8 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 | `CLAUDE_CONFIG_DIR` | `~` | `.claude.json` と `.claude/` が置かれているディレクトリ。後述「ホストの Claude Code 設定の読み取り専用保護」の基点でもある。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する） |
 | `EXTRA_MOUNT` | `/dev/null` | コンテナ内 `/data` に追加でマウントするホスト側パス |
 | `SHARED_MOUNT` | `/dev/null` | コンテナ内 `/shared` に追加でマウントするホスト側パス。複数プロジェクトからの共有ディレクトリ参照向け（`EXTRA_MOUNT` と併用可）。設定済みでパスが無い場合は起動を中止 |
-| `SHARED_MOUNT_HOME_ALIAS` | `0` | `1` で `SHARED_MOUNT` のディレクトリを、`/shared`（rw）に加えてコンテナ内の `~`（`/home/node`）配下の同じ相対位置と、ホストと同じ絶対パスにも `:ro` で重ねる（後述「ホストの指示ファイルとスキルをコンテナ内で解決する」節）。`SHARED_MOUNT` がホストの `$HOME` 配下で、`$HOME` 直下の項目名が `.` で始まらないことが条件。ホスト絶対パス別名がコンテナの予約領域（下記参照）と重なる場合も拒否する。条件を満たさない値と `0`/`1` 以外の値は起動と `--check` で拒否 |
-| `AGENTS_DIR` | (unset) | Codex 等のエージェント共通のスキル置き場（通常 `~/.agents`）をコンテナ内 `~/.agents` として `:ro` マウントするホスト側パス。絶対パスか `~/` 始まりで指定する。`~/.claude/agents/`（Claude Code の subagent 定義、後述の `:ro` 保護 12 項目の一つ）とは別物 |
+| `SHARED_MOUNT_HOME_ALIAS` | `0` | `1` で `SHARED_MOUNT` のディレクトリを、`/shared`（rw）に加えてコンテナ内の `~`（`/home/node`）配下の同じ相対位置と、ホストと同じ絶対パスにも `:ro` で重ねる（後述「ホストの指示ファイルとスキルをコンテナ内で解決する」節）。`SHARED_MOUNT` がホストの `$HOME` 配下で、`$HOME` 直下の項目名が `.` で始まらないことが条件。ホスト絶対パス別名がコンテナの予約領域（下記参照）と重なる場合も拒否する。`SHARED_MOUNT` の実体（symlink を解決した先）の名前にコロンか制御文字（末尾の改行を含む）がある場合も拒否する（[`#112`](https://github.com/jj1xgo/c3c/issues/112)）。未指定・空・`0` は無効。条件を満たさない値と `0`/`1` 以外の値は起動と `--check` で拒否 |
+| `AGENTS_DIR` | (unset) | Codex 等のエージェント共通のスキル置き場（通常 `~/.agents`）をコンテナ内 `~/.agents` として `:ro` マウントするホスト側パス。絶対パスか `~/` 始まりで指定する。symlink と `..` はカーネルと同じ物理解決で実体にしてから渡し、実体の名前にコロンか制御文字（末尾の改行を含む）があれば起動と `--check` で拒否する（[`#112`](https://github.com/jj1xgo/c3c/issues/112)）。他の rw マウント（作業ディレクトリ・`EXTRA_MOUNT` 等）と範囲が重なる場合は `WARNING` を出す（`/` を指定した場合を含む。起動は止めない）。`~/.claude/agents/`（Claude Code の subagent 定義、後述の `:ro` 保護 12 項目の一つ）とは別物 |
 | `TZ` | ホストから自動検出 | コンテナ内のタイムゾーン |
 | `CLAUDE_CONTAINER_IPV6` | `0` | `1` で IPv4/IPv6 を併用し両方に許可リストを適用する。未指定・空・0は既存IPv4モード、その他は起動と `--check` で拒否。初回は対応イメージの `-b` が必要（後述） |
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | `1` でエグレス制限（後述）を無効化 |

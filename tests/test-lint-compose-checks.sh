@@ -46,6 +46,8 @@ run_case '短縮表記: :ro,z も合格' ro 0 "${short_ro/codex-mcp-approved.jso
 run_case '短縮表記: :rw は失敗' ro 1 "${short_ro/codex-mcp-approved.json:ro/codex-mcp-approved.json:rw}"
 run_case '短縮表記: オプション無しは失敗' ro 1 "${short_ro/codex-mcp-approved.json:ro/codex-mcp-approved.json}"
 run_case '短縮表記: 対象 mount が無ければ失敗（他の :ro があっても）' ro 1 "${short_ro//codex-mcp-approved.json/other.json}"
+# target の末尾に文字が続く別の mount（例: .agents に対する .agents-x）を対象と取り違えない（#112）。
+run_case '短縮表記: target に接尾辞が付いた別 mount は失敗' ro 1 "${short_ro//codex-mcp-approved.json:ro/codex-mcp-approved.json-x:ro}"
 
 # --- docker compose 風（long syntax へ正規化、false は省略） ---
 long_ro='name: proj
@@ -109,6 +111,7 @@ long_dash_target='services:
         type: bind'
 run_case 'long syntax: target が先頭キーの要素も合格' ro 0 "$long_dash_target"
 run_case 'long syntax: 対象 mount が無ければ失敗' ro 1 "${long_ro//codex-mcp-approved.json/other.json}"
+run_case 'long syntax: target に接尾辞が付いた別 mount は失敗' ro 1 "${long_ro//codex-mcp-approved.json/codex-mcp-approved.json-x}"
 
 # --- TTY / stdin ---
 run_case 'tty: false が明示されていれば合格（podman-compose）' tty 0 "$short_ro"

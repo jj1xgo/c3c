@@ -244,10 +244,14 @@ elif command -v podman >/dev/null 2>&1; then
       CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host AGENTS_DIR=/tmp C3C_CODEX_PLUGINS_SOURCE=/tmp \
       podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml \
         -f compose.shared-home.yml -f compose.shared-host.yml -f compose.agents.yml -f compose.codex-plugins.yml config); then
-    for needle in '/tmp/lint-plugins-alias' 'fe80::1' '/home/node/lint-shared-home' '/tmp/lint-shared-host' '/home/node/\.agents' '/home/node/\.codex/plugins/cache'; do
-      grep -qE -- "$needle" <<<"$merged" \
-        || { echo "ERROR: compose の 7 ファイル同時 config に '$needle' がありません（override のマージで消えています）" >&2; status=1; }
+    # 部分一致だと /home/node/.agents-x のような別の target でも通るので、mount は target の完全一致で
+    # 意味を見る（compose_mount_is_ro）。IPv6 は mount ではないので network_mode の行を行頭と行末で照合する（#112）。
+    for target in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache; do
+      compose_mount_is_ro "$target" <<<"$merged" \
+        || { echo "ERROR: compose の 7 ファイル同時 config に :ro の '$target' がありません（override のマージで消えています）" >&2; status=1; }
     done
+    grep -qE -- "^[[:space:]]*network_mode:[[:space:]]*['\"]?pasta:-g,fe80::1['\"]?[[:space:]]*\$" <<<"$merged" \
+      || { echo "ERROR: compose の 7 ファイル同時 config に IPv6 の network_mode がありません（override のマージで消えています）" >&2; status=1; }
   else
     status=1
   fi

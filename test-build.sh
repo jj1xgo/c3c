@@ -2013,6 +2013,48 @@ run_instruction_mount_launcher_tests() {
   run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$home/vault-link"
   check "symlink の SHARED_MOUNT は綴りを別名に、実体を /shared の source にする" \
     bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/vault-link" "$2/compose-env" && grep -qxF "CLAUDE_SHARED_HOST_PATH=$3/vault-link" "$2/compose-env" && grep -qxF "SHARED_MOUNT=$(cd "$3/obsidian-vault" && pwd -P)" "$2/compose-env"' _ "$rc" "$root" "$home"
+
+  # #112-1: AGENTS_DIR は -d（カーネル）と同じ物理解決にする。<root>/alk は別の場所を指す symlink で、
+  # <root>/alk/../agx は論理解決なら <root>/agx、物理解決なら <root>/p/agx。両方を作って区別する。
+  local real_root
+  real_root="$(cd "$root" && pwd -P)"
+  mkdir -p "$root/p/sub" "$root/p/agx" "$root/agx"
+  ln -s "$root/p/sub" "$root/alk"
+  run_launcher AGENTS_DIR="$root/alk/../agx"
+  check "AGENTS_DIR の symlink の後の .. は物理解決する（rc=$rc）" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "AGENTS_DIR=$3/p/agx" "$2/compose-env"' _ "$rc" "$root" "$real_root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # #112-2: 実体名のコロン・末尾の改行は、綴りの検査を通っても実体の検査で止める。末尾の改行を
+  # 落とした同名のディレクトリも作り、そちらへ黙って流れないことを見る。
+  mkdir -p "$home/real:vault" "$root/ag:colon" "$home/nlvault"$'\n' "$home/nlvault" "$root/agnl"$'\n' "$root/agnl"
+  ln -s "$home/real:vault" "$home/colon-link"
+  ln -s "$root/ag:colon" "$home/ag-colon-link"
+  ln -s "$home/nlvault"$'\n' "$home/nl-link"
+  ln -s "$root/agnl"$'\n' "$home/ag-nl-link"
+  for value in "$home/colon-link" "$home/nl-link"; do
+    run_launcher SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$value"
+    check "実体名にコロンか末尾の改行がある SHARED_MOUNT を拒否する: ${value##*/}（rc=$rc）" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"SHARED_MOUNT"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check SHARED_MOUNT_HOME_ALIAS=1 SHARED_MOUNT="$value"
+    check "--check も同じ SHARED_MOUNT を拒否する: ${value##*/}" [ "$rc" -ne 0 ]
+  done
+  for value in "$home/ag-colon-link" "$home/ag-nl-link"; do
+    run_launcher AGENTS_DIR="$value"
+    check "実体名にコロンか末尾の改行がある AGENTS_DIR を拒否する: ${value##*/}（rc=$rc）" \
+      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"AGENTS_DIR"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root"
+    run_launcher_check AGENTS_DIR="$value"
+    check "--check も同じ AGENTS_DIR を拒否する: ${value##*/}" [ "$rc" -ne 0 ]
+  done
+
+  # #112-3: AGENTS_DIR が / そのもの、または / を指す symlink でも、rw の source との重なりを警告する（拒否しない）。
+  ln -s / "$home/rootlink"
+  for value in / "$home/rootlink"; do
+    run_launcher AGENTS_DIR="$value"
+    check "AGENTS_DIR=$value は rw の重なりを WARNING にする（rc=$rc）" \
+      bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"AGENTS_DIR"*"rw"* ]]' _ "$rc" "$out"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+  done
   launcher_sandbox_cleanup
 }
 

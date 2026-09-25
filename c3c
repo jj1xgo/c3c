@@ -1681,8 +1681,15 @@ guard_shared_home_alias() {
       guard_fail "ERROR: SHARED_MOUNT の2つの別名が重なります。" || return 1
     fi
   fi
-  if ! SHARED_MOUNT=$(cd "$source_path" 2>/dev/null && pwd -P); then
+  # 実体の末尾の改行を落とさないよう、コマンド置換の中で $PWD に番兵を付ける（#112）。
+  if ! SHARED_MOUNT=$(CDPATH='' cd -P -- "$source_path" 2>/dev/null && printf '%s.' "$PWD"); then
     guard_fail "ERROR: SHARED_MOUNT=$source_path を解決できません。" || return 1
+  fi
+  SHARED_MOUNT="${SHARED_MOUNT%.}"
+  # 綴りの検査は実体に及ばない。実体名のコロンは compose の短い書式を壊し、制御文字（末尾の
+  # 改行を含む）は別のディレクトリへ流れうるので、解決後の値も検査する（#112）。
+  if [[ "$SHARED_MOUNT" == *:* || "$SHARED_MOUNT" =~ [[:cntrl:]] ]]; then
+    guard_fail "ERROR: SHARED_MOUNT=$source_path の実体の名前にコロンか制御文字が含まれます。実体の名前を変えてください。" || return 1
   fi
   export SHARED_MOUNT CLAUDE_SHARED_HOME_PATH="$home_target"
   COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.shared-home.yml")
@@ -1701,9 +1708,16 @@ guard_agents_dir() {
   [[ -n "${AGENTS_DIR:-}" ]] || return 0
   local agents_path other other_real
   agents_path="${AGENTS_DIR/#\~\//$HOME/}"
+  # 解決は cd -P（物理）にし、-d（カーネル）と同じ実体にする。論理 cd は symlink の後の .. を
+  # 綴りの上で畳むので、別のディレクトリを export しうる（#112）。末尾の改行を落とさないよう、
+  # コマンド置換の中で $PWD に番兵を付ける。
   if [[ "$agents_path" != /* || ! -d "$agents_path" || "$agents_path" =~ [[:cntrl:]] ]] ||
-     ! agents_path=$(cd "$agents_path" 2>/dev/null && pwd -P); then
+     ! agents_path=$(CDPATH='' cd -P -- "$agents_path" 2>/dev/null && printf '%s.' "$PWD"); then
     guard_fail "ERROR: AGENTS_DIR=$AGENTS_DIR は存在するディレクトリを絶対パス（または ~/ 始まり）で指定してください。" || return 1
+  fi
+  agents_path="${agents_path%.}"
+  if [[ "$agents_path" == *:* || "$agents_path" =~ [[:cntrl:]] ]]; then
+    guard_fail "ERROR: AGENTS_DIR=$AGENTS_DIR の実体の名前にコロンか制御文字が含まれます。実体の名前を変えてください。" || return 1
   fi
   export AGENTS_DIR="$agents_path"
   COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.agents.yml")
@@ -1715,7 +1729,8 @@ guard_agents_dir() {
     [[ -d "$other" ]] || continue
     other_real=$(cd "$other" 2>/dev/null && pwd -P) || continue
     other_real="${other_real%/}"
-    if instruction_paths_overlap "$agents_path" "$other_real"; then
+    # instruction_paths_overlap は末尾 / を含む値（/ 自体）を正しく比べられないので、末尾 / を除く（#112）
+    if instruction_paths_overlap "${agents_path%/}" "$other_real"; then
       guard_warn "WARNING: AGENTS_DIR=$agents_path と $other の範囲が重なるため、別の rw マウント経由で書けます。"
     fi
   done

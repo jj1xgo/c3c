@@ -141,11 +141,11 @@ bundled の結果は exec 段階まで進んだことを示すが、目的のコ
 
 - **Codex 経路と同じ PATH**: 呼び出し側の PATH の先頭に `/usr/local/libexec/c3c/codex-bwrap` を足した状態でも、sandbox 内の PATH にこのディレクトリは 1 回しか現れなかった（起動口は PATH を変えない）。`git status --short --branch` は read-only・workspace-write とも rc 0（`GIT_CONFIG_GLOBAL=/dev/null`。理由は #145 の受入の表を参照）。
 - **fail-closed**: 使い捨てコンテナの書込み層で固定リンクを別名へ移し、node で `codex sandbox -- /bin/pwd` を実行すると、`ERROR: Codex 同梱の bubblewrap がありません。-b で再ビルドしてください。` で rc 1 になり、Codex は起動しなかった。
-- **版**: `codex --version` は `codex-cli 0.156.0` で、置き換え前と同じ。
+- **版と更新案内**: `codex --version` は `codex-cli 0.156.0` で、置き換え前と同じ。起動時の更新案内は実行して比べていない。`codex.js` の `detectPackageManager()` は `codex.js` の実体の位置と `process.argv[1]` の両方の祖先をたどる。起動口から実体を直接 exec すると後者が `/usr/local/bin` から `@openai/codex/bin` に変わるが、どちらも npm の配置で、pnpm・Vite+ の目印は無いので判定は変わらない（静的な確認）。
 - **`--check`**: 修正前にビルドした sotlas-frontend のイメージについて、`c3c --check` は境界アセットのドリフトを WARNING で報告した。
 - **テスト**: `./lint.sh` rc 0。`./test-build.sh --launcher-only` PASS=342、`--build-only` PASS=18、引数なしの全体実行 PASS=476（opt-out の実ビルドで起動口が無いことを含む）。いずれも FAIL=0。
 
-**持ち主の協力で確かめる項目**: Issue の完了条件（`-b` で再ビルドした Claude 経路のコンテナで、実際の Claude セッションの Bash ツールから `codex exec --sandbox read-only` がシェルコマンドを実行できること）は、認証済みのセッションと OpenAI への通信が要るので、この記録の時点では not run。`c3c codex` の TUI による通常起動の回帰も not run（entrypoint の Codex 経路は、`tests/test_codex_entrypoint.py` と上の「Codex 経路と同じ PATH」の確認で代える）。
+**持ち主の協力で確かめる項目**: Issue の完了条件（`-b` で再ビルドした Claude 経路のコンテナで、実際の Claude セッションの Bash ツールから `codex exec --sandbox read-only` がシェルコマンドを実行できること）は、認証済みのセッションと OpenAI への通信が要るので、この記録の時点では not run。`c3c codex -b` の通常起動による #145 の受入のやり直し（read-only の `pwd`、workspace-write の `git status`、通信と mount の保護）も not run。TUI の起動と認証が要るためで、持ち主の協力で行う。代わりの根拠として、`entrypoint.sh` の変更はコメントだけで、Codex 経路の firewall・mount・capability と PATH の組み立ては #145 の受入時と同じ。起動口はその PATH を変えない（上の「Codex 経路と同じ PATH」と `tests/test_codex_entrypoint.py`・`tests/test_codex_launcher.py`）。通信と mount の保護は #145 の受入の結果が有効と判断した（推論であり、今回の実測ではない）。
 
 ## ホストでの切り分け
 

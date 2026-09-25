@@ -93,9 +93,19 @@ class CodexLauncherTest(unittest.TestCase):
     def test_empty_or_unset_path_has_no_trailing_empty_element(self):
         for label, kwargs in (('empty', {'path': ''}), ('unset', {'unset_path': True})):
             with self.subTest(label):
-                self.run_launcher(**kwargs)
-                # 起動の成否は問わない（dummy は /bin/sh の絶対 shebang なので実行はされる）。
+                # 前の subtest の記録で緑にならないよう、毎回消してから実行する。
+                for suffix in ('path', 'argv'):
+                    (self.record.parent / f'record.{suffix}').unlink(missing_ok=True)
+                result = self.run_launcher(**kwargs)
+                # 実際の codex.js は env node の shebang なので空 PATH では起動できない（置換前も同じ）。
+                # dummy は /bin/sh の絶対 shebang なので、ここでは exec まで進んだことも確かめる。
+                self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.recorded_path(), str(self.bwrap_dir))
+
+    def test_path_equal_to_bundled_dir_is_unchanged(self):
+        result = self.run_launcher(path=str(self.bwrap_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.recorded_path(), str(self.bwrap_dir))
 
     def test_passes_arguments_and_exit_code_verbatim(self):
         args = ['exec', 'a b', '--', '', '-c', "x='1'", '$HOME', '*']

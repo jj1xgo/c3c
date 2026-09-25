@@ -1393,9 +1393,11 @@ guard_claude_json() {
   resolve_claude_config_base || return 0
   f="$CLAUDE_CONFIG_BASE_REAL/.claude.json"
   if [[ -L "$f" && ! -e "$f" ]]; then
-    guard_fail "ERROR: $f は壊れた symlink です（リンク先 $(readlink -- "$f") がありません）。リンク先を直すか、実ファイルに置き換えてください。起動を中止します。" || return 1
+    guard_fail "ERROR: $f は壊れた symlink です（リンク先 $(readlink -- "$f") を辿れません。存在しないかループしています）。リンク先を直すか、実ファイルに置き換えてください。起動を中止します。" || return 1
   elif [[ ! -e "$f" && ! -L "$f" ]]; then
     guard_fail "ERROR: $f がありません。ホストで Claude Code に一度ログインすると作られます（Codex だけを使う場合は、中身が {} のファイルを置いてください）。起動を中止します。" || return 1
+  elif [[ -L "$f" && -d "$f" ]]; then
+    guard_fail "ERROR: $f は symlink で、リンク先がディレクトリです。リンク先を Claude Code の設定ファイル（通常ファイル）に直してください。起動を中止します。" || return 1
   elif [[ -d "$f" ]]; then
     guard_fail "ERROR: $f がディレクトリです。以前の起動で podman が作った空のディレクトリかもしれません。中身を確かめてから rmdir し、Claude Code の設定ファイルを置き直してください。起動を中止します。" || return 1
   elif [[ ! -f "$f" ]]; then

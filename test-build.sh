@@ -720,10 +720,13 @@ run_claude_json_launcher_tests() {
         dangling) ln -s missing-target.json "$j_base/.claude.json" ;;
         dir) mkdir "$j_base/.claude.json" ;;
         fifo) mkfifo "$j_base/.claude.json" ;;
+        linkdir) mkdir -p "$root/cj-dir-target" && ln -s "$root/cj-dir-target" "$j_base/.claude.json" ;;
       esac
       if [[ "$j_mode" == run ]]; then
         run_launcher CLAUDE_CONFIG_DIR="$j_base"
       else
+        # run_launcher_check は記録をリセットしないので、直前の run の記録を持ち越さない
+        launcher_sandbox_reset_records
         run_launcher_check CLAUDE_CONFIG_DIR="$j_base"
       fi
       check "J: $j_case は ERROR で止まる（$j_mode、rc=$rc）" \
@@ -742,6 +745,7 @@ J1 欠落|missing|がありません
 J2 壊れた symlink|dangling|壊れた symlink
 J3 ディレクトリ|dir|ディレクトリです
 J4 FIFO|fifo|通常ファイルではありません
+J5 ディレクトリへの symlink|linkdir|リンク先がディレクトリです
 JCASES
 
   # 成功: 通常ファイルと、通常ファイルへの symlink は通り、compose に届く。
@@ -763,20 +767,23 @@ JCASES
   # 基点の一致: <root>/lk は別の場所を指す symlink。<root>/lk/../cfgL は、論理解決では <root>/cfgL、
   # 物理解決では <root>/phys/cfgL。-d は元の綴りを物理解決するので両方にディレクトリを作る。
   # 期待する基点は論理側（今の規則）。.claude.json を論理側だけに置けば通り、物理側だけなら止まる。
+  # 実装は pwd -P の値を出すので、TMPDIR が symlink の下でも一致するよう実体の root で照合する
+  local j_real_root
+  j_real_root="$(cd "$root" && pwd -P)"
   mkdir -p "$root/phys/sub" "$root/phys/cfgL/.claude" "$root/cfgL/.claude"
   ln -sfn "$root/phys/sub" "$root/lk"
   printf '{}\n' > "$root/cfgL/.claude.json"
   run_launcher CLAUDE_CONFIG_DIR="$root/lk/../cfgL"
   check "J: symlink と .. の基点は論理側の .claude.json を見て通る（rc=$rc）" \
-    bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_CONFIG_DIR=$2/cfgL" "$2/compose-env" && [ -d "$2/cfgL/.claude/hooks" ] && [ ! -e "$2/phys/cfgL/.claude/hooks" ]' \
-      _ "$rc" "$root"
+    bash -c '[ "$1" -eq 0 ] && grep -qxF "CLAUDE_CONFIG_DIR=$3/cfgL" "$2/compose-env" && [ -d "$2/cfgL/.claude/hooks" ] && [ ! -e "$2/phys/cfgL/.claude/hooks" ]' \
+      _ "$rc" "$root" "$j_real_root"
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$root/cfgL/.claude.json"; printf '{}\n' > "$root/phys/cfgL/.claude.json"
   rm -rf "$root/cfgL/.claude" "$root/phys/cfgL/.claude"; mkdir -p "$root/cfgL/.claude" "$root/phys/cfgL/.claude"
   run_launcher CLAUDE_CONFIG_DIR="$root/lk/../cfgL"
   check "J: symlink と .. の基点で物理側にだけ .claude.json があれば止まる（rc=$rc）" \
-    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-calls" ] && printf "%s" "$3" | grep -F "ERROR" | grep -qF "$2/cfgL/.claude.json"' \
-      _ "$rc" "$root" "$out"
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-calls" ] && printf "%s" "$3" | grep -F "ERROR" | grep -qF "$4/cfgL/.claude.json"' \
+      _ "$rc" "$root" "$out" "$j_real_root"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # Codex 経路も同じ compose サービスを使うので、検査用コンテナより前に止まる。

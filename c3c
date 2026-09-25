@@ -2509,7 +2509,9 @@ run_check_mode() (
     done
     # 引数があって全部を外した場合はヘルパーを呼ばない（引数なしだと台帳全体の診断になるため）。
     if [[ $# -eq 0 || $project_count -gt 0 ]]; then
-      python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}" || image_rc=1
+      # cwd が削除済みだと実 Podman は cwd 取得に失敗して rc 1 を返す。ヘルパーへ渡す
+      # 引数はすべて絶対パスなので、cwd に依存しない / から起動する。
+      (cd / && python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}") || image_rc=1
       if [[ $CLEAN_MISSING -eq 1 ]]; then
         # process substitution で Python の失敗を失わないよう、先にファイルへ確定する。
         if [[ -f "$image_check_tmp/result.json" ]] && python3 -I -c '

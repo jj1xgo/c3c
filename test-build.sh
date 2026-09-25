@@ -607,6 +607,11 @@ launcher_sandbox_init() {
   # run で export や override が片方だけ漏れていないかを見分けるため。#98）。
   cat > "$bin/podman" <<DUMMY
 #!/bin/bash
+# 実 Podman 5.8.6 は cwd が削除済みだと getcwd 失敗で rc 1 を返す（#126 混在ケース）。
+if ! pwd -P >/dev/null 2>&1; then
+  echo "Error getting current working directory: No such file or directory" >&2
+  exit 1
+fi
 if [[ "\${1:-}" == --remote=false ]]; then shift; fi
 case "\$1 \$2" in
   "images --all") printf '%s\\n' '[]'; exit 0 ;;

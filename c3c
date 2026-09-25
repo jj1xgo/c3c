@@ -1359,7 +1359,11 @@ validate_claude_config_ro_path() {
     return 0
   fi
   if [[ -e "$path" ]]; then
-    if [[ "$kind" == dir ]]; then
+    if [[ "$kind" == dir && "${path##*/}" == .git ]]; then
+      # ~/.claude が worktree・submodule だと .git は gitfile（ファイル）になる。汎用の文言だけでは
+      # 原因が分からないので、.git のときだけ案内を添える（#132）。
+      guard_fail "ERROR: $path がディレクトリではありません（読み取り専用保護のマウント先と型が一致しません）。~/.claude が worktree か submodule だと .git はファイル（gitfile）になります。実ディレクトリの .git に置き換えてください（README「セキュリティモデル」節の限界 (8)）。起動を中止します。" || return 1
+    elif [[ "$kind" == dir ]]; then
       guard_fail "ERROR: $path がディレクトリではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1
     else
       guard_fail "ERROR: $path が通常ファイルではありません（読み取り専用保護のマウント先と型が一致しません）。起動を中止します。" || return 1

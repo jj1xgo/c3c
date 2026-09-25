@@ -404,6 +404,12 @@ for d in '"${CONFIG_RO_DIRS[*]}"'; do
   expect_ro "$d/create"  sh -c "echo x > $d/probe-new"
   expect_ro "$d/append"  sh -c "echo x >> $d/seed"
   expect_ro "$d/delete"  rm -f "$d/seed"
+  # マウントポイント自体の削除・置換（#132）。漏れたら FAIL を記録したうえで元に戻し、
+  # 同じ root を使う 2 回目の probe を崩さない。
+  expect_ro "$d/rmdir"   rmdir "$d"
+  [ -d "$d" ] || mkdir "$d"
+  expect_ro "$d/rename"  mv "$d" "$d.moved"
+  if [ -e "$d.moved" ]; then mv "$d.moved" "$d" 2>/dev/null || true; fi
 done
 for f in '"${CONFIG_RO_FILES[*]}"'; do
   expect_ro "$f/append"  sh -c "echo x >> $f"
@@ -1792,6 +1798,11 @@ run_config_ro_launcher_tests() {
       # #159 の .claude.json のガードで止まって、本来の型検査に届かないまま通ることを防ぐ
       check "G: $g_case は .claude.json のガードで止まっていない（$g_mode）" \
         bash -c '! printf "%s" "$1" | grep -F "ERROR" | grep -qF ".claude.json"' _ "$out"
+      # #132: gitfile の .git（worktree・submodule）は原因が分かるよう、.git 固有の案内を添える
+      if [[ "$g_name" == .git && "$g_kind" == file ]]; then
+        check "G: $g_case は gitfile の案内と README の限界 (8) を示す（$g_mode）" \
+          bash -c 'printf "%s" "$1" | grep -F "ERROR" | grep -qF "gitfile" && printf "%s" "$1" | grep -qF "限界 (8)"' _ "$out"
+      fi
       check "G: $g_case は保護対象を変更しない（$g_mode）" \
         bash -c '[ "$1" -eq 1 ] && cmp -s "$2" "$3"' _ "$g_snap_ok" "$root/g-before" "$root/g-after"
       check "G: $g_case は先行項目を作成しない（$g_mode）" \

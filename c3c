@@ -2468,8 +2468,12 @@ run_check_mode() (
   # 入口以外の呼び出し経路は走査しない。
   echo "[INFO] 入口移行: 旧入口は削除済み。外部スクリプト・alias・PATH の呼び出しは c3c claude / c3c codex へ移行してください（c3c 無指定は前回の CLI を選択）。"
 
-  local image_rc=0 image_check_tmp d normalized
+  local image_rc=0 image_check_tmp d normalized project_count=0
   local -a image_args=(--ledger "$CC_LEDGER_FILE")
+  # cwd が削除済みで絶対パスに解決できない相対の対象（「.」「..」等。#122）。ヘルパーへ渡すと
+  # 全体が拒否されて他の対象の診断まで消え、FAIL も二重になるので、ヘルパーからは外し、
+  # check_one_project の 1 行に任せる（#126）。
+  local -a unresolved=()
   if command -v python3 >/dev/null 2>&1 && [[ -f "$RUN_DIR/project-images.py" ]]; then
     image_check_tmp=$(mktemp -d /tmp/cc-project-images.XXXXXX) || return 1
     trap 'rm -rf -- "$image_check_tmp"' EXIT
@@ -2484,6 +2488,10 @@ run_check_mode() (
         # cd 後の論理絶対パスをそのまま渡し、改行はヘルパーで拒否する。
         if normalized=$(cd -- "$d" >/dev/null 2>&1 && printf '%s.' "$PWD"); then
           normalized=${normalized%.}
+          if [[ "$normalized" != /* ]]; then
+            unresolved+=("$d")
+            continue
+          fi
         elif [[ "$d" == /* ]]; then
           normalized=$(realpath -ms -- "$d") || return 1
         elif [[ -n ${PWD:-} && "$PWD" != *$'\n'* ]]; then
@@ -2491,11 +2499,14 @@ run_check_mode() (
         fi
       fi
       image_args+=("--project=$normalized")
+      project_count=$((project_count + 1))
     done
-    python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}" || image_rc=1
-    if [[ $CLEAN_MISSING -eq 1 ]]; then
-      # process substitution で Python の失敗を失わないよう、先にファイルへ確定する。
-      if [[ -f "$image_check_tmp/result.json" ]] && python3 -I -c '
+    # 引数があって全部を外した場合はヘルパーを呼ばない（引数なしだと台帳全体の診断になるため）。
+    if [[ $# -eq 0 || $project_count -gt 0 ]]; then
+      python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}" || image_rc=1
+      if [[ $CLEAN_MISSING -eq 1 ]]; then
+        # process substitution で Python の失敗を失わないよう、先にファイルへ確定する。
+        if [[ -f "$image_check_tmp/result.json" ]] && python3 -I -c '
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as source:
     data = json.load(source)
@@ -2508,12 +2519,18 @@ for row in data["paths"]:
     if state == "directory":
         sys.stdout.buffer.write(path.encode(sys.getfilesystemencoding(), "surrogateescape") + b"\0")
 ' "$image_check_tmp/result.json" > "$image_check_tmp/directories"; then
-        mapfile -d '' -t targets < "$image_check_tmp/directories"
-        from_ledger_flags=()
-        for d in "${targets[@]}"; do from_ledger_flags+=(0); done
-      else
-        echo "[FAIL] 清掃診断の結果を読み取れません。"
-        image_rc=1
+          mapfile -d '' -t targets < "$image_check_tmp/directories"
+          from_ledger_flags=()
+          for d in "${targets[@]}"; do from_ledger_flags+=(0); done
+          # 置き換えで外した対象が消えないよう戻す（対象ごとの FAIL は check_one_project が出す）
+          for d in "${unresolved[@]}"; do
+            targets+=("$d")
+            from_ledger_flags+=(0)
+          done
+        else
+          echo "[FAIL] 清掃診断の結果を読み取れません。"
+          image_rc=1
+        fi
       fi
     fi
   else

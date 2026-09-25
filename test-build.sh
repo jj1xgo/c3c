@@ -1055,9 +1055,13 @@ SHIM
   # cwd が削除済みだと bash は cd . / .. を成功させ、pwd -L が引数「.」「..」をそのまま返す（#122）。
   # 幽霊名（「.」の sha256 由来 project-cdb4ee2a 等）で清掃・台帳記録・診断を始めず、PWD の有無に
   # 関わらず絶対パスの指定を求めて止める。
+  # #126: --check ..、--check --clean-missing .（targets を result.json で置き換える唯一の経路）、
+  # 実在する隣への相対パス（bash は削除済み cwd から cd ../sibling を成功させ、pwd -L は相対の
+  # ../sibling を返す。2026-09-25 に実測）も同じく止める。
   printf '%s\n' "/victim" > "$ledger"
   cp "$ledger" "$root/ledger-before-dot"
-  for input in "--clean ." "--clean .." "claude ." "--check ."; do
+  mkdir -p "$root/sibling"
+  for input in "--clean ." "--clean .." "claude ." "--check ." "--check .." "--check --clean-missing ." "--clean ../sibling"; do
     for pwd_env in none stale; do
       read -ra args <<<"$input"
       mkdir -p "$root/gone"
@@ -1072,7 +1076,28 @@ SHIM
       check "cwd 削除済み（PWD $pwd_env）の '$input' は幽霊名で進めず止める" \
         bash -c '[ "$1" != 0 ] && [[ "$2" == *"現在のディレクトリを特定できない"* && "$2" != *"project-cdb4ee2a"* && "$2" != *"project-5ec1f7e7"* ]] && ! grep -Eq "^(rmi|rm|prune|compose|network)$" "$3/podman-args" 2>/dev/null && cmp -s "$4" "$5"' _ "$rc" "$out" "$home" "$ledger" "$root/ledger-before-dot"
       printf '%s\n' "$out" >> "$LOG_FILE"
+      # #126-4: 解決できない対象の FAIL は check_one_project の 1 行だけにする（ヘルパーの行と二重にしない）
+      if [[ "${args[0]}" == --check ]]; then
+        check "cwd 削除済み（PWD $pwd_env）の '$input' の FAIL は 1 行" \
+          [ "$(printf '%s\n' "$out" | grep -c '^\[FAIL\]')" -eq 1 ]
+      fi
     done
+  done
+  # #126-4: 削除済み cwd でも、絶対パスの対象の診断は消さない（単独・台帳・混在）。
+  printf '%s\n' "$original_proj" > "$ledger"
+  for input in "--check $original_proj" "--check" "--check . $original_proj" "--check --clean-missing . $original_proj"; do
+    read -ra args <<<"$input"
+    mkdir -p "$root/gone"
+    rm -f "$home/podman-args"
+    out=$(cd "$root/gone" && rmdir "$root/gone" && env -i HOME="$home" PATH="$bin:$PATH" PWD="$root/gone" \
+      "${SCRIPT_DIR}/c3c" "${args[@]}" 2>&1) && rc=0 || rc=$?
+    check "cwd 削除済みでも '$input' は絶対パスの対象を診断する" \
+      bash -c 'printf "%s\n" "$1" | grep -qxF "=== $2 ===" && printf "%s\n" "$1" | grep -qF "[OK]   プロジェクトディレクトリ実在: $2" && grep -qxF images "$3/podman-args"' _ "$out" "$original_proj" "$home"
+    if [[ "$input" == *" . "* ]]; then
+      check "cwd 削除済みの '$input' は . の FAIL を 1 行だけ出し、rc≠0" \
+        bash -c '[ "$1" -ne 0 ] && [ "$(printf "%s\n" "$2" | grep -c "^\[FAIL\] 現在のディレクトリを特定できない")" -eq 1 ] && ! printf "%s\n" "$2" | grep -qF "イメージ診断・清掃に失敗" && ! printf "%s\n" "$2" | grep -qF "清掃診断の結果を読み取れません"' _ "$rc" "$out"
+    fi
+    printf '%s\n' "$out" >> "$LOG_FILE"
   done
   proj="$original_proj"
   launcher_sandbox_cleanup

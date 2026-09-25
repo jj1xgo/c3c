@@ -632,7 +632,7 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 | 認証（`.credentials.json`）・transcript（`projects/`）・auto memory（`projects/<p>/memory/`）・`history.jsonl` 等の状態 | 読み書き可（従来どおり） |
 | project scope の設定（`/workspace/.claude/` 配下の settings・skills・agents・commands・rules・CLAUDE.md、`.mcp.json`） | 読み書き可（従来どおり。ホスト側での扱いは「セキュリティモデル」節参照） |
 
-**入力待ち・許可待ちの通知（ターミナルベル）**: Claude Code の `preferredNotifChannel` の既定値 `auto` は、Ghostty・Kitty・iTerm2 などの一部の端末でしか通知を出さない。Konsole などその他の端末では何も鳴らない（[公式ドキュメント](https://code.claude.com/docs/en/terminal-config#get-a-terminal-bell-or-notification)）。ベルを鳴らすには、ホストの `~/.claude/settings.json` に `"preferredNotifChannel": "terminal_bell"` を書く（コンテナ内からは `:ro` のため書けない。反映の時期は上の表のとおり）。コンテナからの BEL（`\a`）は、tty を通してそのままホストの端末に届く（[`#157`](https://github.com/jj1xgo/claude-container/issues/157)）。
+**入力待ち・許可待ちの通知（ターミナルベル）**: Claude Code の `preferredNotifChannel` の既定値 `auto` は、Ghostty・Kitty・iTerm2 などの一部の端末でしか通知を出さない。Konsole などその他の端末では何も鳴らない（[公式ドキュメント](https://code.claude.com/docs/en/terminal-config#get-a-terminal-bell-or-notification)）。ベルを鳴らすには、ホストの `~/.claude/settings.json`（`CLAUDE_CONFIG_DIR` を指定している場合はその配下の `.claude/settings.json`）に `"preferredNotifChannel": "terminal_bell"` を書く（コンテナ内からは `:ro` のため書けない。反映の時期は上の表のとおり）。通知は待ちに入った直後ではなく、しばらく操作が無いときに出る（発火条件は[公式ドキュメント](https://code.claude.com/docs/en/hooks#notification)）。コンテナからの BEL（`\a`）は、tty を通してそのままホストの端末に届く（[`#157`](https://github.com/jj1xgo/claude-container/issues/157)）。
 
 **hook による追加制限**
 

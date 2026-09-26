@@ -2285,8 +2285,8 @@ check_one_project() {
     return 20
   fi
   readonly WORKING_DIR
-  # 削除済み cwd では bash の cd が chdir 警告を出すので、通常起動と同じく stderr を捨て、
-  # 失敗は FAIL にする（呼び出し元は set +e のため、|| が無いと失敗を見落とす。#166）。
+  # 削除済み cwd では bash の cd が chdir 警告を出すので、通常起動と同じく stderr を捨てる。
+  # 失敗は set -e の rc 1（ドライバでは unexpected exit）ではなく、他の FAIL と同じ形で返す（#166）。
   if ! cd -- "$WORKING_DIR" 2>/dev/null; then
     echo "[FAIL] ディレクトリを開けません: $WORKING_DIR"
     return 20

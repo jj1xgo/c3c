@@ -202,7 +202,10 @@ def snapshot(root):
         if real is None:
             continue
         data = read_regular(real, rel)
-        check_settings(parse_object(data, rel), rel)
+        # 0 バイトは何も設定できない（c3c 自身が ~/.claude/settings.json を 0 バイトで作るため、$HOME を
+        # 作業ディレクトリにしたときに止めない）。hash の対象には残し、中身が入れば変更として確認になる。
+        if data:
+            check_settings(parse_object(data, rel), rel)
         files.append((rel, data))
     check_mcp(root_real)
     check_skills_plugins(root_real)

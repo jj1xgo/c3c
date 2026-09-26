@@ -92,6 +92,15 @@ class SnapshotTests(AuditCase):
         # 区切りの衝突: 内容の境界をずらしても同じ hash にならない（長さの前置き）。
         self.assertNotEqual(expected_hash([('x', b'ab'), ('y', b'c')]), expected_hash([('x', b'a'), ('y', b'bc')]))
 
+    def test_empty_settings_file_is_hashed_as_no_settings(self):
+        # c3c の prepare_claude_config_ro() は ~/.claude/settings.json を 0 バイトで作る。$HOME を作業ディレクトリに
+        # すると、それが /workspace/.claude/settings.json になる。0 バイトは何も設定できないので判定不能にしない。
+        data = self.put('.claude/settings.json', b'')
+        doc = self.snapshot()
+        self.assertEqual(doc['count'], 1)
+        self.assertEqual(doc['hash'], expected_hash([('.claude/settings.json', data)]))
+        self.assertEqual(doc['lines'], ['--- .claude/settings.json ---'])
+
     def test_local_settings_is_always_hashed(self):
         self.put('.claude/settings.local.json', {'permissions': {'allow': []}})
         self.assertEqual(self.snapshot()['count'], 1)

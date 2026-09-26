@@ -2607,6 +2607,51 @@ check_one_project() {
     echo "[INFO] Codex 実効 MCP の動的照合: not run（--check は検査用コンテナを起動しないため、記録が現在の定義と一致するかは判定しません）"
   fi
 
+  # Claude の project 設定ゲート（#163）。--check は検査用コンテナを起動しない。ホストに python3 があれば
+  # 同じ helper をホスト上で参考実行する（repo のファイルを読むだけ。git も repo のコードも実行しない）。
+  if [[ "$AGENT" == codex ]]; then
+    echo "[INFO] Claude project 設定ゲート: Codex 経路では使用しない（Claude の診断は --agent claude で行う）"
+  elif ! claude_project_gate_needed; then
+    echo "[OK]   Claude project 設定ゲート: 対象なし（.claude も .mcp.json も無い）"
+  else
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "[SKIP] podman が見つからないため、Claude project 設定ゲートの対応イメージの確認をスキップ"
+    elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+      if ! guard_claude_project_image_support; then
+        echo "[FAIL] Claude project 設定ゲート: イメージが未対応です。-b で再ビルドしてください"
+      fi
+    else
+      echo "[INFO] Claude project 設定ゲート: イメージ未ビルド（初回起動時にビルドしてから $CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL を確認します）"
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "[FAIL] Claude project 設定ゲート: ホストに python3 が無いため、このプロジェクトは起動できません"
+      CHECK_HAS_ERROR=1
+    else
+      local project_err="" project_out="" project_rc=0 project_hash="" project_count=""
+      if ! project_err=$(umask 077; mktemp "${TMPDIR:-/tmp}/cc-claude-check.XXXXXX"); then
+        echo "[FAIL] Claude project 設定ゲート: 一時ファイルを作れないため診断できません"
+        CHECK_HAS_ERROR=1
+      else
+        project_out=$(python3 -I "$RUN_DIR/claude-project-audit.py" --root "$WORKING_DIR" snapshot 2>"$project_err" \
+          | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["hash"], d["count"])') || project_rc=$?
+        if [[ $project_rc -ne 0 ]]; then
+          echo "[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: $(LC_ALL=C tr -d '\000-\037\177' < "$project_err")"
+          CHECK_HAS_ERROR=1
+        else
+          read -r project_hash project_count <<<"$project_out"
+          if [[ "$project_count" == 0 ]]; then
+            echo "[OK]   Claude project 設定ゲート: 対象の設定なし"
+          elif [[ -f "$CLAUDE_PROJECT_APPROVAL_RECORD" && "$(cat "$CLAUDE_PROJECT_APPROVAL_RECORD" 2>/dev/null || true)" == "$(claude_project_record_content "$project_hash")" ]]; then
+            echo "[OK]   Claude project 設定ゲート: 承認済み（ホストでの参考判定。コンテナ内の見え方と異なる場合は起動時に確認が出ます）"
+          else
+            echo "[INFO] Claude project 設定ゲート: 未承認または変更あり。起動時に確認プロンプトが出ます"
+          fi
+        fi
+        rm -f -- "$project_err"
+      fi
+    fi
+  fi
+
   # Claude の .mcp.json ゲートの診断は Claude 経路だけ。Codex 経路では Codex の審査（上）を使い、
   # Claude 側の承認状態を Codex の承認として表示しない（通常起動の分岐と同じ）。
   if [[ "$AGENT" == codex ]]; then

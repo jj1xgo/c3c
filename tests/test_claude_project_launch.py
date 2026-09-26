@@ -229,5 +229,50 @@ class CleanTests(ClaudeProjectLaunchCase):
         self.assertFalse(self.claude_record().exists())
 
 
+class CheckTests(ClaudeProjectLaunchCase):
+    def check(self):
+        return self.run_launcher('--check', '--agent', 'claude', str(self.proj))
+
+    def test_no_targets_is_ok(self):
+        shutil.rmtree(self.proj / '.claude')
+        result = self.check()
+        self.assertIn('[OK]   Claude project 設定ゲート: 対象なし', result.stdout)
+        self.assertEqual(self.compose_calls(), [])
+
+    def test_unapproved_is_info_and_writes_nothing(self):
+        before = self.snapshot(self.home)
+        result = self.check()
+        self.assertIn('[INFO] Claude project 設定ゲート: 未承認または変更あり', result.stdout)
+        self.assertEqual(self.compose_calls(), [])
+        self.assertEqual(self.snapshot(self.home), before)
+
+    def test_approved_matching_host_view_is_ok(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('audit', str(self.runner / 'claude-project-audit.py'))
+        audit = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(audit)
+        self.approve_claude(audit.snapshot(str(self.proj))['hash'])
+        result = self.check()
+        self.assertIn('[OK]   Claude project 設定ゲート: 承認済み', result.stdout)
+
+    def test_plugin_setting_is_fail_for_migration(self):
+        (self.proj / '.claude' / 'settings.json').write_text('{"enabledPlugins": {"x@y": true}}')
+        result = self.check()
+        self.assertIn('[FAIL]', result.stdout)
+        self.assertIn('enabledPlugins', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_old_image_label_is_fail_with_rebuild_hint(self):
+        self.state['claude_label'] = ''
+        result = self.check()
+        self.assertIn('[FAIL] Claude project 設定ゲート: イメージが未対応', result.stdout)
+        self.assertIn('-b', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_codex_check_says_not_used(self):
+        (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\n')
+        result = self.run_launcher('--check', '--agent', 'codex', str(self.proj))
+        self.assertIn('[INFO] Claude project 設定ゲート: Codex 経路では使用しない', result.stdout)
+
 if __name__ == '__main__':
     unittest.main()

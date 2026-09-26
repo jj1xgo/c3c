@@ -1111,6 +1111,9 @@ SHIM
       "${SCRIPT_DIR}/c3c" "${args[@]}" 2>&1) && rc=0 || rc=$?
     check "cwd 削除済みでも '$input' は絶対パスの対象を診断する" \
       bash -c 'printf "%s\n" "$1" | grep -qxF "=== $2 ===" && printf "%s\n" "$1" | grep -qF "[OK]   プロジェクトディレクトリ実在: $2" && grep -qxF images "$3/podman-args"' _ "$out" "$original_proj" "$home"
+    # #166: 対象への cd とヘルパー起動前の cd / は、削除済み cwd で bash の chdir 警告を出す。この行を足さない。
+    check "cwd 削除済みの '$input' は chdir 警告を出さない" \
+      bash -c '! printf "%s\n" "$1" | grep -q "^chdir:"' _ "$out"
     if [[ "$input" == *" . "* ]]; then
       check "cwd 削除済みの '$input' は . の FAIL を 1 行だけ出し、rc≠0" \
         bash -c '[ "$1" -ne 0 ] && [ "$(printf "%s\n" "$2" | grep -c "^\[FAIL\] 現在のディレクトリを特定できない")" -eq 1 ] && ! printf "%s\n" "$2" | grep -qF "イメージ診断・清掃に失敗" && ! printf "%s\n" "$2" | grep -qF "清掃診断の結果を読み取れません"' _ "$rc" "$out"

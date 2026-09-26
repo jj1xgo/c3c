@@ -2285,7 +2285,12 @@ check_one_project() {
     return 20
   fi
   readonly WORKING_DIR
-  cd "$WORKING_DIR"
+  # 削除済み cwd では bash の cd が chdir 警告を出すので、通常起動と同じく stderr を捨てる。
+  # 失敗は set -e の rc 1（ドライバでは unexpected exit）ではなく、他の FAIL と同じ形で返す（#166）。
+  if ! cd -- "$WORKING_DIR" 2>/dev/null; then
+    echo "[FAIL] ディレクトリを開けません: $WORKING_DIR"
+    return 20
+  fi
   echo "[OK]   プロジェクトディレクトリ実在: $WORKING_DIR"
 
   compute_project_name
@@ -2510,8 +2515,9 @@ run_check_mode() (
     # 引数があって全部を外した場合はヘルパーを呼ばない（引数なしだと台帳全体の診断になるため）。
     if [[ $# -eq 0 || $project_count -gt 0 ]]; then
       # cwd が削除済みだと実 Podman は cwd 取得に失敗して rc 1 を返す。ヘルパーへ渡す
-      # 引数はすべて絶対パスなので、cwd に依存しない / から起動する。
-      (cd / && python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}") || image_rc=1
+      # 引数はすべて絶対パスなので、cwd に依存しない / から起動する。削除済み cwd では
+      # bash の cd が chdir 警告を出すので、この cd の stderr だけ捨てる（失敗は && で拾う。#166）。
+      (cd / 2>/dev/null && python3 -I "$RUN_DIR/project-images.py" "${image_args[@]}") || image_rc=1
       if [[ $CLEAN_MISSING -eq 1 ]]; then
         # process substitution で Python の失敗を失わないよう、先にファイルへ確定する。
         if [[ -f "$image_check_tmp/result.json" ]] && python3 -I -c '

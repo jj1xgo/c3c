@@ -4,7 +4,7 @@ tmp
 # 設定ディレクトリの env（新名 .c3c/env、旧名 .claude-container.d/env。両方は置かない）は
 # ランタイム設定でホスト固有パス（SECRETS_DIR等）を含みうるため ignore 対象。設定ディレクトリ
 # 配下の他ファイル（packages.txt 等）はビルド時にイメージへ焼き込まれる共有設定であり、
-# 引き続きコミット対象。このリポジトリ自身の設定は移行期間中 .claude-container.d/ のまま。
+# 引き続きコミット対象。このリポジトリ自身の設定も .c3c/ に置く。
 # サンプルは examples/c3c/env.example を参照。
 .c3c/env
 .claude-container.d/env

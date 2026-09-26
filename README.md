@@ -192,7 +192,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 
 `TZ` は起動スクリプトがホストの `/etc/timezone`（なければ `/etc/localtime` シンボリックリンク）から自動検出する。`.c3c/env` またはシェル環境で明示した場合はそちらが優先される。
 
-claude-container 自身を対象プロジェクトとして自己ホスト起動する場合（このリポジトリを直接 `./c3c claude` の引数に渡す場合）は、`examples/c3c/env.example` をコピーして `.claude-container.d/env` を作成する（このリポジトリ自身の設定ディレクトリは移行期間中 `.claude-container.d/` のままで、自己ホスト起動では移行推奨の WARNING が出る。ルートに `.c3c/` を置くと自身の設定と二重配置になるため、サンプルは `examples/` 配下にある）。`SECRETS_DIR` 等ホスト固有のパスを含みうるため `env` は新旧どちらの名前でも gitignore 対象で、リポジトリには example のみをコミットする。同様に、GitHub 公式 MCP サーバー（後述「GitHub トークンの配線」節のレシピ参照）を自己ホスト環境でも使いたい場合は、`.mcp.json.example` をコピーして `.mcp.json` を作成する（`.mcp.json` はメンテナ自身のセッション用実設定のため gitignore 対象）。
+claude-container 自身を対象プロジェクトとして自己ホスト起動する場合（このリポジトリを直接 `./c3c claude` の引数に渡す場合）は、`examples/c3c/env.example` をコピーして `.c3c/env` を作成する（サンプルを `.c3c/` 直下に置くと、このリポジトリ自身の設定と混ざるため `examples/` 配下にある）。`SECRETS_DIR` 等ホスト固有のパスを含みうるため `env` は新旧どちらの名前でも gitignore 対象で、リポジトリには example のみをコミットする。同様に、GitHub 公式 MCP サーバー（後述「GitHub トークンの配線」節のレシピ参照）を自己ホスト環境でも使いたい場合は、`.mcp.json.example` をコピーして `.mcp.json` を作成する（`.mcp.json` はメンテナ自身のセッション用実設定のため gitignore 対象）。
 
 ## IPv6 を任意で有効にする
 

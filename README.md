@@ -437,6 +437,22 @@ stdio タイプのサーバーをどうしても使いたい場合は、`npx` �
 
 なお `claude mcp add` によるローカル／ユーザースコープの登録（`~/.claude.json` 側）はこのゲートの対象外である。これはリポジトリ側が制御できないファイルへの登録のため「悪意あるリポジトリの初回起動」という脅威モデルには当てはまらず、各プロジェクトの利用者が自己管理する範囲になる。
 
+### リポジトリの Claude 設定の確認（project 設定ゲート）
+
+Claude 経路では、リポジトリの `.claude/settings.json` と `.claude/settings.local.json`（git で追跡していない local も対象）を、Claude Code の起動前に確認する（#163。理由は後述「セキュリティモデル」節）。
+
+- 初回と、前回の承認から内容が変わったときに、ホストの端末へファイルの内容（`env` の値を含む。制御文字は除く）が表示され、`[y/N]` の確認が出る。`y` の承認は `~/.local/state/claude-container/mcp-approvals/claude-project/` に hash だけを記録し、次回からは内容が同じなら確認を省く。
+- TTY が無いと、未承認のまま起動しない。ホストで承認した後、本起動の前に内容が変わった場合は、コンテナ内でもう一度確認が出る（TTY が無ければ止まる）。
+- 確認を出さずに起動を止める条件: project 設定での plugin の有効化（`enabledPlugins`）、`env` の `CLAUDE_CODE_PLUGIN_*`、`extraKnownMarketplaces`、skills-directory plugin（`.claude/skills/*/.claude-plugin/plugin.json`）、`.mcp.json` の `headersHelper`。判定できないとき（壊れた JSON、`/workspace` の外を指す symlink や解決できない symlink、読めないファイル、1 MiB を超えるファイル）も止まる。
+- `.claude` か `.mcp.json` を持つリポジトリは、この確認に対応していない旧イメージでは起動せず、`-b` での再ビルドを案内する。どちらも持たないリポジトリは従来どおり起動する。
+- 承認記録は `--clean <ディレクトリ>`（そのプロジェクト分）と引数なしの `--clean`（全件）で消える。環境変数による opt-out は無い。
+
+**既存の利用者への影響と移行**:
+
+1. `.claude` か `.mcp.json` を持つリポジトリは `-b` で作り直す（`--check` が `[FAIL]` と `-b` の案内を出す）。
+2. project の `.claude/settings*.json` で plugin を有効にしているリポジトリは起動しなくなる。plugin は user 設定（`~/.claude/settings.json`）で有効にする（`--check` が `[FAIL]` で知らせる）。
+3. 未承認のリポジトリを TTY なし（スクリプト等）で起動していた場合は、一度対話で起動して承認する。
+
 ## Codex CLI をセカンドオピニオンとして使う
 
 OpenAI の Codex CLI をコンテナ内の Claude Code セッションから諮問・レビュー用のセカンドオピニオンとして呼ぶ場合のレシピ。Codex は `codex exec`（非対話 CLI）として呼び出す。以前はここに Codex を stdio 型 MCP サーバー（`codex mcp-server`）として `.mcp.json` に登録する手順を載せていたが、上流の codex-cli が rust-v0.149.0 で `codex mcp-server` を非推奨にし、rust-v0.154.0（2026-09-09、[openai/codex#42993](https://github.com/openai/codex/pull/42993)）で削除したため、MCP 経路は案内しない（0.153.0 以前に固定すれば動くが非推奨経路のため推奨しない。[`#100`](https://github.com/jj1xgo/claude-container/issues/100)）:
@@ -664,11 +680,13 @@ Claude は `--permission-mode auto`（Claude Code の auto mode）で起動す�
 
 **claude-in-chrome 連携はファイアウォールでは原理的に遮断できない**（`jj1xgo/claude-container#32`）: `.mcp.json` を介さないネイティブ機能のため MCP 監査ゲートの対象外で、コンテナ内から到達・実行可能である。ホスト側の通知は事前承認ではなく事後通知＋任意キャンセル（fail-open）で、コンテナ内のコードが人間の事前承認なしにホストの実ブラウザを操作しうる——「ガードレールはコンテナ境界」という前提の外側にある残存リスク（[詳細](SECURITY-CLAIMS.md#c-2)）。
 
-**MCP サーバーの承認プロンプトを壁に数えない**: Claude Code 本来の仕様では project-scoped の `.mcp.json` サーバー利用前に承認プロンプトが表示されるが、従来の既定 `--dangerously-skip-permissions` 下ではこの確認が実行されないことを実機で確認済み（承認記録 `enabledMcpjsonServers` が空のままサーバーが稼働する）。現在の既定 `--permission-mode auto` 下の挙動は未計測で、いずれにせよ承認系の設定（`enabledMcpjsonServers` 等）はコンテナ内から書き換え可能なため壁にならない。stdio タイプ（コンテナ内でコマンドを実行するサーバー）は、この確認が無いままセッション開始と同時に人間・モデルどちらの判断も挟まず実行され、コンテナ内のトークン類を読めてしまうため、claude-container 側で `entrypoint.sh` による対話確認ゲートを設けている（前述「MCP サーバーの追加」節）。http／sse タイプはこのゲートの対象外だが、接続先はファイアウォールの許可リストが審査する。**残存する経路**: `claude mcp add` によるローカル／ユーザースコープの登録（`~/.claude.json` 側）はこのゲートの対象外で、既に侵害されたセッションによる永続化の手段になりうる。
+**MCP サーバーの承認プロンプトを壁に数えない**: Claude Code 本来の仕様では project-scoped の `.mcp.json` サーバー利用前に承認プロンプトが表示されるが、従来の既定 `--dangerously-skip-permissions` 下ではこの確認が実行されないことを実機で確認済み（承認記録 `enabledMcpjsonServers` が空のままサーバーが稼働する）。現在の既定 `--permission-mode auto` 下の挙動は未計測で、いずれにせよ承認系の設定（`enabledMcpjsonServers` 等）はコンテナ内から書き換え可能なため壁にならない。stdio タイプ（コンテナ内でコマンドを実行するサーバー）は、この確認が無いままセッション開始と同時に人間・モデルどちらの判断も挟まず実行され、コンテナ内のトークン類を読めてしまうため、claude-container 側で `entrypoint.sh` による対話確認ゲートを設けている（前述「MCP サーバーの追加」節）。http／sse タイプはこのゲートの対象外だが、接続先はファイアウォールの許可リストが審査する。ただし `headersHelper` を持つサーバーは、project 設定ゲート（前述「リポジトリの Claude 設定の確認」）が起動前に止める。**残存する経路**: `claude mcp add` によるローカル／ユーザースコープの登録（`~/.claude.json` 側）はこのゲートの対象外で、既に侵害されたセッションによる永続化の手段になりうる。
 
 **`.c3c/env` は信頼できないリポジトリでは攻撃面になる**: `env` で受け付けるキー（前述「環境変数」節の表）には `CLAUDE_CONTAINER_NO_FIREWALL=1` のようなセキュリティ機構の opt-out 変数や、マウント先を決めるキーが含まれるため、そのプロジェクト自身の `.c3c/env` に書かれていれば有効になってしまう。信頼できないリポジトリを起動する前に `.c3c/env` の中身を確認すること。
 
 **Claude 経路で `.mcp.json` に追加ゲートを設ける理由は、入力の信頼度でなく帰結の重大性で線を引いているため**（`claude-container#29`）: リポジトリ同梱の設定（`.c3c/env` と `.mcp.json` の両方）は、いずれも起動前に運用者がレビューする責任範囲にある——同じリポジトリに同梱される以上、どちらか一方だけを「信頼できる」「信頼できない」と区別する根拠は無い。claude-container が追加の対話ゲートを設けるのは、レビューを怠った場合の帰結が「セッション開始と同時の任意コード実行」になる場合に限る（＝ `.mcp.json` の stdio 型）。`env` で受け付けるキーは許可リスト（前述「環境変数」節の表）に限られ、`PATH`・`HOME` 等ホスト側の実行や基点に影響するキーは export されない（[`#44`](https://github.com/jj1xgo/claude-container/issues/44)）。対象プロジェクト直下の `.env` も compose の補間に使わない（[`#60`](https://github.com/jj1xgo/claude-container/issues/60)）。別軸として、境界へ影響するキー（`EXTRA_MOUNT`・`SHARED_MOUNT`・`SECRETS_DIR`・`GITCONFIG_FILE`・`CODEX_DIR`・`CODEX_HOST_PLUGINS` 等）の使用は起動時に一覧して気づけるようにしている（`guard_env_boundary_keys()`）。この可視化は fail-closed ではない——`env` は運用者自身が書く設定という前提は変えていないため。
+
+**`/workspace` の trust は全プロジェクトで共有される**（#163）: Claude Code は workspace trust を `~/.claude.json` の `projects["<repo root>"]` に保存する。claude-container はどのプロジェクトも `/workspace` にマウントし `~/.claude.json` を共有するため、一度 trust を受け入れると以降どのリポジトリも trust 済みで開き、リポジトリ同梱の `.claude/settings.json`・`.claude/settings.local.json` の hook・`env`・`apiKeyHelper` 等の helper・`statusLine`・allow 規則が確認なしで効く。これは #29 の基準（セッション開始と同時の任意コード実行）に当たるため、Claude 経路では project 設定ゲートを設けている: この 2 ファイルを検査用コンテナで読み、ファイル全体の hash が初回または前回承認から変わっていればホストで内容を表示して確認する。project 設定での plugin の有効化（`enabledPlugins`）・plugin の読み込み先を変える `env`（`CLAUDE_CODE_PLUGIN_*`）・`extraKnownMarketplaces`・skills-directory plugin（`.claude/skills/*/.claude-plugin/plugin.json`）・`.mcp.json` の `headersHelper` は、確認の前に起動を止める。対象外（残る経路）は [SECURITY-CLAIMS の C-5](SECURITY-CLAIMS.md#c-5) を参照（skills・agents・commands の frontmatter と本文、承認後のセッション中の変更、ホスト側の trust など）。
 
 起動時の可視化を実際に確認したい場合は `.c3c/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1`（または `EXTRA_MOUNT`/`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`/`CODEX_HOST_PLUGINS`/`CLAUDE_CONFIG_DIR`）を書いて起動する。値そのものはログに出さず、キー名のみを一覧する。
 

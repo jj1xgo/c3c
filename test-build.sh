@@ -618,6 +618,8 @@ case "\$1 \$2" in
   "image exists") exit 0 ;;
   "image inspect")
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
+    # Claude の project 設定ゲート（#163）: 作業ディレクトリに .claude がある場合（F の \$HOME 等）に照合される。
+    if [[ "\$*" == *io.c3c.claude-project-audit-protocol* ]]; then printf '%s\n' 1; fi
     exit 0 ;;
 esac
 if [[ "\$1" == "compose" ]]; then
@@ -625,6 +627,10 @@ if [[ "\$1" == "compose" ]]; then
   printf '%s\n' "\$n" > "$root/compose-calls"
   env > "$root/compose-env"; env > "$root/compose-env.\$n"
   printf '%s\n' "\$@" >> "$root/compose-args"; printf '%s\n' "\$@" > "$root/compose-args.\$n"
+  # Claude の project 設定ゲートの検査用コンテナ（#163）: 対象の設定なし（count 0）の protocol を返す。
+  if [[ "\${CC_CLAUDE_START_MODE:-}" == preflight ]]; then
+    printf '%s\n' '{"protocol_version": 1, "hash": "0000000000000000000000000000000000000000000000000000000000000000", "count": 0, "lines": []}'
+  fi
 fi
 exit 0
 DUMMY
@@ -824,6 +830,7 @@ run_launcher_tests() {
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
   check "Claude project 設定ゲート helper（全体 hash・停止条件・判定不能・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_audit.py"
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
+  check "--agent claude の project 設定ゲート（対象判定・label・preflight・TOFU 承認・atomic 記録・env 非参照・clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_launch.py"
   check "CLI 選択記憶 helper（Git 識別・strict JSON・無書込 read・原子的 write）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_agent_preference.py"
   check "c3c 入口（symlink 解決・旧名 symlink の同一契約・parser・初回選択/記憶・本 run 終了コード保持・check/clean の無書込）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_launch.py"
   check "設定ディレクトリの選択（.c3c/旧名/なし/二重配置/型不正・symlink、check の継続と無書込、clean の独立、新旧配置の hash 同一）と Node/Codex の既定ビルド入力（同梱 default・project pin・空 opt-out・npm WARNING）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_config.py"

@@ -43,7 +43,8 @@ except OSError:
 record = {'args': args, 'stdin': stdin,
           'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
                                                   'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
-                                                  'C3C_CODEX_PLUGINS_SOURCE')},
+                                                  'C3C_CODEX_PLUGINS_SOURCE', 'CC_CLAUDE_START_MODE',
+                                                  'CLAUDE_PROJECT_APPROVAL_FILE')},
           'plugins_mountpoint': os.path.isdir(os.path.join(os.environ.get('CODEX_DIR') or '/nonexistent',
                                                            'plugins', 'cache'))}
 with open(os.path.join(root, 'calls'), 'a') as out:
@@ -60,7 +61,9 @@ elif head == 'image inspect':
     if not state.get('image_exists'):
         sys.exit(125)
     fmt = args[args.index('--format') + 1] if '--format' in args else ''
-    if 'io.c3c.codex-audit-protocol' in fmt:
+    if 'io.c3c.claude-project-audit-protocol' in fmt:
+        print(state.get('claude_label', ''))
+    elif 'io.c3c.codex-audit-protocol' in fmt:
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
         print('1')
@@ -73,9 +76,10 @@ elif args[:1] == ['compose']:
     if verb == 'build':
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
+        state['claude_label'] = state.get('build_claude_label', '1')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
-        spec = state.get('preflight', {})
+        spec = state.get('claude_preflight' if os.environ.get('CC_AGENT') == 'claude' else 'preflight', {})
         sys.stdout.write(spec.get('stdout', ''))
         sys.stdout.flush()
         sys.stderr.write(spec.get('stderr', 'INFO: preflight log line\\n'))

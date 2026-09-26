@@ -149,8 +149,8 @@ def check_mcp(root_real):
     if real is None:
         return
     data = read_regular(real, MCP_FILE)
-    if not data:
-        # 0 バイトは何も定義できない（従来の .mcp.json ゲートも通していた）。
+    if not data.strip():
+        # 0 バイトや空白だけは何も定義できない（従来の .mcp.json ゲートの jq も通していた）。
         return
     servers = table(parse_object(data, MCP_FILE), 'mcpServers', MCP_FILE)
     helpers = []
@@ -268,10 +268,12 @@ def main(argv=None):
             sys.stdout.flush()
             return 0
         return verify(args.root, args.record)
+    # 例外文には repo 側が決めた名前（skills のディレクトリ名等）が入りうる。stderr はホストの端末へ直接出るので、
+    # 出口で一括して制御文字を除く（#35、C-5）。
     except Blocked as exc:
-        print(f'ERROR: Claude project 設定ゲート: {exc}。リポジトリの設定からは許可しません。起動を中止します', file=sys.stderr)
+        print(f'ERROR: Claude project 設定ゲート: {sanitize(exc)}。リポジトリの設定からは許可しません。起動を中止します', file=sys.stderr)
     except Undecidable as exc:
-        print(f'ERROR: Claude project 設定ゲート: 判定できません: {exc}。起動を中止します', file=sys.stderr)
+        print(f'ERROR: Claude project 設定ゲート: 判定できません: {sanitize(exc)}。起動を中止します', file=sys.stderr)
     return EXIT_STOP
 
 

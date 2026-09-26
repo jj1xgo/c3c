@@ -159,6 +159,11 @@ class BlockTests(AuditCase):
         self.put('.mcp.json', b'')
         self.assertEqual(self.snapshot()['count'], 0)
 
+    def test_whitespace_only_mcp_json_is_not_a_target(self):
+        # 従来の .mcp.json ゲート（jq）は空白だけの .mcp.json も通していた。
+        self.put('.mcp.json', b' \n\t\r\n')
+        self.assertEqual(self.snapshot()['count'], 0)
+
     def test_mcp_without_helper_is_not_a_target(self):
         self.put('.mcp.json', {'mcpServers': {'s': {'command': 'node'}}})
         self.assertEqual(self.snapshot()['count'], 0)
@@ -195,6 +200,19 @@ class UndecidableTests(AuditCase):
         (self.root / '.claude').rmdir()
         (self.root / '.claude').symlink_to(outside / '.claude')
         self.assert_blocked('判定できません')
+
+    def test_error_messages_strip_control_characters_from_repo_names(self):
+        # skills の名前は repo 側が決められる。判定不能のエラー文に埋め込まれた ESC 等を、そのまま端末へ出さない（#35）。
+        skills = self.root / '.claude' / 'skills'
+        skills.mkdir()
+        (skills / 'x\x1b[2J\x1b[Hfake').symlink_to(self.base)
+        for args in (('snapshot',), ('verify', os.devnull)):
+            with self.subTest(args=args):
+                result = self.run_helper(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('判定できません', result.stderr)
+                self.assertIn('fake', result.stderr)
+                self.assertNotRegex(result.stderr.rstrip('\n'), '[\x00-\x09\x0b-\x1f\x7f]')
 
     def test_dangling_and_looping_symlinks_are_undecidable(self):
         link = self.root / '.claude' / 'settings.json'

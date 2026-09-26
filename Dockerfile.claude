@@ -349,6 +349,12 @@ RUN chmod 755 /usr/local/bin/ipv6-firewall.py
 COPY codex-mcp-audit.py /usr/local/bin/codex-mcp-audit.py
 RUN chmod 755 /usr/local/bin/codex-mcp-audit.py
 
+# Claude 経路の project 設定ゲート helper（#163）。entrypoint.sh が検査用コンテナの snapshot と本起動の
+# verify で同じ固定パスを python3 -I で呼ぶ。他の境界アセットと同じ root 所有 755。対応する protocol 版は
+# 下の LABEL io.c3c.claude-project-audit-protocol。
+COPY claude-project-audit.py /usr/local/bin/claude-project-audit.py
+RUN chmod 755 /usr/local/bin/claude-project-audit.py
+
 WORKDIR /workspace
 USER node
 
@@ -385,6 +391,9 @@ LABEL claude-container.ipv6-support="1"
 # label 欠落では preflight 自体を起動しない）。protocol の内容は codex-mcp-audit.py と entrypoint.sh。
 # 上と同じく CACHEBUST を消費する RUN より後に置く。
 LABEL io.c3c.codex-audit-protocol="2"
+# Claude 経路の project 設定ゲートの protocol（#163）。launcher は、.claude か .mcp.json を持つ repo では
+# この label が対応 protocol（1）と一致するイメージでだけ検査用コンテナと本起動を行う。
+LABEL io.c3c.claude-project-audit-protocol="1"
 
 # base-image.txt の現在の内容とは独立に、このビルドに実際に焼き込まれたベース
 # イメージの値を記録する。compute_asset_hash() はファイル内容しかハッシュしない

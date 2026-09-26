@@ -333,7 +333,7 @@ def volume_mounts(config_text, target):
 class ComposeContractTests(EntrypointCase):
     """compose.yml の変数解決を実 provider の config で取り、その値を entrypoint に通す（正規表現の推測ではなく実解決）。"""
 
-    KEYS = ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY')
+    KEYS = ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY', 'CC_CLAUDE_START_MODE')
 
     def resolved(self, overrides):
         podman = shutil.which('podman')
@@ -351,7 +351,7 @@ class ComposeContractTests(EntrypointCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         values = {}
         for line in result.stdout.splitlines():
-            match = re.match(r'^\s+(CC_AGENT|CC_CODEX_START_MODE|CC_CODEX_READ_ONLY):\s*(.*?)\s*$', line)
+            match = re.match(r'^\s+(CC_AGENT|CC_CODEX_START_MODE|CC_CODEX_READ_ONLY|CC_CLAUDE_START_MODE):\s*(.*?)\s*$', line)
             if match:
                 value = match.group(2)
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in '\'"':
@@ -401,7 +401,8 @@ class ComposeContractTests(EntrypointCase):
 
     def test_unset_defaults_reach_entrypoint_as_claude_run(self):
         values = self.resolved({})
-        self.assertEqual(values, {'CC_AGENT': 'claude', 'CC_CODEX_START_MODE': 'run', 'CC_CODEX_READ_ONLY': '0'})
+        self.assertEqual(values, {'CC_AGENT': 'claude', 'CC_CODEX_START_MODE': 'run', 'CC_CODEX_READ_ONLY': '0',
+                                  'CC_CLAUDE_START_MODE': 'run'})
         result = self.run_entrypoint(values['CC_AGENT'], values['CC_CODEX_START_MODE'], values['CC_CODEX_READ_ONLY'])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any(r.startswith('claude ') for r in self.records))
@@ -429,7 +430,8 @@ class ComposeContractTests(EntrypointCase):
         for mode in ('run', 'preflight'):
             with self.subTest(mode=mode):
                 values = self.resolved({'CC_AGENT': 'codex', 'CC_CODEX_START_MODE': mode, 'CC_CODEX_READ_ONLY': '1'})
-                self.assertEqual(values, {'CC_AGENT': 'codex', 'CC_CODEX_START_MODE': mode, 'CC_CODEX_READ_ONLY': '1'})
+                self.assertEqual(values, {'CC_AGENT': 'codex', 'CC_CODEX_START_MODE': mode, 'CC_CODEX_READ_ONLY': '1',
+                                          'CC_CLAUDE_START_MODE': 'run'})
 
 
 class SecretIsolationTests(EntrypointCase):

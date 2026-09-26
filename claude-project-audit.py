@@ -148,7 +148,11 @@ def check_mcp(root_real):
     real = resolve(root_real, MCP_FILE)
     if real is None:
         return
-    servers = table(parse_object(read_regular(real, MCP_FILE), MCP_FILE), 'mcpServers', MCP_FILE)
+    data = read_regular(real, MCP_FILE)
+    if not data:
+        # 0 バイトは何も定義できない（従来の .mcp.json ゲートも通していた）。
+        return
+    servers = table(parse_object(data, MCP_FILE), 'mcpServers', MCP_FILE)
     helpers = []
     for name, server in servers.items():
         if not isinstance(server, dict):

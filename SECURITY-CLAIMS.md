@@ -156,8 +156,8 @@ trust は全プロジェクトで 1 つになる。一度受け入れると、�
 `env` の `CLAUDE_CODE_PLUGIN_*`、空でない `extraKnownMarketplaces`、`.claude/skills/*/.claude-plugin/plugin.json`、
 `.mcp.json` のサーバーの `headersHelper`。判定不能として止める条件: 壊れた JSON・最上位がオブジェクトでない・
 重複 key、`/workspace` の外を指す symlink・解決できない symlink、通常ファイルでない対象、読み取り・列挙・
-パスの確認の失敗、1 MiB を超えるファイル。0 バイトのファイルは中身の無い設定として hash する（c3c 自身が
-`~/.claude/settings.json` を 0 バイトで作るため）。環境変数による opt-out は無く、`CLAUDE_PROJECT_APPROVAL_FILE`・
+パスの確認の失敗、1 MiB を超えるファイル。0 バイトの settings は中身の無い設定として hash する（c3c 自身が
+`~/.claude/settings.json` を 0 バイトで作るため）。0 バイトの `.mcp.json` は対象にしない（従来の `.mcp.json` ゲートと同じ）。環境変数による opt-out は無く、`CLAUDE_PROJECT_APPROVAL_FILE`・
 `CC_CLAUDE_START_MODE` は launcher が全経路で明示 export する（`.c3c/env` やシェル環境の値は使わない）。
 c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に書かない。
 

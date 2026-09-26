@@ -154,6 +154,11 @@ class BlockTests(AuditCase):
         self.put('.mcp.json', {'mcpServers': {'remote': {'type': 'http', 'url': 'https://x', 'headersHelper': '/bin/x'}}})
         self.assert_blocked('headersHelper')
 
+    def test_empty_mcp_json_is_not_a_target(self):
+        # 従来の .mcp.json ゲート（jq）は 0 バイトの .mcp.json を通していた。0 バイトは何も定義できないので止めない。
+        self.put('.mcp.json', b'')
+        self.assertEqual(self.snapshot()['count'], 0)
+
     def test_mcp_without_helper_is_not_a_target(self):
         self.put('.mcp.json', {'mcpServers': {'s': {'command': 'node'}}})
         self.assertEqual(self.snapshot()['count'], 0)

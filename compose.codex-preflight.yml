@@ -1,9 +1,10 @@
-# Codex の起動時 MCP 審査で使う検査用コンテナの固定 override（c3c 第1段階）。launcher が
-# `--agent codex` の本起動前に compose.yml（と選択済みの他 override）の後ろへ積み、同じ service を
+# Codex の起動時 MCP 審査と Claude の project 設定ゲート（#163）で使う検査用コンテナの固定 override
+# （c3c 第1段階）。launcher が本起動前に compose.yml（と選択済みの他 override）の後ろへ積み、同じ service を
 # 非 TTY・stdin なしで起動する（`podman compose run -T` と host 側の stdin=/dev/null を併用）。
 # 上書きは tty / stdin_open だけで、mount・working_dir・environment は本起動と同じにする
 # （検査と本起動の一致）。protocol は entrypoint.sh が確保した元 stdout（fd3）に 1 文書だけ出る。
-# CC_CODEX_START_MODE=preflight は launcher が明示 export する（ここでは固定しない）。
+# CC_CODEX_START_MODE=preflight（Codex）と CC_CLAUDE_START_MODE=preflight（Claude）は launcher が明示
+# export する（ここでは固定しない）。
 services:
   claude-auth-workspace:
     tty: false

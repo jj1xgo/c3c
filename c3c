@@ -25,6 +25,10 @@ READ_ONLY_SET=0
 CODEX_AUDIT_PROTOCOL_VERSION=2
 CODEX_AUDIT_PROTOCOL_LABEL=io.c3c.codex-audit-protocol
 readonly CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
+# Claude 経路の project 設定ゲートの protocol（#163。claude-project-audit.py・Dockerfile.claude の label と同期）。
+CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION=1
+CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL=io.c3c.claude-project-audit-protocol
+readonly CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL
 
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
@@ -343,6 +347,8 @@ clean_project() {
   # Codex の承認記録はこのプロジェクトの subdirectory ごと（過去版を含む）削除し、他プロジェクトは残す。
   echo "Codex MCP 承認記録を削除します: $CODEX_APPROVAL_DIR"
   rm -rf "$CODEX_APPROVAL_DIR" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  echo "Claude project 設定の承認記録を削除します: $CLAUDE_PROJECT_APPROVAL_RECORD"
+  rm -f "$CLAUDE_PROJECT_APPROVAL_RECORD" && echo "削除しました。" || echo "見つからないのでスキップします。"
   if [[ -f "$CC_LEDGER_FILE" ]]; then
     echo "起動台帳から $WORKING_DIR を削除します: $CC_LEDGER_FILE"
     # 一時台帳は毎回別名・生成時から所有者のみ。旧版の固定 .tmp は再利用しない。
@@ -460,12 +466,14 @@ freeze_project_paths() {
   # Codex の起動時 MCP 審査の承認記録（#150 の protocol 2）。既存の Claude 記録とは別に、agent 固定の
   # subdirectory へ hash を保存する。版は含めない（旧 <版>.json は読まない）。同じく env 読込前に freeze する。
   CODEX_APPROVAL_DIR="$MCP_APPROVAL_STORE/codex/$PROJECT_NAME"
+  CLAUDE_PROJECT_APPROVAL_DIR="$MCP_APPROVAL_STORE/claude-project"
+  CLAUDE_PROJECT_APPROVAL_RECORD="$CLAUDE_PROJECT_APPROVAL_DIR/$PROJECT_NAME.json"
   CODEX_APPROVAL_RECORD="$CODEX_APPROVAL_DIR/project-config.json"
   # ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
   # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
   # クリーンアップも不要にする。
   BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
-  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD BUILD_CONTEXT_DIR
+  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD CLAUDE_PROJECT_APPROVAL_DIR CLAUDE_PROJECT_APPROVAL_RECORD BUILD_CONTEXT_DIR
   # compose へはコマンド前置代入でなく export で渡す（readonly 変数への前置代入は
   # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
   # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
@@ -1307,6 +1315,196 @@ check_codex_approval() {
   export CODEX_MCP_APPROVAL_FILE
 }
 
+# Claude 経路の project 設定ゲート（#163）。.claude か .mcp.json が存在する（symlink を含む）repo でだけ
+# label 照合・検査用コンテナ・承認を行う。存在しない repo は旧イメージのまま起動できる。
+claude_project_gate_needed() {
+  [[ -e "$WORKING_DIR/.claude" || -L "$WORKING_DIR/.claude" || -e "$WORKING_DIR/.mcp.json" || -L "$WORKING_DIR/.mcp.json" ]]
+}
+
+guard_claude_project_image_support() {
+  local label
+  if ! label=$(podman image inspect --format "{{index .Labels \"$CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null); then
+    guard_fail "ERROR: イメージ $IMAGE_NAME を inspect できないため、Claude の project 設定ゲートへの対応を確認できません。起動を中止します。" || return 1
+  fi
+  if [[ "$label" != "$CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION" ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は Claude の project 設定ゲート（protocol $CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION）に対応していません（label $CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL=${label:-なし}）。このプロジェクトには .claude か .mcp.json があるため、-b で再ビルドしてください。起動を中止します。" || return 1
+  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Claude project 設定ゲート protocol: $CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL=$label"
+  return 0
+}
+
+claude_project_record_content() {
+  printf '{"protocol_version":%s,"hash":"%s"}\n' "$CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION" "$1"
+}
+
+write_claude_project_record() {
+  local hash="$1" tmp
+  (
+    umask 077
+    mkdir -p "$CLAUDE_PROJECT_APPROVAL_DIR" || exit 1
+    chmod 700 "$MCP_APPROVAL_STORE" "$CLAUDE_PROJECT_APPROVAL_DIR" || exit 1
+    tmp=$(mktemp "$CLAUDE_PROJECT_APPROVAL_DIR/.tmp.XXXXXX") || exit 1
+    trap 'rm -f -- "$tmp"' EXIT
+    chmod 600 "$tmp" || exit 1
+    claude_project_record_content "$hash" > "$tmp" || exit 1
+    mv -f -- "$tmp" "$CLAUDE_PROJECT_APPROVAL_RECORD" || exit 1
+    trap - EXIT
+  ) || {
+    echo "ERROR: Claude project 設定の承認記録を書けません: $CLAUDE_PROJECT_APPROVAL_RECORD。起動を中止します" >&2
+    exit 1
+  }
+}
+
+CLAUDE_PROJECT_PREFLIGHT_TMP=""
+cleanup_claude_project_preflight() {
+  [[ -n "$CLAUDE_PROJECT_PREFLIGHT_TMP" ]] && rm -rf -- "$CLAUDE_PROJECT_PREFLIGHT_TMP"
+  CLAUDE_PROJECT_PREFLIGHT_TMP=""
+  return 0
+}
+
+# 検査用コンテナ（非 TTY、stdin は /dev/null）で /workspace を審査し、stdout の protocol 1 文書だけを
+# python3 -I で厳密に検証する。結果は CLAUDE_PROJECT_HASH / CLAUDE_PROJECT_COUNT / CLAUDE_PROJECT_DISPLAY[]。
+# 表示行には env の値が含まれうるので、0700 の一時 dir に置いて終了時に削除する。
+run_claude_project_preflight() {
+  CLAUDE_PROJECT_HASH=""
+  CLAUDE_PROJECT_COUNT=""
+  CLAUDE_PROJECT_DISPLAY=()
+  local override="$RUN_DIR/compose.codex-preflight.yml" rc=0
+  if [[ ! -f "$override" ]]; then
+    echo "ERROR: 検査用の固定 Compose override がありません: $override。起動を中止します" >&2
+    exit 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: Claude project 設定ゲート: 検査結果の検証に python3 が必要ですが、ホストに見つかりません。起動を中止します" >&2
+    exit 1
+  fi
+  CLAUDE_PROJECT_PREFLIGHT_TMP=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/cc-claude-preflight.XXXXXX") || {
+    echo "ERROR: 検査用の一時ディレクトリを作成できません。起動を中止します" >&2
+    exit 1
+  }
+  trap 'cleanup_claude_project_preflight' EXIT
+  chmod 700 "$CLAUDE_PROJECT_PREFLIGHT_TMP"
+  ( umask 077; : > "$CLAUDE_PROJECT_PREFLIGHT_TMP/protocol" ) || exit 1
+  echo "INFO: Claude project 設定ゲート: リポジトリの .claude/settings*.json を検査用コンテナで読みます（Claude Code は起動しません）" >&2
+  CC_CLAUDE_START_MODE=preflight
+  export CC_CLAUDE_START_MODE
+  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
+    run --rm -T claude-auth-workspace </dev/null >"$CLAUDE_PROJECT_PREFLIGHT_TMP/protocol" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: Claude project 設定ゲート: 検査用コンテナが終了コード $rc で止まりました（上の理由を確認してください）。本起動は行いません" >&2
+    exit 1
+  fi
+  if ! python3 -I - "$CLAUDE_PROJECT_PREFLIGHT_TMP/protocol" "$CLAUDE_PROJECT_PREFLIGHT_TMP/summary" \
+      "$CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION" <<'PYTHON'
+import json
+import os
+import re
+import sys
+
+source, summary, protocol_version = sys.argv[1:4]
+CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def fail(message):
+    print('ERROR: Claude project 設定ゲート: ' + message + '。本起動は行いません', file=sys.stderr)
+    sys.exit(1)
+
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            fail('protocol に重複 key があります')
+        result[key] = value
+    return result
+
+
+try:
+    with open(source, 'rb') as handle:
+        text = handle.read().decode('utf-8')
+except (OSError, UnicodeDecodeError):
+    fail('検査用コンテナの stdout を UTF-8 として読めません')
+try:
+    doc = json.loads(text, object_pairs_hook=pairs, parse_constant=lambda name: fail('protocol に非標準の定数があります'))
+except ValueError:
+    fail('検査用コンテナの stdout が protocol の JSON 1 文書ではありません（余分な出力・破損・欠落）')
+if not isinstance(doc, dict) or set(doc) != {'protocol_version', 'hash', 'count', 'lines'}:
+    fail('protocol の形式が対応 protocol と異なります')
+if type(doc['protocol_version']) is not int or doc['protocol_version'] != int(protocol_version):
+    fail('protocol version が対応 protocol と異なります')
+if not isinstance(doc['hash'], str) or not re.fullmatch(r'[0-9a-f]{64}', doc['hash']):
+    fail('hash の形式が不正です')
+if type(doc['count']) is not int or not 0 <= doc['count'] <= 2:
+    fail('count の形式が不正です')
+lines = doc['lines']
+if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+    fail('lines の形式が不正です')
+if (doc['count'] == 0) != (lines == []):
+    fail('count と lines が一致しません')
+fd = os.open(summary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+    handle.write(doc['hash'] + '\n' + str(doc['count']) + '\n')
+    for line in lines:
+        handle.write(CONTROL.sub('', line) + '\n')
+PYTHON
+  then
+    exit 1
+  fi
+  local -a summary_lines=()
+  mapfile -t summary_lines < "$CLAUDE_PROJECT_PREFLIGHT_TMP/summary"
+  CLAUDE_PROJECT_HASH="${summary_lines[0]:-}"
+  CLAUDE_PROJECT_COUNT="${summary_lines[1]:-}"
+  if [[ ! "$CLAUDE_PROJECT_HASH" =~ ^[0-9a-f]{64}$ || ! "$CLAUDE_PROJECT_COUNT" =~ ^[0-2]$ ]]; then
+    echo "ERROR: Claude project 設定ゲート: 検証結果を読み取れません。本起動は行いません" >&2
+    exit 1
+  fi
+  CLAUDE_PROJECT_DISPLAY=("${summary_lines[@]:2}")
+  cleanup_claude_project_preflight
+  trap - EXIT
+  CC_CLAUDE_START_MODE=run
+  export CC_CLAUDE_START_MODE
+  return 0
+}
+
+# TOFU＋変更検知。拒否・TTY 無し・EOF ではコンテナへ委ねず起動しない。count=0 は記録を渡さない
+# （本起動の entrypoint も対象なしとして通し、検査後に対象が現れたら確認か停止になる）。
+check_claude_project_approval() {
+  CLAUDE_PROJECT_APPROVAL_FILE=""
+  local expected recorded=""
+  if [[ "$CLAUDE_PROJECT_COUNT" -eq 0 ]]; then
+    echo "INFO: Claude project 設定ゲート: 対象の設定はありません" >&2
+    export CLAUDE_PROJECT_APPROVAL_FILE
+    return 0
+  fi
+  expected=$(claude_project_record_content "$CLAUDE_PROJECT_HASH")
+  if [[ -f "$CLAUDE_PROJECT_APPROVAL_RECORD" ]]; then
+    recorded=$(cat "$CLAUDE_PROJECT_APPROVAL_RECORD" 2>/dev/null || echo "")
+  fi
+  if [[ -n "$recorded" && "$recorded" == "$expected" ]]; then
+    echo "INFO: Claude project 設定ゲート: 承認済み（ハッシュ一致）。確認を省略します" >&2
+  else
+    echo "WARNING: リポジトリの project 設定（.claude/settings*.json）が、前回の承認から変わっているか未承認です。hook・env・helper 等はセッション開始と同時に実行され、export された全ての秘密を読めます（承認は定義の承認で、スクリプトの中身は保証しません）:" >&2
+    [[ -n "$recorded" ]] && echo "  （注: 前回のホスト側承認から内容が変わっています）" >&2
+    printf '%s\n' "${CLAUDE_PROJECT_DISPLAY[@]}" >&2
+    printf 'この project 設定で Claude Code を起動し、この承認を記憶しますか? [y/N] ' >&2
+    local project_confirm=""
+    if ! read -r project_confirm </dev/tty 2>/dev/null; then
+      echo "ERROR: 対話可能な TTY がないため project 設定を確認できません。起動を中止します" >&2
+      exit 1
+    fi
+    case "$project_confirm" in
+      y | Y | yes | YES | Yes) write_claude_project_record "$CLAUDE_PROJECT_HASH" ;;
+      *)
+        echo "ERROR: project 設定の確認が拒否されました。起動を中止します" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  CLAUDE_PROJECT_APPROVAL_FILE="$CLAUDE_PROJECT_APPROVAL_RECORD"
+  export CLAUDE_PROJECT_APPROVAL_FILE
+}
+
 # -b のビルド、および Codex 経路の image 不在時の明示ビルド。`run --build` はビルド失敗時に既存の
 # 古いイメージで起動してしまう（fail-open）ため、build を独立させ set -e で失敗時に起動へ進ませない。
 run_explicit_build() {
@@ -2025,7 +2223,7 @@ check_mcp_approval() {
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
 #                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
-#                    codex-mcp-audit.py・codex-launcher.sh・固定 Compose override 群）
+#                    codex-mcp-audit.py・claude-project-audit.py・codex-launcher.sh・固定 Compose override 群）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
 #                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
@@ -2041,7 +2239,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | codex-launcher.sh | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -2078,6 +2276,7 @@ ASSET_HASH_TARGETS=(
   ipv6-firewall.py
   firewall-refresh.py
   codex-mcp-audit.py
+  claude-project-audit.py
   codex-launcher.sh
   compose.ipv6.yml
   compose.plugins-alias.yml
@@ -2135,7 +2334,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py codex-launcher.sh git-askpass.sh validate-build-input.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py claude-project-audit.py codex-launcher.sh git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -2408,6 +2607,51 @@ check_one_project() {
     echo "[INFO] Codex 実効 MCP の動的照合: not run（--check は検査用コンテナを起動しないため、記録が現在の定義と一致するかは判定しません）"
   fi
 
+  # Claude の project 設定ゲート（#163）。--check は検査用コンテナを起動しない。ホストに python3 があれば
+  # 同じ helper をホスト上で参考実行する（repo のファイルを読むだけ。git も repo のコードも実行しない）。
+  if [[ "$AGENT" == codex ]]; then
+    echo "[INFO] Claude project 設定ゲート: Codex 経路では使用しない（Claude の診断は --agent claude で行う）"
+  elif ! claude_project_gate_needed; then
+    echo "[OK]   Claude project 設定ゲート: 対象なし（.claude も .mcp.json も無い）"
+  else
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "[SKIP] podman が見つからないため、Claude project 設定ゲートの対応イメージの確認をスキップ"
+    elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+      if ! guard_claude_project_image_support; then
+        echo "[FAIL] Claude project 設定ゲート: イメージが未対応です。-b で再ビルドしてください"
+      fi
+    else
+      echo "[INFO] Claude project 設定ゲート: イメージ未ビルド（初回起動時にビルドしてから $CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL を確認します）"
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "[FAIL] Claude project 設定ゲート: ホストに python3 が無いため、このプロジェクトは起動できません"
+      CHECK_HAS_ERROR=1
+    else
+      local project_err="" project_out="" project_rc=0 project_hash="" project_count=""
+      if ! project_err=$(umask 077; mktemp "${TMPDIR:-/tmp}/cc-claude-check.XXXXXX"); then
+        echo "[FAIL] Claude project 設定ゲート: 一時ファイルを作れないため診断できません"
+        CHECK_HAS_ERROR=1
+      else
+        project_out=$(python3 -I "$RUN_DIR/claude-project-audit.py" --root "$WORKING_DIR" snapshot 2>"$project_err" \
+          | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["hash"], d["count"])') || project_rc=$?
+        if [[ $project_rc -ne 0 ]]; then
+          echo "[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: $(LC_ALL=C tr -d '\000-\037\177' < "$project_err")"
+          CHECK_HAS_ERROR=1
+        else
+          read -r project_hash project_count <<<"$project_out"
+          if [[ "$project_count" == 0 ]]; then
+            echo "[OK]   Claude project 設定ゲート: 対象の設定なし"
+          elif [[ -f "$CLAUDE_PROJECT_APPROVAL_RECORD" && "$(cat "$CLAUDE_PROJECT_APPROVAL_RECORD" 2>/dev/null || true)" == "$(claude_project_record_content "$project_hash")" ]]; then
+            echo "[OK]   Claude project 設定ゲート: 承認済み（ホストでの参考判定。コンテナ内の見え方と異なる場合は起動時に確認が出ます）"
+          else
+            echo "[INFO] Claude project 設定ゲート: 未承認または変更あり。起動時に確認プロンプトが出ます"
+          fi
+        fi
+        rm -f -- "$project_err"
+      fi
+    fi
+  fi
+
   # Claude の .mcp.json ゲートの診断は Claude 経路だけ。Codex 経路では Codex の審査（上）を使い、
   # Claude 側の承認状態を Codex の承認として表示しない（通常起動の分岐と同じ）。
   if [[ "$AGENT" == codex ]]; then
@@ -2677,6 +2921,14 @@ guard_asset_drift
 # CODEX_MCP_APPROVAL_FILE も MCP_APPROVAL_FILE と同じく、全経路で launcher の値だけを export する。
 CODEX_MCP_APPROVAL_FILE=""
 export CODEX_MCP_APPROVAL_FILE
+# Claude の project 設定ゲートの変数も、全経路で launcher の値だけを export する（env 由来の値を使わない）。
+CLAUDE_PROJECT_APPROVAL_FILE=""
+CC_CLAUDE_START_MODE=run
+export CLAUDE_PROJECT_APPROVAL_FILE CC_CLAUDE_START_MODE
+CLAUDE_PROJECT_GATE=0
+if [[ "$AGENT" == claude ]] && claude_project_gate_needed; then
+  CLAUDE_PROJECT_GATE=1
+fi
 if [[ "$AGENT" == claude ]]; then
   check_mcp_approval
 else
@@ -2726,7 +2978,7 @@ fi
 # -b のビルドは run と分離して実行する（run_explicit_build() 参照、fail-closed）。
 # Codex 経路は image 不在なら -b なしでも明示ビルドする（compose の暗黙ビルドでは、続く
 # label 確認の前に本起動へ進んでしまうため）。image があり -b なしならビルドしない。
-if [[ $BUILD -eq 1 || ( "$AGENT" == codex && $IMAGE_PRESENT -eq 0 ) ]]; then
+if [[ $BUILD -eq 1 || ( "$AGENT" == codex && $IMAGE_PRESENT -eq 0 ) || ( $CLAUDE_PROJECT_GATE -eq 1 && $IMAGE_PRESENT -eq 0 ) ]]; then
   run_explicit_build
 fi
 
@@ -2737,6 +2989,16 @@ if [[ "$AGENT" == codex ]]; then
   check_codex_approval
   CC_CODEX_START_MODE=run
   export CC_CODEX_START_MODE
+fi
+
+if [[ $CLAUDE_PROJECT_GATE -eq 1 ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: Claude project 設定ゲート: このプロジェクトには .claude か .mcp.json があり、検査結果の検証に python3 が必要ですが、ホストに見つかりません。起動を中止します" >&2
+    exit 1
+  fi
+  guard_claude_project_image_support
+  run_claude_project_preflight
+  check_claude_project_approval
 fi
 
 # 本起動（run_main_compose() の説明を参照）。終了コードは常に本 run のものを保持する。

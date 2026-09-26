@@ -221,11 +221,13 @@ elif command -v podman >/dev/null 2>&1; then
   # 承認記録の :ro と TTY/stdin 無効は provider の出力形式（短縮 / long syntax、false の省略）に
   # 依らず意味で検査する（compose_mount_is_ro / compose_tty_disabled）。
   if base=$(podman compose -f compose.yml config); then
-    for target in /etc/claude-container/codex-mcp-approved.json /etc/claude-container/mcp-approved-hash /home/node/.gitconfig; do
+    for target in /etc/claude-container/codex-mcp-approved.json /etc/claude-container/mcp-approved-hash /etc/claude-container/claude-project-approved.json /home/node/.gitconfig; do
       compose_mount_is_ro "$target" <<<"$base" || status=1
     done
     grep -qE '^\s*CC_CODEX_START_MODE:' <<<"$base" \
       || { echo "ERROR: compose.yml の environment に CC_CODEX_START_MODE がありません" >&2; status=1; }
+    grep -qE '^\s*CC_CLAUDE_START_MODE:' <<<"$base" \
+      || { echo "ERROR: compose.yml の environment に CC_CLAUDE_START_MODE がありません" >&2; status=1; }
     # 対照: 基本構成は TTY 有効なので、同じ検査が失敗しなければ検査自体が空振りしている。
     if compose_tty_disabled <<<"$base" 2>/dev/null; then
       echo "ERROR: compose.yml 単体の config に tty: true が無く、compose_tty_disabled の検査が空振りしています" >&2
@@ -237,6 +239,7 @@ elif command -v podman >/dev/null 2>&1; then
   if merged=$(podman compose -f compose.yml -f compose.codex-preflight.yml config); then
     compose_tty_disabled <<<"$merged" || status=1
     compose_mount_is_ro /etc/claude-container/codex-mcp-approved.json <<<"$merged" || status=1
+    compose_mount_is_ro /etc/claude-container/claude-project-approved.json <<<"$merged" || status=1
   else
     status=1
   fi

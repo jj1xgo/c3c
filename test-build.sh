@@ -618,6 +618,8 @@ case "\$1 \$2" in
   "image exists") exit 0 ;;
   "image inspect")
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
+    # Claude の project 設定ゲート（#163）: 作業ディレクトリに .claude がある場合（F の \$HOME 等）に照合される。
+    if [[ "\$*" == *io.c3c.claude-project-audit-protocol* ]]; then printf '%s\n' 1; fi
     exit 0 ;;
 esac
 if [[ "\$1" == "compose" ]]; then
@@ -625,6 +627,10 @@ if [[ "\$1" == "compose" ]]; then
   printf '%s\n' "\$n" > "$root/compose-calls"
   env > "$root/compose-env"; env > "$root/compose-env.\$n"
   printf '%s\n' "\$@" >> "$root/compose-args"; printf '%s\n' "\$@" > "$root/compose-args.\$n"
+  # Claude の project 設定ゲートの検査用コンテナ（#163）: 対象の設定なし（count 0）の protocol を返す。
+  if [[ "\${CC_CLAUDE_START_MODE:-}" == preflight ]]; then
+    printf '%s\n' '{"protocol_version": 1, "hash": "0000000000000000000000000000000000000000000000000000000000000000", "count": 0, "lines": []}'
+  fi
 fi
 exit 0
 DUMMY
@@ -822,11 +828,14 @@ run_launcher_tests() {
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
+  check "Claude project 設定ゲート helper（全体 hash・停止条件・判定不能・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_audit.py"
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
+  check "--agent claude の project 設定ゲート（対象判定・label・preflight・TOFU 承認・atomic 記録・env 非参照・clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_launch.py"
   check "CLI 選択記憶 helper（Git 識別・strict JSON・無書込 read・原子的 write）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_agent_preference.py"
   check "c3c 入口（symlink 解決・旧名 symlink の同一契約・parser・初回選択/記憶・本 run 終了コード保持・check/clean の無書込）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_launch.py"
   check "設定ディレクトリの選択（.c3c/旧名/なし/二重配置/型不正・symlink、check の継続と無書込、clean の独立、新旧配置の hash 同一）と Node/Codex の既定ビルド入力（同梱 default・project pin・空 opt-out・npm WARNING）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_c3c_config.py"
   check "entrypoint の agent 分岐（enum・preflight 分離・固定 home/CLI・verify→exec・Claude 順序）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_entrypoint.py"
+  check "entrypoint の Claude project 設定ゲート（preflight の fd3 分離・enum・再照合・TTY 確認・秘密より前）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_entrypoint.py"
   check "Codex 同梱 bubblewrap の解決（npm の nested/hoisted/legacy・x64/arm64・欠落/実行不能/target 外/help 4 項目の fail-closed）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_bwrap.py"
   check "Codex 起動口（同梱 bubblewrap の PATH 先頭化・冪等・空 PATH・引数と終了コードの透過・欠落/dangling/実行不能の fail-closed・entrypoint との固定値一致）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launcher.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
@@ -1668,7 +1677,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2159,6 +2168,7 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/ipv6-firewall.py" "$dest/ipv6-firewall.py"
   cp "${SCRIPT_DIR}/firewall-refresh.py" "$dest/firewall-refresh.py"
   cp "${SCRIPT_DIR}/codex-mcp-audit.py" "$dest/codex-mcp-audit.py"
+  cp "${SCRIPT_DIR}/claude-project-audit.py" "$dest/claude-project-audit.py"
   cp "${SCRIPT_DIR}/codex-launcher.sh" "$dest/codex-launcher.sh"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
@@ -2228,6 +2238,9 @@ log "## Claude Code ツール"
 check "定期更新 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/firewall-refresh.py --help
 check "IPv6 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" /usr/local/bin/ipv6-firewall.py --help
 check "Codex 審査 helper の依存モジュールと起動" podman run --rm --network=none "$IMAGE" python3 -I /usr/local/bin/codex-mcp-audit.py --help
+check "Claude project 設定ゲート helper の起動" podman run --rm --network=none "$IMAGE" python3 -I /usr/local/bin/claude-project-audit.py --help
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
+check "Claude project 設定ゲートの protocol label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-project-audit-protocol\"}}" "$1")" = 1 ]' _ "$IMAGE"
 check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version

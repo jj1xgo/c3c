@@ -12,6 +12,23 @@ case "${CC_AGENT-claude}" in
     ;;
 esac
 readonly CC_AGENT
+# Claude 経路の起動モード（#163）。preflight は project 設定ゲートの検査用コンテナで、stdout を protocol の
+# JSON 1 文書専用にする（Codex の preflight と同じく、元の stdout を fd3 へ確保して以後のログを stderr へ）。
+CLAUDE_START_MODE=""
+if [ "$CC_AGENT" = claude ]; then
+  case "${CC_CLAUDE_START_MODE-run}" in
+    run | preflight) CLAUDE_START_MODE="${CC_CLAUDE_START_MODE-run}" ;;
+    *)
+      echo "ERROR: CC_CLAUDE_START_MODE が不正です（run または preflight）: '${CC_CLAUDE_START_MODE-}'。起動を中止します" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$CLAUDE_START_MODE" = preflight ]; then
+    exec 3>&1
+    exec 1>&2
+  fi
+fi
+readonly CLAUDE_START_MODE
 CODEX_START_MODE=""
 CODEX_READ_ONLY=0
 if [ "$CC_AGENT" = codex ]; then
@@ -68,13 +85,31 @@ fi
 # なった（書けてはいけない）。plugin の解決は launcher 側の別名マウント
 # （compose.plugins-alias.yml、claude-container#98）が担う。
 
+# Claude 経路の project 設定ゲート（#163、設計 docs/superpowers/specs/2026-09-26-claude-project-settings-gate-design.md）。
+# /workspace の trust は全プロジェクトで共有されるため、リポジトリ同梱の .claude/settings*.json の hook・env・
+# helper 等は確認なしで効く。検査用コンテナ（preflight）で helper の snapshot を fd3 へ出して終了し、
+# 本起動（run）では .mcp.json ゲートの後・秘密の export より前に、host が :ro で渡した承認記録と照合する。
+# opt-out は設けない（.mcp.json ゲートと同じ理由、claude-container#29）。
+CLAUDE_PROJECT_AUDIT=/usr/local/bin/claude-project-audit.py
+CLAUDE_PROJECT_APPROVED=/etc/claude-container/claude-project-approved.json
+CLAUDE_PROJECT_ROOT=/workspace
+if [ "$CC_AGENT" = claude ] && [ "$CLAUDE_START_MODE" = preflight ]; then
+  if ! python3 -I "$CLAUDE_PROJECT_AUDIT" --root "$CLAUDE_PROJECT_ROOT" snapshot >&3; then
+    echo "ERROR: Claude project 設定ゲートの検査に失敗しました。起動を中止します" >&2
+    exit 1
+  fi
+  exec 3>&-
+  exit 0
+fi
+
 # MCP監査ゲート（stdio型サーバーの検知＋TTY確認、内部運用issue参照）。
 # .mcp.json（project-scoped、Claude Code標準機能により自動ロードされる）のうち
 # command フィールドを持つ stdio 型サーバーは、npx 等のネットワーク取得を経ずに
 # リポジトリ同梱コードとして実行できるため、ファイアウォール・再ビルドという
 # 既存の人間ゲートの対象外になる。セッション開始と同時に人間・モデルどちらの
 # 判断も挟まず実行され、export 済みトークン等を読めてしまうため、ここで TTY
-# 確認を挟む（http/sse 型は接続先をファイアウォールが審査するため対象外）。
+# 確認を挟む（http/sse 型は接続先をファイアウォールが審査するため対象外。ただし headersHelper を持つ
+# サーバーは、上の project 設定ゲートの helper が本起動の verify で止める。#163）。
 # 環境変数による opt-out は設けない。根拠は「.c3c/env が信頼できない」
 # ではなく、このゲートが対象とする帰結（セッション開始と同時の任意コード実行）に
 # 対しては opt-out という迂回経路自体を作らない、という設計判断（README「セキュリティ
@@ -137,6 +172,32 @@ if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
   else
     echo "INFO: MCP 監査: $MCP_CONFIG に stdio 型サーバーはありません。OK" >&2
   fi
+fi
+
+if [ "$CC_AGENT" = claude ]; then
+  project_rc=0
+  python3 -I "$CLAUDE_PROJECT_AUDIT" --root "$CLAUDE_PROJECT_ROOT" verify "$CLAUDE_PROJECT_APPROVED" || project_rc=$?
+  case "$project_rc" in
+    0) ;;
+    3)
+      echo "WARNING: 上の project 設定（.claude/settings*.json）がホストで承認されていないか、承認後に変わっています。hook・env・helper はセッション開始と同時に実行され、export された全ての秘密を読めます（承認は定義の承認で、スクリプトの中身は保証しません）" >&2
+      printf 'この project 設定で Claude Code を起動しますか? [y/N] ' >&2
+      if ! read -r project_confirm </dev/tty; then
+        echo "ERROR: project 設定を確認する対話可能な TTY がありません。起動を中止します" >&2
+        exit 1
+      fi
+      case "$project_confirm" in
+        y | Y | yes | YES | Yes) ;;
+        *)
+          echo "ERROR: project 設定の確認が拒否されました。起動を中止します" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
 fi
 
 # GitHub トークン配線（v4〜、claude-container#24）。SECRETS_DIR は exposure 軸で設計する:

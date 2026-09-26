@@ -28,6 +28,9 @@ CLAUDE_APPROVED = '/etc/claude-container/mcp-approved-hash'
 SECRETS_MOUNT = '/home/node/.config/claude-container/secrets'
 FIXED_BWRAP_DIR = '/usr/local/libexec/c3c/codex-bwrap'
 FIXED_PROJECT_CONFIG = '/workspace/.codex/config.toml'
+CLAUDE_PROJECT_AUDIT = '/usr/local/bin/claude-project-audit.py'
+CLAUDE_PROJECT_APPROVED = '/etc/claude-container/claude-project-approved.json'
+CLAUDE_PROJECT_ROOT = 'CLAUDE_PROJECT_ROOT=/workspace'
 
 # Codex CLI の dummy: 呼び出しをすべて記録する。protocol 2 の審査は CLI を呼ばないので、'version'/'list' が
 # 記録されたら審査が CLI に依存している回帰になる。
@@ -79,6 +82,7 @@ class EntrypointCase(unittest.TestCase):
         (self.fixture_mount_dir / 'export').mkdir(parents=True)
         self.approved = self.root / 'codex-approved.json'
         self.claude_approved = self.root / 'claude-approved'
+        self.claude_project_approved = self.root / 'claude-project-approved.json'
         self.state_path = self.root / 'state.json'
         self.state = {'calls': str(self.calls)}
         self.config_text = STDIO_ALPHA
@@ -99,7 +103,7 @@ class EntrypointCase(unittest.TestCase):
         (self.bwrap_dir / 'bwrap').symlink_to(self.bwrap_real)
         source = (ROOT / 'entrypoint.sh').read_text()
         for needle in (FIXED_HOME, FIXED_HELPER, FIXED_CLI, FIXED_APPROVED, CLAUDE_APPROVED, SECRETS_MOUNT, FIXED_BWRAP_DIR,
-                       FIXED_PROJECT_CONFIG,
+                       FIXED_PROJECT_CONFIG, CLAUDE_PROJECT_AUDIT, CLAUDE_PROJECT_APPROVED, CLAUDE_PROJECT_ROOT,
                        '/usr/local/bin/firewall-refresh.py', '/workspace/.mcp.json', 'cd -- /workspace'):
             self.assertIn(needle, source, f'entrypoint.sh に固定パス {needle} がない')
         # 固定パスを試験用コピーへ置換する。trust override の "/workspace" は helper 側の固定値と一致させるため置換しない。
@@ -108,6 +112,9 @@ class EntrypointCase(unittest.TestCase):
                   .replace(FIXED_HOME, str(self.codex_home)).replace(FIXED_APPROVED, str(self.approved))
                   .replace(CLAUDE_APPROVED, str(self.claude_approved)).replace(SECRETS_MOUNT, str(self.fixture_mount_dir))
                   .replace(FIXED_BWRAP_DIR, str(self.bwrap_dir))
+                  .replace(CLAUDE_PROJECT_AUDIT, str(ROOT / 'claude-project-audit.py'))
+                  .replace(CLAUDE_PROJECT_APPROVED, str(self.claude_project_approved))
+                  .replace(CLAUDE_PROJECT_ROOT, 'CLAUDE_PROJECT_ROOT=' + str(self.workspace))
                   .replace('/usr/local/bin/firewall-refresh.py', str(self.bin / 'refresh'))
                   .replace('/workspace/.mcp.json', str(self.workspace / '.mcp.json'))
                   .replace('cd -- /workspace', 'cd -- ' + str(self.workspace)))
@@ -119,7 +126,7 @@ class EntrypointCase(unittest.TestCase):
     def write_project_config(self, text):
         self.config_text = text
 
-    def run_entrypoint(self, agent=None, mode=None, read_only=None, tty_answer=None):
+    def run_entrypoint(self, agent=None, mode=None, read_only=None, tty_answer=None, claude_mode=None):
         self.state_path.write_text(json.dumps(self.state))
         if self.config_text is None:
             self.project_config.unlink(missing_ok=True)
@@ -129,7 +136,8 @@ class EntrypointCase(unittest.TestCase):
         self.record.write_text('')
         self.calls.write_text('')
         env = dict(self.env)
-        for key, value in (('CC_AGENT', agent), ('CC_CODEX_START_MODE', mode), ('CC_CODEX_READ_ONLY', read_only)):
+        for key, value in (('CC_AGENT', agent), ('CC_CODEX_START_MODE', mode), ('CC_CODEX_READ_ONLY', read_only),
+                           ('CC_CLAUDE_START_MODE', claude_mode)):
             if value is not None:
                 env[key] = value
         result = subprocess.run(['bash', str(self.entrypoint)], env=env, cwd=self.root, text=True, capture_output=True,
@@ -415,12 +423,15 @@ class ComposeContractTests(EntrypointCase):
             'unknown mode': ({'CC_AGENT': 'codex', 'CC_CODEX_START_MODE': 'verify'}, 'CC_CODEX_START_MODE', 'verify'),
             'empty read-only': ({'CC_AGENT': 'codex', 'CC_CODEX_READ_ONLY': ''}, 'CC_CODEX_READ_ONLY', ''),
             'unknown read-only': ({'CC_AGENT': 'codex', 'CC_CODEX_READ_ONLY': 'yes'}, 'CC_CODEX_READ_ONLY', 'yes'),
+            'empty claude mode': ({'CC_AGENT': 'claude', 'CC_CLAUDE_START_MODE': ''}, 'CC_CLAUDE_START_MODE', ''),
+            'unknown claude mode': ({'CC_AGENT': 'claude', 'CC_CLAUDE_START_MODE': 'verify'}, 'CC_CLAUDE_START_MODE', 'verify'),
         }
         for label, (overrides, key, expected) in cases.items():
             with self.subTest(case=label):
                 values = self.resolved(overrides)
                 self.assertEqual(values[key], expected, values)
-                result = self.run_entrypoint(values['CC_AGENT'], values['CC_CODEX_START_MODE'], values['CC_CODEX_READ_ONLY'])
+                result = self.run_entrypoint(values['CC_AGENT'], values['CC_CODEX_START_MODE'], values['CC_CODEX_READ_ONLY'],
+                                             claude_mode=values.get('CC_CLAUDE_START_MODE'))
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(key, result.stderr)
                 self.assertEqual(self.records, [])

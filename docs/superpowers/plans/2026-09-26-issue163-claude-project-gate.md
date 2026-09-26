@@ -1898,6 +1898,9 @@ main のチェックアウト（`git worktree add` した別ディレクトリ�
 
 - 1 巡目（計画 66890e9）: Codex（gpt-6-astra、`codex exec --sandbox read-only`）は「修正後に渡せる」（Important 3: 権限エラーの経路を「対象なし」にする `resolve()`、改行を禁止文字として拾って必ず失敗する表示テスト、秘密の export との前後と atomic 書き込みを判別できないテスト。Minor 4: hash の符号化のテスト、`guard_fail` と `guard_error` の前提、argparse の rc 2、存在しない `--clean-all`）。Claude（claude-opus-5-5、headless、Read/Grep/Glob）は「修正後に渡せる」（Important 5: `tests/test_network_timeouts.py` の固定リストが赤になる、秘密の前後を判別できないテスト、env による上書きを判別できないテスト、README が挙動変更と別コミット、Task 7 が自分の制約を満たせない。Minor 11）。秘密の前後のテストは両者が独立に出した。反映: 全 Important（確認限定 1 巡目で両者が独立に出した、`test_codex_selection_resolves_to_run_or_preflight_only_when_explicit` の期待値の漏れも含む）と、Minor のうち M-2（未定義関数の削除）・M-3（python3 テストの文言）・M-4（compose の契約テスト）・M-5（`--check` の確定コード）・M-6（`ensure_ascii=True`）・M-7（C1 を限界に）・M-8（entrypoint のコメント）・M-9（移行手順を README へ）・M-10（symlink の事前確認）・M-11（未使用 import）、Codex M-1〜M-4。未対応: Codex M-1 のうち「同じ読み取り結果を使うこと」の回帰テスト（実装の構造で保証し、専用テストは置かない。helper は各ファイルを 1 回だけ読み、そのバイト列から判定・表示・hash を作る）と、非 UTF-8 パス（hash 対象のパスは固定の ASCII 名なので該当しない）。
 
+- 確認限定 1 巡目（efe639e）: 両者とも前回の Important はすべて解消。両者が独立に同じ新規 Important（`test_codex_selection_resolves_to_run_or_preflight_only_when_explicit` の期待値の漏れ）を出し、「修正後に渡せる」。
+- 確認限定 2 巡目（bcfe898）: 両者とも「解消」「実装に渡せる」。
+
 ## 自己レビュー（計画者）
 
 - spec の網羅: 目的・成功条件（Task 1〜5）、審査対象と判定（Task 1）、確認の表示（Task 1 の display、Task 3・4 の表示）、処理の流れ（Task 3・4）、承認記録（Task 4）、`--check`（Task 5。spec で計画に送った「検査用コンテナを起動するか」は、Codex と同じく起動せず、ホストで helper を参考実行する方に決めた）、旧イメージ（Task 4 の label と明示ビルド）、文書（Task 6）、検証（Task 1〜5 のテストと Task 7）、バージョン（下記）。

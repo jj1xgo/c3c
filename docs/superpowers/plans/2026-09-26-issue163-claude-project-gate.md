@@ -17,13 +17,13 @@
 - 承認記録のコンテナ内パス: `/etc/claude-container/claude-project-approved.json`（`:ro`）。compose の source は `${CLAUDE_PROJECT_APPROVAL_FILE:-/dev/null}`。
 - 承認記録のホスト側パス: `$HOME/.local/state/claude-container/mcp-approvals/claude-project/$PROJECT_NAME.json`。内容は `{"protocol_version":1,"hash":"<64 桁小文字 hex>"}` + 改行。書き込みは umask 077、ディレクトリ 700、同じディレクトリの一時ファイルから `mv -f` の atomic replace。
 - 起動モード変数: `CC_CLAUDE_START_MODE`（`run` | `preflight`）。compose の既定は `${CC_CLAUDE_START_MODE-run}`（未設定のときだけ既定。空文字は entrypoint で拒否）。
-- helper の終了コード: `0` 通す（対象なし・記録と一致・snapshot 成功）、`1` 止める（止める判定・判定不能・引数不正）、`3` 確認が要る（verify で未承認・変更あり）。
+- helper の終了コード: `0` 通す（対象なし・記録と一致・snapshot 成功・`--help`）、`1` 止める（止める判定・判定不能・引数不正。argparse の誤りも `SystemExit` を捕まえて 1 に寄せる）、`3` 確認が要る（verify で未承認・変更あり）。snapshot の JSON は `ensure_ascii=True` で出す（stdout の符号化に依存しない）。
 - hash の対象: `.claude/settings.json` と `.claude/settings.local.json` のファイル全体（存在するものだけ）。符号化: `sha256(b'c3c-claude-project-audit\x00v1\x00' + Σ(len(path) 8 byte BE + path + len(data) 8 byte BE + data))`、path は相対パスの UTF-8 バイト列で昇順。
 - 上限: 1 ファイル 1 MiB（1048576 バイト）を超えたら判定不能。表示は 1 ファイル 200 行まで（超えたら省略行数を明示）。
 - 止める判定: `enabledPlugins` に値が `false` でないエントリ、`extraKnownMarketplaces` が空でない、`env` に `CLAUDE_CODE_PLUGIN_` で始まる key、`.claude/skills/*/.claude-plugin/plugin.json` が存在、`.mcp.json` の `mcpServers.<name>` に `headersHelper` key。
 - 環境変数による opt-out は作らない。launcher は `CLAUDE_PROJECT_APPROVAL_FILE`・`CC_CLAUDE_START_MODE` を全分岐で明示 export し、env ファイル由来の値を使わない。
-- 対象 repo で git を実行しない。ホストの `~/.claude.json` に書かない。
-- 日本語で書く（README.md「表記」節）。挙動を変えたら README.md の該当節も同じコミットで更新する。ファイルを編集したら `./lint.sh` を実行し、終了コード 0・警告ゼロを確認する。
+- 対象 repo で git を実行しない。c3c（launcher・entrypoint・helper）はホストの `~/.claude.json` に書かない（Claude Code 本体は従来どおり書く）。
+- 日本語で書く（README.md「表記」節）。挙動を変えたら README.md の該当節も同じコミットで更新する（各 Task の README の Step はそのためにある。Task 6 は README 以外の文書）。ファイルを編集したら `./lint.sh` を実行し、終了コード 0・警告ゼロを確認する。
 
 ## Review Focus
 
@@ -137,6 +137,15 @@ class SnapshotTests(AuditCase):
         self.put('.claude/settings.json', json.dumps(HOOKS, indent=2).encode())
         self.assertNotEqual(self.snapshot()['hash'], first)
 
+    def test_hash_is_independent_of_read_order_and_length_prefixed(self):
+        a = self.put('.claude/settings.json', {'a': 1})
+        b = self.put('.claude/settings.local.json', {'b': 2})
+        forward = expected_hash([('.claude/settings.json', a), ('.claude/settings.local.json', b)])
+        self.assertEqual(forward, expected_hash([('.claude/settings.local.json', b), ('.claude/settings.json', a)]))
+        self.assertEqual(self.snapshot()['hash'], forward)
+        # 区切りの衝突: 内容の境界をずらしても同じ hash にならない（長さの前置き）。
+        self.assertNotEqual(expected_hash([('x', b'ab'), ('y', b'c')]), expected_hash([('x', b'a'), ('y', b'bc')]))
+
     def test_local_settings_is_always_hashed(self):
         self.put('.claude/settings.local.json', {'permissions': {'allow': []}})
         self.assertEqual(self.snapshot()['count'], 1)
@@ -148,7 +157,8 @@ class SnapshotTests(AuditCase):
         joined = '\n'.join(lines)
         self.assertIn('BASH_ENV', joined)
         self.assertIn('./x.sh', joined)
-        self.assertNotRegex(joined, '[\x00-\x1f\x7f]')
+        for line in lines:
+            self.assertNotRegex(line, '[\x00-\x1f\x7f]')
 
     def test_display_truncates_after_200_lines_and_says_so(self):
         body = '{\n' + ',\n'.join(f'"k{i}": {i}' for i in range(300)) + '\n}'
@@ -266,6 +276,20 @@ class UndecidableTests(AuditCase):
         skills.chmod(0)
         self.addCleanup(skills.chmod, 0o755)
         self.assert_blocked('判定できません')
+
+    @unittest.skipIf(os.geteuid() == 0, 'root は検索権限を無視する')
+    def test_unsearchable_claude_dir_is_undecidable_not_absent(self):
+        self.put('.claude/settings.json', HOOKS)
+        claude = self.root / '.claude'
+        claude.chmod(0o600)
+        self.addCleanup(claude.chmod, 0o755)
+        self.assert_blocked('判定できません')
+
+    def test_bad_arguments_exit_1_and_help_exits_0(self):
+        bad = subprocess.run([sys.executable, '-I', str(HELPER), 'snapshot'], capture_output=True, text=True, timeout=30)
+        self.assertEqual(bad.returncode, 1)
+        ok = subprocess.run([sys.executable, '-I', str(HELPER), '--help'], capture_output=True, text=True, timeout=30)
+        self.assertEqual(ok.returncode, 0)
 
     def test_relative_root_is_rejected(self):
         result = subprocess.run([sys.executable, '-I', str(HELPER), '--root', 'workspace', 'snapshot'],
@@ -386,8 +410,13 @@ def resolve(root_real, rel):
     current = root_real
     for part in rel.split('/'):
         candidate = os.path.join(current, part)
-        if not os.path.lexists(candidate):
+        # lexists は権限エラーでも False を返すので使わない。無いことだけを「対象なし」にする。
+        try:
+            os.lstat(candidate)
+        except (FileNotFoundError, NotADirectoryError):
             return None
+        except OSError as exc:
+            raise Undecidable(f'{rel} を確かめられません（{sanitize(exc.strerror or exc)}）') from None
         real = os.path.realpath(candidate)
         try:
             os.stat(real)
@@ -569,12 +598,16 @@ def parse_args(argv):
 
 
 def main(argv=None):
-    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        args = parse_args(sys.argv[1:] if argv is None else argv)
+    except SystemExit as exc:
+        # argparse の誤り（rc 2）も「止める」に寄せる。--help は 0。
+        return 0 if exc.code in (0, None) else EXIT_STOP
     try:
         if not os.path.isabs(args.root):
             raise Undecidable('--root には絶対パスを指定してください')
         if args.command == 'snapshot':
-            sys.stdout.write(json.dumps(snapshot(args.root), ensure_ascii=False) + '\n')
+            sys.stdout.write(json.dumps(snapshot(args.root), ensure_ascii=True) + '\n')
             sys.stdout.flush()
             return 0
         return verify(args.root, args.record)
@@ -625,6 +658,9 @@ git commit -m "feat: Claude 経路の project 設定ゲート helper を追加�
 - Modify: `compose.codex-preflight.yml`（コメントだけ。Claude の検査用コンテナでも同じ override を使う）
 - Modify: `lint.sh`（`:ro` の検査対象と environment の検査）
 - Modify: `test-build.sh`（`run_config_ro_launcher_tests()` のコピー一覧、`stage_common_context()`、実イメージの helper 起動確認）
+- Modify: `tests/test_network_timeouts.py`（run_dir へコピーする固定アセットのタプル。`stage_build_context` を `set -e` で呼ぶので、足さないと赤になる）
+- Modify: `tests/test_c3c_config.py`（固定アセットを project 側から上書きできないことの一覧）
+- Modify: `tests/test_codex_entrypoint.py`（`ComposeContractTests` の compose 実解決の key）
 
 **Interfaces:**
 - Consumes: Task 1 の `claude-project-audit.py`
@@ -712,18 +748,29 @@ check "Claude project 設定ゲート helper の起動" podman run --rm --networ
 check "Claude project 設定ゲートの protocol label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-project-audit-protocol\"}}" "$1")" = 1 ]' _ "$IMAGE"
 ```
 
-- [ ] **Step 7: 検証する**
+- [ ] **Step 7: 固定リストを持つ既存テストを直す**
+
+`tests/test_network_timeouts.py` の `for file in ('entrypoint.sh', ..., 'codex-mcp-audit.py', ...)` のタプルに `'claude-project-audit.py'` を加える。`tests/test_c3c_config.py` の `test_fixed_boundary_assets_cannot_be_overridden_from_the_new_layout` の `for name in (...)` に `'claude-project-audit.py'` を加える（旧配置の同種のテストがあれば同じく加える: `grep -n "'codex-mcp-audit.py'" tests/*.py` で固定リストをすべて洗い出し、同じ扱いにする）。
+
+`tests/test_codex_entrypoint.py` の `ComposeContractTests` で、`KEYS` に `'CC_CLAUDE_START_MODE'` を加え、key の正規表現 `(CC_AGENT|CC_CODEX_START_MODE|CC_CODEX_READ_ONLY)` に `|CC_CLAUDE_START_MODE` を加える。`test_unset_defaults_reach_entrypoint_as_claude_run` の期待値の辞書に `'CC_CLAUDE_START_MODE': 'run'` を加える。`test_explicit_empty_or_unknown_values_are_not_defaulted_and_are_rejected` の表に次の 2 行を足す（`run_entrypoint` の呼び出しに `claude_mode=values.get('CC_CLAUDE_START_MODE')` を渡す。`claude_mode` 引数は Task 3 Step 1 で足すので、この 2 行の追加は Task 3 Step 1 の後に行う）:
+
+```python
+            'empty claude mode': ({'CC_AGENT': 'claude', 'CC_CLAUDE_START_MODE': ''}, 'CC_CLAUDE_START_MODE', ''),
+            'unknown claude mode': ({'CC_AGENT': 'claude', 'CC_CLAUDE_START_MODE': 'verify'}, 'CC_CLAUDE_START_MODE', 'verify'),
+```
+
+- [ ] **Step 8: 検証する**
 
 Run: `./lint.sh`
 Expected: `lint OK`、終了コード 0（Compose 検証を含む。環境制約でスキップした場合は `not run` と理由を記録する）
 
 Run: `./test-build.sh --launcher-only`
-Expected: `FAIL=0`（アセット一覧の変更で hash 系のテストが落ちたら、一覧の 3 か所が揃っているかを見直す）
+Expected: `FAIL=0`（ここでは entrypoint がまだ `CC_CLAUDE_START_MODE` を検証しないので、ComposeContractTests の拒否の 2 行は Task 3 で足す。落ちたテストがあれば、固定リストを持つテストの漏れを先に疑う）
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add Dockerfile.claude c3c compose.yml compose.codex-preflight.yml lint.sh test-build.sh
+git add Dockerfile.claude c3c compose.yml compose.codex-preflight.yml lint.sh test-build.sh tests/test_network_timeouts.py tests/test_c3c_config.py tests/test_codex_entrypoint.py
 git commit -m "feat: project 設定ゲートの helper をイメージ・アセット・compose に登録する（#163）"
 ```
 
@@ -736,6 +783,7 @@ git commit -m "feat: project 設定ゲートの helper をイメージ・アセ�
 - Modify: `tests/test_codex_entrypoint.py`（固定パスの置換に新しい 3 つを加える）
 - Create: `tests/test_claude_project_entrypoint.py`
 - Modify: `test-build.sh`（`run_launcher_tests()` に 1 行登録）
+- Modify: `README.md`（ファイル構成の `entrypoint.sh` の項と `claude-project-audit.py` の項、「変更後の確認」節）
 
 **Interfaces:**
 - Consumes: helper の CLI（Task 1）、`CC_CLAUDE_START_MODE`（Task 2）
@@ -776,18 +824,37 @@ helper は実物の claude-project-audit.py。確認の応答は専用 PTY か�
 import fcntl
 import json
 import os
-from pathlib import Path
 import pty
 import subprocess
+import sys
 import termios
 import unittest
 
-from test_codex_entrypoint import EntrypointCase
+from test_codex_entrypoint import EntrypointCase, ROOT
 
 HOOKS = {'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'echo hi'}]}]}}
 
+# helper の呼び出し時点の環境を記録してから実物へ exec する wrapper（entrypoint は python3 -I で呼ぶので Python で書く）。
+# 秘密（secrets/export の MCP_TOKEN）が helper の時点で未設定であることを観測し、ゲートが秘密の export より前にあることを確かめる。
+AUDIT_WRAPPER = '''import os, sys
+with open(os.environ['RECORD'], 'a') as out:
+    out.write('audit MCP_TOKEN=%%s\\n' %% os.environ.get('MCP_TOKEN', 'unset'))
+os.execv(sys.executable, [sys.executable, '-I', %r] + sys.argv[1:])
+'''
+
 
 class ClaudeProjectEntrypointCase(EntrypointCase):
+    def setUp(self):
+        super().setUp()
+        wrapper = self.root / 'audit-wrapper.py'
+        wrapper.write_text(AUDIT_WRAPPER % str(ROOT / 'claude-project-audit.py'))
+        text = self.entrypoint.read_text()
+        self.assertIn(str(ROOT / 'claude-project-audit.py'), text)
+        self.entrypoint.write_text(text.replace(str(ROOT / 'claude-project-audit.py'), str(wrapper)))
+
+    def audit_records(self):
+        return [r for r in self.records if r.startswith('audit ')]
+
     def put(self, rel, doc):
         path = self.workspace / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -903,9 +970,12 @@ class RunTests(ClaudeProjectEntrypointCase):
     def test_gate_runs_before_secrets_are_exported(self):
         (self.fixture_mount_dir / 'export' / 'MCP_TOKEN').write_text('tok\n')
         self.put('.claude/settings.json', HOOKS)
+        self.approve_from_preflight()
         result = self.run_entrypoint('claude', claude_mode='run')
-        self.assertEqual(result.returncode, 1)
-        self.assertFalse(any('MCP_TOKEN=tok' in r for r in self.records))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # 起動まで進むケースで、helper の時点では秘密が未設定、claude の時点では設定済み。
+        self.assertEqual(self.audit_records(), ['audit MCP_TOKEN=unset'])
+        self.assertTrue(any('MCP_TOKEN=tok' in r for r in self.records if r.startswith('claude-env')))
 
 
 if __name__ == '__main__':
@@ -992,6 +1062,14 @@ if [ "$CC_AGENT" = claude ]; then
 fi
 ```
 
+- [ ] **Step 4b: `.mcp.json` ゲートのコメントを直す**
+
+`entrypoint.sh` の `.mcp.json` ゲートのコメント「（http/sse 型は接続先をファイアウォールが審査するため対象外）」の直後に「ただし headersHelper を持つサーバーは、下の project 設定ゲートの helper が止める（#163）」を足す（下は上の (b) のブロックを指す。位置関係に合わせて「上の」「下の」を直す）。
+
+- [ ] **Step 4c: ComposeContractTests に拒否の 2 行を足す**
+
+Task 2 Step 7 で保留した `'empty claude mode'`・`'unknown claude mode'` の 2 行を、`tests/test_codex_entrypoint.py` の `test_explicit_empty_or_unknown_values_are_not_defaulted_and_are_rejected` の表へ足し、`run_entrypoint` の呼び出しに `claude_mode=values.get('CC_CLAUDE_START_MODE')` を渡す。
+
 - [ ] **Step 5: テストが通ることを確かめる**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p "test_*entrypoint.py" -v`
@@ -1005,13 +1083,17 @@ Expected: PASS（既存の Codex・IPv6 の entrypoint テストも含む）
   check "entrypoint の Claude project 設定ゲート（preflight の fd3 分離・enum・再照合・TTY 確認・秘密より前）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_entrypoint.py"
 ```
 
-- [ ] **Step 7: lint を通して Commit**
+- [ ] **Step 7: README を同じコミットで直す**
+
+README のファイル構成の一覧で、`entrypoint.sh` の項に「Claude 経路では、`.mcp.json` ゲートの後・秘密の export より前に project 設定ゲート（`claude-project-audit.py` の verify）を通す。`CC_CLAUDE_START_MODE=preflight` の検査用コンテナでは snapshot だけを出して終了する」を足す。`codex-mcp-audit.py` の項の直後に `claude-project-audit.py` の項（Claude 経路の project 設定ゲート helper。`snapshot` と `verify`、終了コード 0/1/3、#163）を足す。「変更後の確認」節に「`claude-project-audit.py` と project 設定ゲート（`entrypoint.sh` のゲート、`c3c` の `run_claude_project_preflight()`・`check_claude_project_approval()`）の変更も `--launcher-only` に含む。単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_claude_project_*.py'`。実イメージの helper と label は `test-build.sh` の通常モードで確認する」を足す。
+
+- [ ] **Step 8: lint を通して Commit**
 
 Run: `./lint.sh`
 Expected: `lint OK`
 
 ```bash
-git add entrypoint.sh tests/test_codex_entrypoint.py tests/test_claude_project_entrypoint.py test-build.sh
+git add entrypoint.sh tests/test_codex_entrypoint.py tests/test_claude_project_entrypoint.py test-build.sh README.md
 git commit -m "feat: entrypoint に Claude project 設定ゲートの検査と再照合を足す（#163）"
 ```
 
@@ -1024,10 +1106,11 @@ git commit -m "feat: entrypoint に Claude project 設定ゲートの検査と�
 - Modify: `tests/test_codex_launch.py`（fake podman を Claude の label と preflight に対応させ、記録する env を足す）
 - Create: `tests/test_claude_project_launch.py`
 - Modify: `test-build.sh`（`run_launcher_tests()` に 1 行登録）
+- Modify: `README.md`（「セキュリティモデル」節、「MCP サーバーの追加」節の近くの小節、移行手順）
 
 **Interfaces:**
 - Consumes: protocol（Task 1）、label と compose（Task 2）、entrypoint の preflight（Task 3）
-- Produces: bash 関数 `claude_project_gate_needed`（rc 0 = 対象の候補あり）、`guard_claude_project_image_support`、`run_claude_project_preflight`（`CLAUDE_PROJECT_HASH`・`CLAUDE_PROJECT_COUNT`・`CLAUDE_PROJECT_DISPLAY[]` を設定）、`claude_project_record_content <hash>`、`write_claude_project_record <hash>`、`check_claude_project_approval`、`validate_claude_project_record_file <path>`。変数 `CLAUDE_PROJECT_APPROVAL_DIR`・`CLAUDE_PROJECT_APPROVAL_RECORD`（`readonly`）。
+- Produces: bash 関数 `claude_project_gate_needed`（rc 0 = 対象の候補あり）、`guard_claude_project_image_support`、`run_claude_project_preflight`（`CLAUDE_PROJECT_HASH`・`CLAUDE_PROJECT_COUNT`・`CLAUDE_PROJECT_DISPLAY[]` を設定）、`claude_project_record_content <hash>`、`write_claude_project_record <hash>`、`check_claude_project_approval`。変数 `CLAUDE_PROJECT_APPROVAL_DIR`・`CLAUDE_PROJECT_APPROVAL_RECORD`（`readonly`）。
 
 - [ ] **Step 1: fake podman を拡張する**
 
@@ -1057,9 +1140,11 @@ tests/test_codex_launch.py の LaunchCase（隔離 HOME・fixture project・fake
 import json
 import os
 from pathlib import Path
+import shutil
+import sys
 import unittest
 
-from test_codex_launch import LaunchCase, PREFLIGHT_OVERRIDE
+from test_codex_launch import LaunchCase
 
 HASH_A = 'a' * 64
 HASH_B = 'b' * 64
@@ -1096,7 +1181,6 @@ class ClaudeProjectLaunchCase(LaunchCase):
 
 class GateSelectionTests(ClaudeProjectLaunchCase):
     def test_no_targets_skips_gate_even_on_old_image(self):
-        import shutil
         shutil.rmtree(self.proj / '.claude')
         self.state['claude_label'] = ''
         result = self.launch()
@@ -1107,7 +1191,6 @@ class GateSelectionTests(ClaudeProjectLaunchCase):
         self.assertEqual(self.main_runs()[0]['env']['CC_CLAUDE_START_MODE'], 'run')
 
     def test_mcp_json_alone_or_symlinked_claude_dir_triggers_gate(self):
-        import shutil
         shutil.rmtree(self.proj / '.claude')
         (self.proj / '.mcp.json').write_text('{}')
         self.state['claude_preflight'] = {'stdout': claude_protocol(count=0)}
@@ -1129,7 +1212,6 @@ class GateSelectionTests(ClaudeProjectLaunchCase):
 
     def test_missing_host_python_blocks(self):
         # PATH から python3 だけを外す。fake podman は python3 で書かれているので、shebang を絶対パスに替える。
-        import sys
         podman = self.bin / 'podman'
         text = podman.read_text().split('\n', 1)[1]
         podman.write_text('#!' + sys.executable + '\n' + text)
@@ -1146,6 +1228,8 @@ class GateSelectionTests(ClaudeProjectLaunchCase):
         result = self.run_launcher('--agent', 'claude', str(self.proj),
                                    env_extra={'PATH': str(self.bin) + ':' + str(bare)})
         self.assertNotEqual(result.returncode, 0)
+        # CLI 選択記憶も python3 不在の WARNING を出すので、ゲート固有の文言で確かめる。
+        self.assertIn('Claude project 設定ゲート', result.stderr)
         self.assertIn('python3', result.stderr)
         self.assertEqual(self.main_runs(), [])
 
@@ -1219,11 +1303,36 @@ class ApprovalTests(ClaudeProjectLaunchCase):
         self.assertEqual(self.main_runs(), [])
 
     def test_env_file_cannot_set_claude_gate_variables(self):
+        # 承認済みで本起動まで進め、本起動へ渡る値が env ファイル・シェル環境ではなく launcher の値であることを見る。
+        record = self.approve_claude()
         evil = self.root / 'evil.json'
-        evil.write_text('{"protocol_version":1,"hash":"%s"}\n' % HASH_A)
+        evil.write_text(record.read_text())
         (self.conf / 'env').write_text(f'CLAUDE_PROJECT_APPROVAL_FILE={evil}\nCC_CLAUDE_START_MODE=preflight\n')
-        result = self.launch()
+        shell = {'CLAUDE_PROJECT_APPROVAL_FILE': str(evil), 'CC_CLAUDE_START_MODE': 'preflight'}
+        result = self.launch(env_extra=shell)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = self.main_runs()[0]['env']
+        self.assertEqual(run['CLAUDE_PROJECT_APPROVAL_FILE'], str(record))
+        self.assertEqual(run['CC_CLAUDE_START_MODE'], 'run')
+        self.assertIn('CLAUDE_PROJECT_APPROVAL_FILE', result.stderr)  # 許可リスト外の key の警告
+        # 対象なしの経路でも launcher の値（空と run）になる。
+        shutil.rmtree(self.proj / '.claude')
+        result = self.launch(env_extra=shell)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = self.main_runs()[0]['env']
+        self.assertEqual(run['CLAUDE_PROJECT_APPROVAL_FILE'], '')
+        self.assertEqual(run['CC_CLAUDE_START_MODE'], 'run')
+
+    def test_record_write_failure_keeps_old_record_and_cleans_temp(self):
+        record = self.approve_claude(HASH_B)
+        real_mv = shutil.which('mv')
+        fake = self.bin / 'mv'
+        fake.write_text(f'#!/bin/sh\ncase "$*" in *claude-project*) exit 1 ;; esac\nexec {real_mv} "$@"\n')
+        fake.chmod(0o755)
+        result = self.launch(tty=True, answer='y')
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn(HASH_B, record.read_text())
+        self.assertEqual(list(record.parent.glob('.tmp.*')), [])
         self.assertEqual(self.main_runs(), [])
 
     def test_codex_path_exports_empty_claude_gate_variables(self):
@@ -1537,10 +1646,24 @@ Expected: PASS（`test_codex_launch.py`・`test_c3c_launch.py` を含む）。py
 Run: `./lint.sh && ./test-build.sh --launcher-only`
 Expected: `lint OK`、`FAIL=0`
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 9: README を同じコミットで直す**
+
+(a) 「セキュリティモデル」節の「Claude 経路で `.mcp.json` に追加ゲートを設ける理由は…」の段落の後に、次の段落を足す:
+
+```markdown
+**`/workspace` の trust は全プロジェクトで共有される**（#163）: Claude Code は workspace trust を `~/.claude.json` の `projects["<repo root>"]` に保存する。claude-container はどのプロジェクトも `/workspace` にマウントし `~/.claude.json` を共有するため、一度 trust を受け入れると以降どのリポジトリも trust 済みで開き、リポジトリ同梱の `.claude/settings.json`・`.claude/settings.local.json` の hook・`env`・`apiKeyHelper` 等の helper・`statusLine`・allow 規則が確認なしで効く。これは #29 の基準（セッション開始と同時の任意コード実行）に当たるため、Claude 経路では project 設定ゲートを設けている: この 2 ファイルを検査用コンテナで読み、ファイル全体の hash が初回または前回承認から変わっていればホストで内容を表示して確認する。project 設定での plugin の有効化（`enabledPlugins`）・plugin の読み込み先を変える `env`（`CLAUDE_CODE_PLUGIN_*`）・`extraKnownMarketplaces`・skills-directory plugin（`.claude/skills/*/.claude-plugin/plugin.json`）・`.mcp.json` の `headersHelper` は、確認の前に起動を止める。対象外（残る経路）は [SECURITY-CLAIMS の C-5](SECURITY-CLAIMS.md#c-5) を参照（skills・agents・commands の frontmatter と本文、承認後のセッション中の変更、ホスト側の trust など）。
+```
+
+同じ節の「http／sse タイプはこのゲートの対象外だが、接続先はファイアウォールの許可リストが審査する。」の直後に「ただし `headersHelper` を持つサーバーは、project 設定ゲートが起動前に止める。」を足す。
+
+(b) 「MCP サーバーの追加」節の末尾に小節「リポジトリの Claude 設定の確認（project 設定ゲート）」を足し、次を書く: 対象ファイル（`.claude/settings.json`・`.claude/settings.local.json`。未追跡の local も対象）、初回と変更時に内容が表示され確認が出ること、承認記録の場所（`~/.local/state/claude-container/mcp-approvals/claude-project/`）、TTY が無いと未承認のまま起動しないこと、ホストで承認した後・本起動の前に変わった場合はコンテナ内で確認が出ること、止まる条件（(a) の列挙と、判定できないとき: 壊れた JSON・`/workspace` の外を指す symlink・読めないファイル等）、`.claude` か `.mcp.json` を持つ repo は対応 label の無い旧イメージでは起動せず `-b` を案内すること、`--clean <ディレクトリ>` と引数なしの `--clean` で記録が消えること。
+
+(c) 同じ小節に「既存の利用者への影響と移行」を書く: ① `.claude` か `.mcp.json` を持つ repo は `-b` で作り直す（`--check` が `[FAIL]` と `-b` の案内を出す）。② project の `.claude/settings*.json` で plugin を有効にしている repo は起動しなくなる。plugin は user 設定（`~/.claude/settings.json`）で有効にする（`--check` が `[FAIL]` で知らせる）。③ 未承認の repo を TTY なし（スクリプト等）で起動していた場合は、一度対話で起動して承認する。
+
+- [ ] **Step 10: Commit**
 
 ```bash
-git add c3c tests/test_codex_launch.py tests/test_claude_project_launch.py test-build.sh
+git add c3c tests/test_codex_launch.py tests/test_claude_project_launch.py test-build.sh README.md
 git commit -m "feat: launcher に Claude project 設定ゲートを組み込む（#163）"
 ```
 
@@ -1551,6 +1674,7 @@ git commit -m "feat: launcher に Claude project 設定ゲートを組み込む�
 **Files:**
 - Modify: `c3c`（`check_one_project()` の `.mcp.json` ゲートの診断の直前）
 - Modify: `tests/test_claude_project_launch.py`（`CheckTests` を追加）
+- Modify: `README.md`（`--check` の出力の説明）
 
 **Interfaces:**
 - Consumes: `claude_project_gate_needed`、`guard_claude_project_image_support`、`claude_project_record_content`（Task 4）、helper の `snapshot`（Task 1）
@@ -1568,7 +1692,6 @@ class CheckTests(ClaudeProjectLaunchCase):
         return self.run_launcher('--check', '--agent', 'claude', str(self.proj))
 
     def test_no_targets_is_ok(self):
-        import shutil
         shutil.rmtree(self.proj / '.claude')
         result = self.check()
         self.assertIn('[OK]   Claude project 設定ゲート: 対象なし', result.stdout)
@@ -1600,7 +1723,8 @@ class CheckTests(ClaudeProjectLaunchCase):
     def test_old_image_label_is_fail_with_rebuild_hint(self):
         self.state['claude_label'] = ''
         result = self.check()
-        self.assertIn('-b', result.stdout + result.stderr)
+        self.assertIn('[FAIL] Claude project 設定ゲート: イメージが未対応', result.stdout)
+        self.assertIn('-b', result.stdout)
         self.assertNotEqual(result.returncode, 0)
 
     def test_codex_check_says_not_used(self):
@@ -1614,7 +1738,7 @@ Expected: FAIL
 
 - [ ] **Step 2: 診断を実装する**
 
-`check_one_project()` の `# Claude の .mcp.json ゲートの診断は Claude 経路だけ。` のコメントの直前に:
+`check_one_project()` の `# Claude の .mcp.json ゲートの診断は Claude 経路だけ。` のコメントの直前に次を足す。この関数は `set -e` の下で動くので、失敗しうるコマンドは `|| rc=$?` か `if` で受ける。`[FAIL]` は stdout へ出して `CHECK_HAS_ERROR=1` にする（`guard_fail` は `[FAIL]` を付けず stderr に出すだけなので、label の確認では `guard_fail` の後に `[FAIL]` 行を足す）。
 
 ```bash
   # Claude の project 設定ゲート（#163）。--check は検査用コンテナを起動しない。ホストに python3 があれば
@@ -1624,108 +1748,106 @@ Expected: FAIL
   elif ! claude_project_gate_needed; then
     echo "[OK]   Claude project 設定ゲート: 対象なし（.claude も .mcp.json も無い）"
   else
-    if podman image exists "$IMAGE_NAME" 2>/dev/null; then
-      guard_claude_project_image_support || true
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "[SKIP] podman が見つからないため、Claude project 設定ゲートの対応イメージの確認をスキップ"
+    elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+      if ! guard_claude_project_image_support; then
+        echo "[FAIL] Claude project 設定ゲート: イメージが未対応です。-b で再ビルドしてください"
+      fi
     else
-      echo "[INFO] Claude project 設定ゲート: イメージ未ビルド。初回起動時にビルドしてから検査します"
+      echo "[INFO] Claude project 設定ゲート: イメージ未ビルド（初回起動時にビルドしてから $CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL を確認します）"
     fi
     if ! command -v python3 >/dev/null 2>&1; then
-      guard_error "[FAIL] Claude project 設定ゲート: ホストに python3 が無いため、このプロジェクトは起動できません"
+      echo "[FAIL] Claude project 設定ゲート: ホストに python3 が無いため、このプロジェクトは起動できません"
+      CHECK_HAS_ERROR=1
     else
-      local project_json project_hash
-      if project_json=$(python3 -I "$RUN_DIR/claude-project-audit.py" --root "$WORKING_DIR" snapshot 2>"$CHECK_TMP_ERR"); then
-        project_hash=$(printf '%s' "$project_json" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["hash"])')
-        if [[ "$(printf '%s' "$project_json" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["count"])')" -eq 0 ]]; then
-          echo "[OK]   Claude project 設定ゲート: 対象の設定なし"
-        elif [[ -f "$CLAUDE_PROJECT_APPROVAL_RECORD" && "$(cat "$CLAUDE_PROJECT_APPROVAL_RECORD" 2>/dev/null)" == "$(claude_project_record_content "$project_hash")" ]]; then
-          echo "[OK]   Claude project 設定ゲート: 承認済み（ホストでの参考判定。コンテナ内の見え方と異なる場合は起動時に確認が出ます）"
-        else
-          echo "[INFO] Claude project 設定ゲート: 未承認または変更あり。起動時に確認プロンプトが出ます"
-        fi
+      local project_err="" project_out="" project_rc=0 project_hash="" project_count=""
+      if ! project_err=$(umask 077; mktemp "${TMPDIR:-/tmp}/cc-claude-check.XXXXXX"); then
+        echo "[FAIL] Claude project 設定ゲート: 一時ファイルを作れないため診断できません"
+        CHECK_HAS_ERROR=1
       else
-        guard_error "[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: $(LC_ALL=C tr -d '\000-\037\177' < "$CHECK_TMP_ERR")"
+        project_out=$(python3 -I "$RUN_DIR/claude-project-audit.py" --root "$WORKING_DIR" snapshot 2>"$project_err" \
+          | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["hash"], d["count"])') || project_rc=$?
+        if [[ $project_rc -ne 0 ]]; then
+          echo "[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: $(LC_ALL=C tr -d '\000-\037\177' < "$project_err")"
+          CHECK_HAS_ERROR=1
+        else
+          read -r project_hash project_count <<<"$project_out"
+          if [[ "$project_count" == 0 ]]; then
+            echo "[OK]   Claude project 設定ゲート: 対象の設定なし"
+          elif [[ -f "$CLAUDE_PROJECT_APPROVAL_RECORD" && "$(cat "$CLAUDE_PROJECT_APPROVAL_RECORD" 2>/dev/null || true)" == "$(claude_project_record_content "$project_hash")" ]]; then
+            echo "[OK]   Claude project 設定ゲート: 承認済み（ホストでの参考判定。コンテナ内の見え方と異なる場合は起動時に確認が出ます）"
+          else
+            echo "[INFO] Claude project 設定ゲート: 未承認または変更あり。起動時に確認プロンプトが出ます"
+          fi
+        fi
+        rm -f -- "$project_err"
       fi
     fi
   fi
 ```
 
-実装時の注意（コードを書く前に `check_one_project()` を読んで合わせる）:
-- `guard_error` という名前の関数が無ければ、同じ関数内で `[FAIL]` を出して `CHECK_HAS_ERROR=1` にしている既存の書き方（例: `ディレクトリを開けません` の分岐）に合わせる。`guard_claude_project_image_support` の `guard_fail` は `CHECK_MODE=1` で `[FAIL]` と `CHECK_HAS_ERROR=1` になる既存の仕組みを使う。
-- `CHECK_TMP_ERR` は、関数内で `mktemp`（umask 077）して `return` 前に削除する一時ファイルにする。既存の `--check` に同じ用途の一時ファイルがあればそれを使う。
-- `--check` はサブシェルで各プロジェクトを診断するので、`trap` を使う場合は既存の書き方に合わせる。
+パイプの左（helper）が失敗すると右の `json.load` も失敗するので、`project_rc` は非 0 になる（`pipefail` の有無に依らない）。理由は helper の stderr（`$project_err`）から出す。
 
 - [ ] **Step 3: テストが通ることを確かめる**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p "test_*launch.py"`
 Expected: PASS
 
-- [ ] **Step 4: lint・全体・Commit**
+- [ ] **Step 4: README を同じコミットで直す**
+
+Task 4 で足した小節「リポジトリの Claude 設定の確認（project 設定ゲート）」と、README の `--check` の説明（「`--check`」を含む節を grep して、Codex の審査の診断を説明している箇所）に、`--check` の出力を書く: `[OK]` 対象なし／承認済み、`[INFO]` 未承認または変更あり・イメージ未ビルド、`[FAIL]` 起動時に止まる（plugin 設定・判定不能）・イメージ未対応（`-b`）・ホストに python3 が無い、`[SKIP]` podman が無い。判定はホスト上での参考で、コンテナ内の見え方（symlink 等）と違う場合は起動時の判定が優先されること、`--check` は確認を出さず記録も書かないこと。
+
+- [ ] **Step 5: lint・全体・Commit**
 
 Run: `./lint.sh && ./test-build.sh --launcher-only`
 Expected: `lint OK`、`FAIL=0`
 
 ```bash
-git add c3c tests/test_claude_project_launch.py
+git add c3c tests/test_claude_project_launch.py README.md
 git commit -m "feat: --check に Claude project 設定ゲートの診断を足す（#163）"
 ```
 
 ---
 
-### Task 6: 文書（README・SECURITY-CLAIMS・不変条件・AGENTS.md）
+### Task 6: 文書（SECURITY-CLAIMS・不変条件・AGENTS.md）
+
+README は各 Task のコミットで直している（Task 3・4・5）。この Task は README 以外の文書を直し、README との整合を見直す。
 
 **Files:**
-- Modify: `README.md`（「セキュリティモデル」節、「MCP サーバーの追加」節の近く、「変更後の確認」節、ファイル構成の一覧、`--check` の説明）
 - Modify: `SECURITY-CLAIMS.md`（C-5 を新設、冒頭の対象一覧）
 - Modify: `docs/development-invariants.md`
 - Modify: `AGENTS.md`（「変更前に読む」一覧）
 
 **Interfaces:**
-- Consumes: Task 1〜5 の挙動（文言は実装に合わせる）
+- Consumes: Task 1〜5 の挙動（文言は実装に合わせる）。README の `SECURITY-CLAIMS.md#c-5` へのリンク（Task 4）の行き先をこの Task で作る。
 
-- [ ] **Step 1: README「セキュリティモデル」節を直す**
-
-「Claude 経路で `.mcp.json` に追加ゲートを設ける理由は…」の段落の後に、次の段落を足す:
-
-```markdown
-**`/workspace` の trust は全プロジェクトで共有される**（#163）: Claude Code は workspace trust を `~/.claude.json` の `projects["<repo root>"]` に保存する。claude-container はどのプロジェクトも `/workspace` にマウントし `~/.claude.json` を共有するため、一度 trust を受け入れると以降どのリポジトリも trust 済みで開き、リポジトリ同梱の `.claude/settings.json`・`.claude/settings.local.json` の hook・`env`・`apiKeyHelper` 等の helper・`statusLine`・allow 規則が確認なしで効く。これは #29 の基準（セッション開始と同時の任意コード実行）に当たるため、Claude 経路では project 設定ゲートを設けている: この 2 ファイルを検査用コンテナで読み、ファイル全体の hash が初回または前回承認から変わっていればホストで内容を表示して確認する。project 設定での plugin の有効化（`enabledPlugins`）・plugin の読み込み先を変える `env`（`CLAUDE_CODE_PLUGIN_*`）・`extraKnownMarketplaces`・skills-directory plugin（`.claude/skills/*/.claude-plugin/plugin.json`）・`.mcp.json` の `headersHelper` は、確認の前に起動を止める。対象外（残る経路）は SECURITY-CLAIMS の C-5 を参照（skills・agents・commands の frontmatter と本文、承認後のセッション中の変更、ホスト側の trust など）。
-```
-
-「http／sse タイプはこのゲートの対象外だが、接続先はファイアウォールの許可リストが審査する。」の直後に「ただし `headersHelper` を持つサーバーは、project 設定ゲートが起動前に止める。」を足す。
-
-- [ ] **Step 2: README に確認の出方と `--check` を書く**
-
-「MCP サーバーの追加」節の末尾に小節「リポジトリの Claude 設定の確認（project 設定ゲート）」を足し、次を書く: 対象ファイル、初回と変更時に確認が出ること、承認記録の場所（`~/.local/state/claude-container/mcp-approvals/claude-project/`）、TTY が無いと起動しないこと、`.claude` か `.mcp.json` を持つ repo は対応 label の無い旧イメージでは起動せず `-b` を案内すること、止まる条件（Step 1 の列挙）、`--check` の出力（`[OK]` 対象なし／承認済み、`[INFO]` 未承認、`[FAIL]` 止まる・label 不一致・python3 なし。ホストでの参考判定）、`--clean` と `--clean-all` で記録が消えること。
-
-- [ ] **Step 3: README「変更後の確認」節とファイル一覧**
-
-「変更後の確認」節に「`claude-project-audit.py` と project 設定ゲート（`c3c` の `run_claude_project_preflight()`・`check_claude_project_approval()`、`entrypoint.sh` のゲート）の変更も `--launcher-only` に含む。単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_claude_project_*.py'`。実イメージの helper と label は `test-build.sh` の通常モードで確認する」を足す。ファイル構成の一覧（`codex-mcp-audit.py` の項の近く）に `claude-project-audit.py` の 1 項を足す。
-
-- [ ] **Step 4: SECURITY-CLAIMS に C-5 を足す**
+- [ ] **Step 1: SECURITY-CLAIMS に C-5 を足す**
 
 C-4 の後に、C-3 と同じ見出し構成で C-5 を書く:
 - **対象**: Claude 経路の project 設定ゲート（protocol 1、#163）。
 - **成立条件・脅威モデル**: 信頼する launcher・イメージ・Podman を通常の起動経路で使い、利用者が表示された設定を確認する。対象はリポジトリ同梱の `/workspace/.claude/settings.json`・`settings.local.json`（第三者が制御しうる）。`/workspace` の trust が全プロジェクトで共有されることが前提。
 - **保証する動作**: spec「判定」「処理の流れ」の内容（label 照合、検査用コンテナ、ホストでの確認と atomic な記録、`:ro` での受け渡し、本起動での再照合と TTY 確認、止める判定と判定不能の列挙、opt-out なし、`~/.claude.json` に書かない、git を実行しない）。
-- **限界・非対象**: spec「残る経路」の全項目、表示は ASCII 制御文字だけを除き Unicode の bidi 制御等は除かない、`env` の値は表示に出る（秘密を置けば見える。永続化は hash だけ）、網羅性は実装時の Claude Code の版と公式ドキュメント（2026-09-26）でだけ確認、`CLAUDE_CODE_PLUGIN_*` を止めるのは project の `env` から効くか未確認のための保守的な措置、`--check` の判定はホストでの参考。
+- **限界・非対象**: spec「残る経路」の全項目、表示は ASCII 制御文字（C0 と DEL）だけを除き、C1 制御文字（U+0080〜U+009F）や Unicode の bidi 制御等は除かない、`.claude/skills/` の配下に `/workspace` の外を指す symlink や解決できない symlink があると判定不能で起動しない、`env` の値は表示に出る（秘密を置けば見える。永続化は hash だけ）、網羅性は実装時の Claude Code の版と公式ドキュメント（2026-09-26）でだけ確認、`CLAUDE_CODE_PLUGIN_*` を止めるのは project の `env` から効くか未確認のための保守的な措置、`--check` の判定はホストでの参考。
 - **根拠・検証範囲**: `c3c`・`entrypoint.sh`・`claude-project-audit.py`・`compose.yml` と `tests/test_claude_project_*.py`。実機受入の記録は PR を参照。
 - **再確認契機**: Claude Code の設定形式・workspace trust・plugin の読み込み・MCP の `headersHelper` の仕様の変更、`CLAUDE_CODE_VERSION` の既定の変更、起動経路・承認保存先・マウントの変更。
 
 冒頭の「記載しています」の一覧に C-5 を加える。
 
-- [ ] **Step 5: docs/development-invariants.md と AGENTS.md**
+- [ ] **Step 2: docs/development-invariants.md と AGENTS.md**
 
 `codex-mcp-audit.py` の配置の不変条件（66 行付近）の直後に、`claude-project-audit.py` の同じ不変条件（root 所有 755、`USER node` より前の `COPY`、`python3 -I`、検査用コンテナと本起動で同じ固定パスの同じスクリプト、protocol と label の同期、fail-closed、opt-out を作らない、承認記録の atomic 書き込み、`CLAUDE_PROJECT_APPROVAL_FILE`・`CC_CLAUDE_START_MODE` を全分岐で明示 export）を書く。Codex 経路の enum の不変条件（78 行付近）に `CC_CLAUDE_START_MODE` の enum を加える。`.mcp.json` ゲートの対象の記述（77 行付近）に「`headersHelper` は project 設定ゲートが止める」を足す。
 
 `AGENTS.md` の「変更する前に該当節を読むこと」の一覧に `claude-project-audit.py` を加える。
 
-- [ ] **Step 6: lint と Commit**
+- [ ] **Step 3: lint と Commit**
 
 Run: `./lint.sh`
-Expected: `lint OK`（リンク切れ・表記の検査を含む）
+Expected: `lint OK`（リンク切れ・表記の検査を含む。README から `SECURITY-CLAIMS.md#c-5` へのリンクがここで解決する）
 
 ```bash
-git add README.md SECURITY-CLAIMS.md docs/development-invariants.md AGENTS.md
-git commit -m "docs: Claude 経路の project 設定ゲートを README・SECURITY-CLAIMS・不変条件に書く（#163）"
+git add SECURITY-CLAIMS.md docs/development-invariants.md AGENTS.md
+git commit -m "docs: Claude 経路の project 設定ゲートを SECURITY-CLAIMS・不変条件に書く（#163）"
 ```
 
 ---
@@ -1734,7 +1856,15 @@ git commit -m "docs: Claude 経路の project 設定ゲートを README・SECURI
 
 **Files:** なし（結果は PR 本文に書く）
 
-ホストの実 Podman で行う。ホストの実物の `~/.claude.json` は書き換えない。
+ホストの実 Podman で行う。c3c（launcher・entrypoint・helper）がホストの `~/.claude.json` に書かないことを確かめる（Claude Code 本体は起動のたびに従来どおり書く）。`/workspace` の trust がホストの `~/.claude.json` で受け入れ済みであること（`jq '.projects["/workspace"].hasTrustDialogAccepted' ~/.claude.json` が `true`）が再現の前提。trust を手で書き換えて前提を作らない。
+
+- [ ] **Step 0: 持ち主の repo の symlink を事前に確かめる**
+
+```bash
+for r in ~/Projects/c3c ~/Projects/findsummits ~/Projects/sotlas-frontend; do find "$r/.claude" "$r/.mcp.json" -maxdepth 4 -type l -printf '%p -> %l\n' 2>/dev/null; done
+```
+
+`/workspace`（repo の root）の外を指す symlink や dangling の symlink があれば、起動時に判定不能で止まる。見つかったら、受入の前に持ち主へ報告する（直し方は持ち主が決める）。
 
 - [ ] **Step 1: Issue の not run の再現（修正前）**
 
@@ -1763,6 +1893,10 @@ main のチェックアウト（`git worktree add` した別ディレクトリ�
 `./lint.sh`、`./test-build.sh --launcher-only`、`./test-build.sh --validator-only`、`./test-build.sh`（実イメージのビルドと helper・label の確認）の結果を記録する。実行できなかったものは理由とともに `not run` と書く。
 
 ---
+
+## 計画レビューの記録
+
+- 1 巡目（計画 66890e9）: Codex（gpt-6-astra、`codex exec --sandbox read-only`）は「修正後に渡せる」（Important 3: 権限エラーの経路を「対象なし」にする `resolve()`、改行を禁止文字として拾って必ず失敗する表示テスト、秘密の export との前後と atomic 書き込みを判別できないテスト。Minor 4: hash の符号化のテスト、`guard_fail` と `guard_error` の前提、argparse の rc 2、存在しない `--clean-all`）。Claude（claude-opus-5-5、headless、Read/Grep/Glob）は「修正後に渡せる」（Important 5: `tests/test_network_timeouts.py` の固定リストが赤になる、秘密の前後を判別できないテスト、env による上書きを判別できないテスト、README が挙動変更と別コミット、Task 7 が自分の制約を満たせない。Minor 11）。秘密の前後のテストは両者が独立に出した。反映: 全 Important と、Minor のうち M-2（未定義関数の削除）・M-3（python3 テストの文言）・M-4（compose の契約テスト）・M-5（`--check` の確定コード）・M-6（`ensure_ascii=True`）・M-7（C1 を限界に）・M-8（entrypoint のコメント）・M-9（移行手順を README へ）・M-10（symlink の事前確認）・M-11（未使用 import）、Codex M-1〜M-4。未対応: Codex M-1 のうち「同じ読み取り結果を使うこと」の回帰テスト（実装の構造で保証し、専用テストは置かない。helper は各ファイルを 1 回だけ読み、そのバイト列から判定・表示・hash を作る）と、非 UTF-8 パス（hash 対象のパスは固定の ASCII 名なので該当しない）。
 
 ## 自己レビュー（計画者）
 

@@ -1,7 +1,7 @@
 # セキュリティ主張の詳細（試作）
 
 > **この文書は試作段階です**。README.md から移設した C-1・C-2 と、
-> Codex 起動対応の C-3・C-4 を記載しています。README の全ブロックの移設が決まったものではありません。
+> Codex 起動対応の C-3・C-4、Claude 経路の project 設定ゲートの C-5 を記載しています。README の全ブロックの移設が決まったものではありません。
 
 ---
 
@@ -131,3 +131,63 @@ CLI 間の認証・状態の完全隔離は未達成である。Codex 専用 hom
 **根拠**: `c3c` の `CODEX_DIR` guard・`guard_codex_host_plugins()`、`compose.yml`・`compose.codex-plugins.yml` のマウント、`entrypoint.sh` の固定 home。
 
 **再確認契機**: 認証・設定の全面分離、home の指定方法、CLI の認証保存方式、共有マウントの変更時。
+
+## C-5
+
+**対象**: Claude 経路の project 設定ゲート（protocol 1、#163）。
+
+**成立条件・脅威モデル**: 信頼する launcher・イメージ・Podman を通常の起動経路で使い、利用者が表示された設定を
+確認する。対象はリポジトリ同梱の `/workspace/.claude/settings.json` と `/workspace/.claude/settings.local.json`
+（第三者が内容を制御しうる project 設定。`settings.local.json` は git で追跡していなくても対象にする）。
+前提として、Claude Code は workspace trust を `~/.claude.json` の `projects["<repo root>"]` に保存し、
+claude-container は全プロジェクトを `/workspace` にマウントして `~/.claude.json` を共有するため、`/workspace` の
+trust は全プロジェクトで 1 つになる。一度受け入れると、この 2 ファイルの hook・`env`・`apiKeyHelper` 等の helper・
+`statusLine`・allow 規則は確認なしで効く。README「帰結の重大性で線を引いている」節（`claude-container#29`）の
+基準（セッション開始と同時の任意コード実行）に当たるため、`.mcp.json` の stdio ゲートと同じ扱いでゲートを置く。
+
+**保証する動作**: `.claude` か `.mcp.json`（symlink を含む）を持つ repo だけを対象にする。イメージの label
+`io.c3c.claude-project-audit-protocol` が対応 protocol と一致しなければ `-b` を案内して止める。ホストに python3 が
+無ければ止める。検査用コンテナ（非 TTY、stdin は `/dev/null`）でイメージ内の `claude-project-audit.py` が 2 ファイルの
+ファイル全体を hash し、表示用の内容と合わせて protocol の JSON 1 文書を出す。launcher はそれを厳密に検証し、
+初回・変更時にホストで内容（`env` の値を含む。ASCII 制御文字は除く）を表示して確認する。承認記録
+（protocol と hash だけ）はホスト側に atomic に書き、本起動には `:ro` で渡す。本起動の `entrypoint.sh` は
+`.mcp.json` ゲートの後・秘密の export より前に同じ helper で再照合し、一致しなければ `/dev/tty` で確認する
+（TTY が無ければ止める。記録はしない）。確認を出さずに止める条件: `enabledPlugins` に `false` でない値、
+`env` の `CLAUDE_CODE_PLUGIN_*`、空でない `extraKnownMarketplaces`、`.claude/skills/*/.claude-plugin/plugin.json`、
+`.mcp.json` のサーバーの `headersHelper`。判定不能として止める条件: 壊れた JSON・最上位がオブジェクトでない・
+重複 key、`/workspace` の外を指す symlink・解決できない symlink、通常ファイルでない対象、読み取り・列挙・
+パスの確認の失敗、1 MiB を超えるファイル。0 バイトのファイルは中身の無い設定として hash する（c3c 自身が
+`~/.claude/settings.json` を 0 バイトで作るため）。環境変数による opt-out は無く、`CLAUDE_PROJECT_APPROVAL_FILE`・
+`CC_CLAUDE_START_MODE` は launcher が全経路で明示 export する（`.c3c/env` やシェル環境の値は使わない）。
+c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に書かない。
+
+**限界・非対象**:
+
+- 本起動の再照合の後（Claude Code が設定を読むまでの間を含む）の変更は検出しない。project 設定は稼働中の
+  セッションにも反映されうる。書き換える主体には、セッション自身・同じプロジェクトを開いた別コンテナ・ホストの
+  エディタがある。検出は次回起動になる。判定・表示・hash は同じ読み取りから作るが、ファイル群を原子的に固定する
+  ことは保証しない。
+- skills・agents・commands（入れ子を含む）の frontmatter と本文（hook・`allowed-tools`・inline `mcpServers`・
+  本文の `` !`cmd` ``）は審査しない。呼び出しにモデルか利用者の判断が入るため #29 の外とし、プロンプト
+  インジェクション一般と同じ扱いにする。`CLAUDE.md` とその import、`--add-dir` の追加ディレクトリも対象外。
+- コンテナ内で書き換えられた repo の hook が、ホストで Claude Code を起動したときにホストの権限で走る経路は
+  ホスト側の trust の問題で、このゲートの外にある。
+- `~/.claude.json` の `projects["/workspace"]` に、侵害されたセッションが local scope の MCP 等を書き足す経路は
+  残る（README の既存の記述と同じ）。
+- 定義の承認であり、hook が呼ぶスクリプトや依存パッケージの内容や安全性を保証しない。
+- 表示から除くのは ASCII 制御文字（C0 と DEL）だけで、C1 制御文字（U+0080〜U+009F）や Unicode の bidi 制御等は
+  除かない。`env` の値は表示に出る（秘密を置けば見える。永続化するのは hash だけ）。
+- `.claude/skills/` の配下に `/workspace` の外を指す symlink や解決できない symlink があると、判定不能で起動しない。
+- 網羅性（審査対象の集合）は、実装時（2026-09-26）の公式ドキュメント（permissions の「What runs before you trust
+  a folder」、plugins/loading、skills）でだけ確認している。同梱の既定は `CLAUDE_CODE_VERSION=latest` なので、
+  新しい版が新しい経路を足しても追えない。`CLAUDE_CODE_PLUGIN_*` を止めるのは、project の `env` から plugin の
+  読み込み先が変わるかを確認していないための保守的な措置である。
+- `--check` の判定はホスト上での参考実行で、コンテナ内の見え方（symlink 等）と違う場合は起動時の判定が優先する。
+
+**根拠・検証範囲**: `c3c`（`claude_project_gate_needed()`・`guard_claude_project_image_support()`・
+`run_claude_project_preflight()`・`check_claude_project_approval()`・`--check` の診断）、`entrypoint.sh`、
+`claude-project-audit.py`、`compose.yml`・`compose.codex-preflight.yml` と `tests/test_claude_project_*.py`。
+実機受入の記録は PR を参照する。
+
+**再確認契機**: Claude Code の設定形式・workspace trust・plugin の読み込み・MCP の `headersHelper` の仕様の変更、
+`CLAUDE_CODE_VERSION` の既定の変更、起動経路・承認保存先・マウントの変更時。

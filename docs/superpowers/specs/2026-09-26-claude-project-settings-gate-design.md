@@ -1,7 +1,7 @@
 # Claude 経路の project 設定に起動前ゲートを設ける（#163）設計
 
 **Issue:** [#163](https://github.com/jj1xgo/c3c/issues/163)
-**状態:** 設計の合意済み（持ち主 2026-09-26）。1 巡目の二重レビューを反映済みで、確認限定巡の待ち。
+**状態:** 設計の合意済み（持ち主 2026-09-26）。二重レビューは確認限定巡まで完了（両者「実装計画に進める」）。持ち主の spec レビュー待ち。
 **区分:** 境界（セッション開始と同時に秘密を読めるコードを実行させる経路に、新しいゲートを置く。`c3c`・`entrypoint.sh`・`compose.yml`・`Dockerfile.claude` と SECURITY-CLAIMS の保証範囲を変える）。
 
 ## 目的
@@ -148,3 +148,4 @@ MAJOR の見込み。README「バージョニング」節の MAJOR（デフォ�
 ## レビュー記録
 
 - 1 巡目（spec 6fd8916）: Codex（gpt-6-astra、`codex exec --sandbox read-only`）は「修正後に進める」（Important 3: 旧イメージへの委譲の fail-open、`env` 経由の plugin 読み込み、探索失敗の契約。Minor 3: TOCTOU の範囲、commands を外す理由、MAJOR 判定）。Claude（claude-opus-5-5、headless、Read/Grep/Glob/WebFetch）は「修正後に進める」（Critical 2: `.mcp.json` の `headersHelper` の抜け、旧イメージへの委譲の fail-open。Important 4: commands の扱い、symlink のホストとコンテナの差、frontmatter の切り出しのずれ、表示の範囲。Minor 9）。旧イメージへの委譲は両者が独立に出した（Claude は Critical、Codex は Important。重い方を採った）。持ち主の判断で、審査は検査用コンテナで行い、対象は #29 を厳密に適用して settings と plugin 類と `headersHelper` に絞った（skills・agents・commands を外したことで、frontmatter の切り出しと表示の指摘は対象ごと無くなった）。
+- 確認限定巡（spec a6b9106）: Codex（`codex exec resume`）は I-1〜I-3 すべて解消、新たな Critical/Important なし、「実装計画に進める」。Claude（`--resume`、claude-opus-5-5）は C1・C2・I2・I4 が解消、I1・I3 は対象ごと消えた、新たな Critical/Important なし、「実装計画に進める」。1 巡目の Minor は、反映したもの（M1 符号化の要件、M2 atomic 書き込み、M3 entrypoint の位置と配置、M4 全経路の export と lint、M5 bidi、M7 セッション中の反映、M8 python3、M9 MAJOR、Codex M-1 TOCTOU）と、対象の絞り込みで不要になったもの（M6、Codex M-2）に分かれ、未対応は無い。

@@ -1,4 +1,4 @@
-# launcher が guard_plugins_alias() の条件を満たすときだけ追加する固定設定（claude-container#98）。
+# launcher が guard_plugins_alias() の条件を満たすときだけ追加する固定設定（#98）。
 # plugin のメタデータ（~/.claude/plugins/known_marketplaces.json・installed_plugins.json）は
 # ホストの Claude Code が見た絶対パス（例 /home/<host user>/.claude/plugins/...）を記録して
 # いるため、同じ実体をその絶対パスにも :ro で見せる。JSON は書き換えない（plugins/ は

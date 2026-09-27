@@ -15,7 +15,7 @@
 #
 # 責務は正規化と照合のみ。インストール・ネットワークアクセスは行わない。
 # ビルド時（Dockerfile.claude の RUN）・起動前診断（--check）・テスト（test-build.sh）
-# の3者が同じスクリプトを呼ぶ（claude-container#34）。
+# の3者が同じスクリプトを呼ぶ（#34）。
 
 set -e
 export LC_ALL=C

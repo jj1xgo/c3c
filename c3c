@@ -216,7 +216,7 @@ if [[ $CHECK -eq 0 ]]; then
   fi
 fi
 # -b の有無は引数解析で確定する。env からの上書き（BUILD=0）で利用者の -b が
-# 黙って無効化されるのを防ぐ（claude-container#39）
+# 黙って無効化されるのを防ぐ（#39）
 readonly BUILD
 readonly CLEAN_MISSING
 # --agent と clean 系は意味が曖昧（清掃は両 agent の記録を対象にする）なので併用を拒否する。
@@ -286,7 +286,7 @@ if ! launcher_path=$(resolve_launcher_path "$0") \
 fi
 unset launcher_path
 # readonly は代入と別文にする（readonly VAR="$( ... )" はコマンド置換の失敗を握り潰し、
-# set -e にも if ! にも伝わらないため fail-closed が無言で壊れる。claude-container#39）
+# set -e にも if ! にも伝わらないため fail-closed が無言で壊れる。#39）
 readonly RUN_DIR
 # CLI 選択記憶の helper（ホスト専用。project-images.py と同じく固定パスを python3 -I で呼び、
 # ビルドコンテキストへは COPY しない）。
@@ -296,7 +296,7 @@ readonly AGENT_PREFERENCE_HELPER
 # 起動台帳（内部運用issue参照）。通常起動のたびにホスト絶対パスを記録し、
 # --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
 # MCP_APPROVAL_STORE と同じ流儀で $HOME から直接算出し、readonly でプロジェクト側 env
-# からの上書きを封じる（claude-container#39。呼び出し順序だけでは env の直接代入を防げない）。
+# からの上書きを封じる（#39。呼び出し順序だけでは env の直接代入を防げない）。
 CC_STATE_DIR="$HOME/.local/state/claude-container"
 CC_LEDGER_FILE="$CC_STATE_DIR/projects"
 readonly CC_STATE_DIR CC_LEDGER_FILE
@@ -322,7 +322,7 @@ clean_all() {
     echo "ネットワークを削除します: ${project}_default"
     podman network rm "${project}_default" 2>/dev/null && echo "削除しました。" || echo "ネットワークがないのでスキップします。"
   done < <(podman images --format '{{.Repository}}' 2>/dev/null | grep -E '^localhost/.+_claude-auth-workspace$' || true)
-  [[ $found -eq 1 ]] || echo "claude-container のイメージが見つからないため、イメージ・ネットワークの削除をスキップします。"
+  [[ $found -eq 1 ]] || echo "c3c のイメージが見つからないため、イメージ・ネットワークの削除をスキップします。"
   echo "ステージング済みビルドコンテキストを削除します: $RUN_DIR/.build-context"
   rm -rf "$RUN_DIR/.build-context" && echo "削除しました。" || echo "見つからないのでスキップします。"
   local approval_store="$HOME/.local/state/claude-container/mcp-approvals"
@@ -454,13 +454,13 @@ compute_project_name() {
 # プロジェクトごとの固定パス群（MCP承認記録・ビルドコンテキスト）を freeze する。
 # load_env_file() より前に呼んだうえで readonly にすることで、プロジェクト側の設定 env が
 # 同名キーを直接書いても readonly で拒否され、HOME 等は許可リスト外で export されない
-# （claude-container#39、#44）ため、これらのパスは一切影響を受けない。
+# （#39、#44）ため、これらのパスは一切影響を受けない。
 # --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化（readonly は
 # ( check_one_project ) サブシェル内に閉じるためプロジェクト間で衝突しない）。
 # 設定ディレクトリ（PROJECT_CONF_DIR）はここでは決めない — 清掃（--clean <dir>）が設定の状態に
 # 依らず既存対象を消せるよう、select_project_conf_dir() で cleanup 分岐より後に解決する。
 freeze_project_paths() {
-  # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
+  # MCP監査ゲートのTOFU承認記録の格納パス（#28）。
   MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
   MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
   # Codex の起動時 MCP 審査の承認記録（#150 の protocol 2）。既存の Claude 記録とは別に、agent 固定の
@@ -476,7 +476,7 @@ freeze_project_paths() {
   readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD CODEX_APPROVAL_DIR CODEX_APPROVAL_RECORD CLAUDE_PROJECT_APPROVAL_DIR CLAUDE_PROJECT_APPROVAL_RECORD BUILD_CONTEXT_DIR
   # compose へはコマンド前置代入でなく export で渡す（readonly 変数への前置代入は
   # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
-  # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
+  # #39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
   export BUILD_CONTEXT_DIR
 
   # ホストの論理パスを最終イメージに記録する。設定ファイルによる上書きは不可。
@@ -504,7 +504,7 @@ freeze_project_paths() {
 # directory への symlink は既存互換のため許容する（-d は追従する）。
 # 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後（清掃は設定の状態に
 # 依らず既存対象を消す。清掃に要るパスは freeze_project_paths() が担う）。--check では失敗時に呼び出し元が
-# return 20 し、env・resolver・hash・ガードへ進まない。readonly は結果を返した後に置く（claude-container#39）。
+# return 20 し、env・resolver・hash・ガードへ進まない。readonly は結果を返した後に置く（#39）。
 PROJECT_CONF_NEW_NAME=.c3c
 PROJECT_CONF_LEGACY_NAME=.claude-container.d
 readonly PROJECT_CONF_NEW_NAME PROJECT_CONF_LEGACY_NAME
@@ -686,7 +686,7 @@ write_agent_preference() {
 # 渡している理由と同型）。
 #
 # --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
-# カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（claude-container#60）。
+# カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（#60）。
 # リポジトリ同梱の .env が CODEX_DIR・EXTRA_MOUNT・CLAUDE_CONTAINER_NO_FIREWALL 等を
 # 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env、旧 .claude-container.d/env）だけにする。
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
@@ -700,7 +700,7 @@ run_main_compose() {
 # 取り込む。source だとシェル構文がホスト上で即時解釈され任意コード実行になりうるため、変数代入以外の
 # 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
 #
-# 許可リスト（claude-container#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
+# 許可リスト（#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
 # 影響しないものと、コンテナのモードに使うキー（TZ・CLAUDE_CONTAINER_NO_FIREWALL・CLAUDE_CONTAINER_IPV6）。一方 PATH・HOME・
 # LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
 # ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
@@ -710,10 +710,10 @@ run_main_compose() {
 # （両者の一致は test-build.sh の E7 が検査する）。compose.yml が補間するキーでも
 # CLAUDE_CODE_VERSION は意図的に除外している — 値は Dockerfile.claude の
 # `install.sh | bash -s ${CLAUDE_CODE_VERSION}` へクォートなしで展開され、リポジトリ側から
-# 書けるとビルド時 root でのコマンド注入経路になる（claude-container#62）。シェル環境から
+# 書けるとビルド時 root でのコマンド注入経路になる（#62）。シェル環境から
 # 渡す経路は従来どおり有効。
 # 保護変数（readonly）は許可リストに含まれないので上書きされない。readonly 宣言自体は
-# スクリプト内部の直接代入に対する防御として残す（claude-container#39）。許可リストのキーを
+# スクリプト内部の直接代入に対する防御として残す（#39）。許可リストのキーを
 # readonly にしないこと — 下の export は無条件なので、readonly だと set -euo pipefail 下で
 # bash の生エラーのまま起動が落ちる。
 # ローカル変数名を _lef_ で名前空間化しているのは、bash の動的スコープにより関数内ローカルと同名の
@@ -741,7 +741,7 @@ load_env_file() {
     if [[ " ${ENV_FILE_ALLOWED_KEYS[*]} " != *" $_lef_key "* ]]; then
       # 受け付けるキーの一覧は行ごとに繰り返さず、末尾で 1 回だけ出す（無関係なキーが数個あると
       # 一覧の反復でログが埋まり、後続の専用ガードの具体的な案内が埋もれるため）。
-      guard_warn "WARNING: $_lef_file のキー $_lef_key は claude-container が解釈しないため無視します。"
+      guard_warn "WARNING: $_lef_file のキー $_lef_key は c3c が解釈しないため無視します。"
       _lef_ignored=1
       continue
     fi
@@ -787,13 +787,13 @@ guard_env_gh_token() {
 }
 
 # legacy トークン変数（GH_TOKEN_FILE / GH_TOKEN_SECONDARY_FILE）は v4 で撤廃した
-# （claude-container#24）。後方互換エイリアスは持たないため、設定されていたら黙って
+# （#24）。後方互換エイリアスは持たないため、設定されていたら黙って
 # 無視せず fail-closed で起動を中止し、新レイアウトへの移行手順を案内する（検出した
 # 変数をまとめて1回で提示し、複数回起動してもう1個見つかる体験を避ける）。
 guard_legacy_vars() {
   local _legacy_vars_found=() _lv
   # シェル環境の export 済み変数と、env ファイルの行の両方を見る。後者は許可リスト外なので
-  # export されず（claude-container#44）、変数を見るだけでは移行案内が汎用 WARNING に格下げされる。
+  # export されず（#44）、変数を見るだけでは移行案内が汎用 WARNING に格下げされる。
   for _lv in GH_TOKEN_FILE GH_TOKEN_SECONDARY_FILE; do
     if [[ -n "${!_lv:-}" ]] || { [[ -n "$ENV_FILE" ]] && grep -qE "^${_lv}=" "$ENV_FILE" 2>/dev/null; }; then
       _legacy_vars_found+=("$_lv")
@@ -801,7 +801,7 @@ guard_legacy_vars() {
   done
   if [[ ${#_legacy_vars_found[@]} -gt 0 ]]; then
     guard_fail \
-      "ERROR: 次の変数は廃止されました（後方互換なし、claude-container#24）: ${_legacy_vars_found[*]}" \
+      "ERROR: 次の変数は廃止されました（後方互換なし、#24）: ${_legacy_vars_found[*]}" \
       "移行手順:" \
       "  1. $ENV_FILE（およびシェル環境）から上記変数の行を削除する" \
       "  2. push・PR 用のメイン PAT は SECRETS_DIR 直下に GITHUB_MAIN_PAT として置く（chmod 600）。" \
@@ -848,7 +848,7 @@ guard_gitconfig_file() {
 }
 
 # 汎用シークレットディレクトリの参照（SECRETS_DIR）。任意設定のため未設定時は何もしない。
-# 設計原則（exposure 軸、claude-container#24）: 直下のファイルは export されない
+# 設計原則（exposure 軸、#24）: 直下のファイルは export されない
 # （メインPATや、gh の明示読みだけで使う Issues 用PAT等）。export/ サブディレクトリのファイルのみ、コンテナ内で
 # 「ファイル名＝環境変数名」として export される（issues 限定PAT等、entrypoint.sh 参照）。
 # v3 以前とは直下/export の意味が逆転している。設定済みでディレクトリが無い場合は
@@ -866,7 +866,7 @@ guard_secrets_dir() {
     # させると設計意図が伝わらないまま、あるいは意図せず export 側に倒れるのを防ぐ。
     if [[ -d "$SECRETS_DIR/noexport" ]]; then
       guard_fail \
-        "ERROR: $SECRETS_DIR/noexport が見つかりました。v4 で SECRETS_DIR のレイアウトが変わりました（claude-container#24）:" \
+        "ERROR: $SECRETS_DIR/noexport が見つかりました。v4 で SECRETS_DIR のレイアウトが変わりました（#24）:" \
         "  旧: 直下=export される / noexport/=export されない" \
         "  新: 直下=export されない / export/=export される" \
         "移行手順: noexport/ 配下のファイルを SECRETS_DIR 直下へ移動し（GIT_PUSH_TOKEN は GITHUB_MAIN_PAT へ改名）、" \
@@ -926,20 +926,20 @@ guard_codex_dir() {
     CODEX_DIR="${CODEX_DIR%/}"
     export CODEX_DIR
     local codex_real_msg="ERROR: CODEX_DIR が実ホストの \$HOME/.codex を指しています。コンテナ側のコードが config.toml（notify フック・MCP サーバー定義）を汚染し、ホストで codex 実行時に任意コマンドが実行される経路になるため、専用ディレクトリ（例: ~/.codex-container）を指定してください。起動を中止します。"
-    # 文字列比較（claude-container#36）。~/.codex が存在しない状態での誤指定もここで捕まえる。
+    # 文字列比較（#36）。~/.codex が存在しない状態での誤指定もここで捕まえる。
     if [[ "$CODEX_DIR" == "$HOME/.codex" ]]; then
       guard_fail "$codex_real_msg" || return 1
     fi
     # 相対パスは拒否する（CLAUDE_CONFIG_DIR と同じ理由: compose は相対 bind source を
     # compose.yml のディレクトリ基準で解決し、ランチャーの解釈と食い違う。加えて相対パスの
-    # cd は CDPATH — env から export できる — の影響を受ける）。claude-container#48
+    # cd は CDPATH — env から export できる — の影響を受ける）。#48
     if [[ "$CODEX_DIR" != /* ]]; then
       guard_fail "ERROR: CODEX_DIR=$CODEX_DIR は絶対パス（または ~/ 始まり）で指定してください。起動を中止します。" || return 1
     fi
     if [[ ! -d "$CODEX_DIR" ]]; then
       guard_fail "ERROR: CODEX_DIR=$CODEX_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
     fi
-    # 実体で比較する（claude-container#48）。`~/.codex//`・`~/./.codex`・`~/.codex/.`・
+    # 実体で比較する（#48）。`~/.codex//`・`~/./.codex`・`~/.codex/.`・
     # `//home/...`・実 ~/.codex への symlink は文字列比較をすり抜け、podman 側で解決されて
     # 実 ~/.codex が rw マウントされるため、-ef（同じ device と inode か）で比べる。
     # パス文字列の正規化（pwd -P）では先頭の `//` が残り（POSIX で意味が実装定義のため
@@ -1527,12 +1527,12 @@ run_explicit_build() {
 # 書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file
 # watcher で稼働中セッションにも反映）ため、この経路をマウント層で閉じる。
 # 認証（.credentials.json）・transcript・memory 等の状態は対象外（rw のまま）。
-# .git は ~/.claude 自体を git リポジトリにしているホスト向け（claude-container#129）。.git/hooks と
+# .git は ~/.claude 自体を git リポジトリにしているホスト向け（#129）。.git/hooks と
 # .git/config はホストで git を打った時点でホスト権限で実行・参照されるため、hook と同じ扱いにする。
 CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
 CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 
-# 保護対象 1 件の型を検査する（claude-container#131）。ファイルシステムは変更せず、判定と
+# 保護対象 1 件の型を検査する（#131）。ファイルシステムは変更せず、判定と
 # guard_fail の呼び出しだけを行う（通常起動では guard_fail が exit し、--check では
 # CHECK_HAS_ERROR を立てて戻る）。引数: $1=検査するパス、$2=種別（dir / file）。
 # 戻り値 0 = 型が一致、または欠落（呼び出し元が作ってよい）、1 = 不正（起動を中止する）。
@@ -1576,7 +1576,7 @@ validate_claude_config_ro_path() {
 # ランチャーがユーザー権限で明示的に空で作る（空ディレクトリ・空ファイル・`{}` は
 # Claude Code にとって不活性）。基点は compose.yml の親マウントと同じ ${CLAUDE_CONFIG_DIR:-~}。
 # 呼び出し位置は全 guard と MCP 承認の後。起動前から存在する保護対象の型不一致・symlink は
-# 子 placeholder の作成前に拒否する（claude-container#131。作成途中の I/O エラーや並行変更に
+# 子 placeholder の作成前に拒否する（#131。作成途中の I/O エラーや並行変更に
 # 対する全ロールバックは行わない）。
 # --check（CHECK_MODE=1）では何も作らず報告だけ行う（--check は書き込みをしない契約）。
 # 基点の .claude.json を compose より前に検査する（#159）。compose.yml は短い書式で bind するので、
@@ -1635,7 +1635,7 @@ resolve_claude_config_base() {
 
 prepare_claude_config_ro() {
   local base cfg name path created=0 resolve_rc=0
-  # plugin 別名（guard_plugins_alias()、claude-container#98）用に、基点の「~ 展開済み・
+  # plugin 別名（guard_plugins_alias()、#98）用に、基点の「~ 展開済み・
   # 実体未解決」の綴りを残す。plugin のメタデータはホストの Claude Code が見た綴りを
   # 記録するため、pwd -P で実体解決した値では symlink 経由の HOME と食い違う。
   # 基点の検証に失敗した経路では空のまま（別名の判定を行わない）。
@@ -1673,7 +1673,7 @@ prepare_claude_config_ro() {
     echo "INFO: $cfg を読み取り専用保護のため空で作成しました" >&2
   fi
 
-  # 通常起動では、1 項目でも作る前に 12 項目すべての型を検査する（claude-container#131）。
+  # 通常起動では、1 項目でも作る前に 12 項目すべての型を検査する（#131）。
   # 配列末尾の項目が不正なときに、先行する項目だけホストへ作ってから拒否するのを防ぐ。
   # --check はここを通さず、従来どおりの順で欠落を WARN しつつ不正項目で失敗する（無書込）。
   if [[ ${CHECK_MODE:-0} -eq 0 ]]; then
@@ -1742,7 +1742,7 @@ prepare_claude_config_ro() {
   return 0
 }
 
-# plugin 別名マウント（claude-container#98）の destination を判定する。副作用なし（ファイル
+# plugin 別名マウント（#98）の destination を判定する。副作用なし（ファイル
 # システムにも触れない。存在確認は prepare_claude_config_ro() が済ませている）。
 # 引数: $1=基点の綴り（~ 展開済み・実体未解決）、$2=$HOME の綴り。stdout に destination を
 # 出力し、終了コードで結果を返す:
@@ -1785,7 +1785,7 @@ plugins_alias_target() {
   return 0
 }
 
-# plugin 別名マウント（claude-container#98）。ホストで install した plugin のメタデータ
+# plugin 別名マウント（#98）。ホストで install した plugin のメタデータ
 # （~/.claude/plugins/known_marketplaces.json・installed_plugins.json）はホストの絶対パスを
 # 記録しており、コンテナ内（HOME=/home/node）では解決できない。かつて entrypoint.sh が
 # JSON をコンテナ内パスへ sed で書き換えていたが、plugins/ を :ro で保護した時点で書けなく
@@ -1821,7 +1821,7 @@ guard_plugins_alias() {
 
 # 第2の追加マウント（SHARED_MOUNT）の参照。任意設定のため未設定時は何もしない。
 # 複数プロジェクトから同一ホストディレクトリ（共有ノート置き場等）を固定名 /shared で
-# 参照するための opt-in（claude-container#46）。EXTRA_MOUNT（/data）と独立したスロット。
+# 参照するための opt-in（#46）。EXTRA_MOUNT（/data）と独立したスロット。
 # 秘密情報を置く前提のディレクトリではないためパーミッション警告は行わない（EXTRA_MOUNT と
 # 同様）。設定済みでディレクトリが無い場合は起動を中止する（GITCONFIG_FILE/SECRETS_DIR/
 # CODEX_DIR と同じ理由: 不存在パスを bind mount すると podman がホスト側に空ディレクトリを
@@ -1836,7 +1836,7 @@ guard_shared_mount() {
   fi
 }
 
-# SHARED_MOUNT の別名マウント（claude-container#99）。SHARED_MOUNT_HOME_ALIAS=1 のとき、
+# SHARED_MOUNT の別名マウント（#99）。SHARED_MOUNT_HOME_ALIAS=1 のとき、
 # SHARED_MOUNT の実体をコンテナ内の ~（/home/node）配下の同じ相対位置と、ホストと同じ
 # 絶対パスにも :ro で重ねる固定 override を選ぶ。/shared は rw のままなので境界ではない。
 # HOME 直下の隠し項目（.claude・.codex 等）は設定・認証・実行環境のため別名にしない。
@@ -1906,7 +1906,7 @@ guard_shared_home_alias() {
 }
 
 # エージェント共通のスキル置き場（AGENTS_DIR、通常 ~/.agents）を /home/node/.agents に :ro で
-# 付ける opt-in（claude-container#99）。~/.claude/agents/（Claude Code の subagent 定義、
+# 付ける opt-in（#99）。~/.claude/agents/（Claude Code の subagent 定義、
 # :ro 保護 12 項目の一つ）とは別物。
 guard_agents_dir() {
   [[ -n "${AGENTS_DIR:-}" ]] || return 0
@@ -2020,7 +2020,7 @@ prepare_codex_host_plugins() {
   return 0
 }
 
-# プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`claude-container#29`）。
+# プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
 # （ホスト固有パスを含みうる）は出力せず、キー名のみ列挙する。
@@ -2044,7 +2044,7 @@ guard_env_boundary_keys() {
 
 # ベースイメージの検証（内部運用issue参照）。BASE_IMAGE は env 由来の値を
 # 一切信用しない — load_env_file() の許可リスト外なので env からは export されない
-# （claude-container#44）が、シェル環境から渡された値も信用しないよう、ここで無条件に
+# （#44）が、シェル環境から渡された値も信用しないよう、ここで無条件に
 # 既定値から開始する（MCP_APPROVAL_FILE を全分岐末尾で
 # 無条件 export しているのと同じ流儀）。正しい指定先は
 # プロジェクト設定ディレクトリ（$PROJECT_CONF_DIR）の base-image.txt のみ。
@@ -2075,7 +2075,7 @@ guard_base_image() {
     return 0
   fi
 
-  # 最初の有効行を読む（claude-container#50）。grep の終了コードは 0（有効行あり）／
+  # 最初の有効行を読む（#50）。grep の終了コードは 0（有効行あり）／
   # 1（有効行なし）／2 以上（読めない等）で、set -e 下では 1 でも代入式ごと関数が
   # 落ちるため || で受ける。--check は guard_* を `|| true` で呼ぶので set -e が
   # 効かず、素呼びの通常起動だけが無言停止する乖離になっていた。`grep | head -1` は
@@ -2153,7 +2153,7 @@ compute_mcp_state() {
   fi
 }
 
-# MCP監査ゲートのTOFU（Trust On First Use）＋変更検知（claude-container#28）。
+# MCP監査ゲートのTOFU（Trust On First Use）＋変更検知（#28）。
 # .mcp.json のstdio型サーバー定義（entrypoint.sh側のTTY確認対象）が前回承認時から
 # 変化していなければ、承認記録のハッシュをコンテナへ渡して entrypoint.sh 側の
 # TTY確認をスキップさせる。不一致・記録なしの場合はここで（-b のビルドより前に）
@@ -2162,7 +2162,7 @@ compute_mcp_state() {
 # 迂回防止の設計:
 #   - 承認記録の格納パス（MCP_APPROVAL_STORE/RECORD）は load_env_file() より前に
 #     $HOME から直接算出し readonly にしてある。プロジェクト側 env が同名キーを
-#     書いても無視され警告が出る（claude-container#39）。
+#     書いても無視され警告が出る（#39）。
 #   - MCP_APPROVAL_FILE は本関数の全分岐の末尾で必ず export する。呼び出し元
 #     （compose.yml の ${MCP_APPROVAL_FILE:-/dev/null}）は env 経由の値を一切
 #     参照しないため、プロジェクト側が env に MCP_APPROVAL_FILE を書いても無視される。
@@ -2191,7 +2191,7 @@ check_mcp_approval() {
       echo "WARNING: $WORKING_DIR/.mcp.json の stdio 型 MCP サーバーの定義が前回の承認から変わっている（または未承認の）ものがあります。そのコードはセッション開始時に即座に実行され、export された全ての秘密を読めます:" >&2
       # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
       # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
-      # 「ターミナル・スプーフィング」に無防備になる（claude-container#35）。entrypoint.sh 側の同種の
+      # 「ターミナル・スプーフィング」に無防備になる（#35）。entrypoint.sh 側の同種の
       # 表示ロジックと同一のサニタイズ方式（LC_ALL=C tr -d '\000-\037\177'）を使うこと（同期必須）。
       echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' | LC_ALL=C tr -d '\000-\037\177' >&2
       printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
@@ -2219,7 +2219,7 @@ check_mcp_approval() {
   esac
 }
 
-# 境界アセット・ビルド時設定ファイルの解決規則（`claude-container#30`）。2種類ある:
+# 境界アセット・ビルド時設定ファイルの解決規則（`#30`）。2種類ある:
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
 #                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
@@ -2267,7 +2267,7 @@ resolve_asset_source() {
   esac
 }
 
-# 境界アセットのドリフト検知（`claude-container#30`）対象。固定順の配列で持つ
+# 境界アセットのドリフト検知（`#30`）対象。固定順の配列で持つ
 # （glob 順序はロケール・実装依存で非決定的なため）。github-meta.json は毎ビルド
 # 変わるため意図的に対象外（含めると恒久的にドリフトした状態になってしまう）。
 ASSET_HASH_TARGETS=(
@@ -2296,7 +2296,7 @@ ASSET_HASH_TARGETS=(
   allowed-ports.txt
   base-image.txt
 )
-# env の同名 export は配列の要素0へ代入されドリフト検知対象を偽装できるため readonly（claude-container#39）
+# env の同名 export は配列の要素0へ代入されドリフト検知対象を偽装できるため readonly（#39）
 readonly -a ASSET_HASH_TARGETS
 
 # 対象アセットの内容のみをハッシュする（sha256sum "$file" ではなくリダイレクトで
@@ -2324,7 +2324,7 @@ compute_asset_hash() {
 # packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt
 # （overridable）・allowed-ports.txt（optional）をビルドコンテキストへ集約する。
 # packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
-# （$PROJECT_CONF_DIR）にあればそちらを、なければ claude-container 同梱のデフォルト
+# （$PROJECT_CONF_DIR）にあればそちらを、なければ c3c 同梱のデフォルト
 # （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
 # 同梱 default は空ではなく固定版（c3c 第2b-2段階）で、project 側の空ファイルは明示 opt-out
 # としてそのまま（空のまま）ステージする。allowed-ports.txt は無ければ静かに空ファイルを生成する。
@@ -2343,12 +2343,12 @@ stage_build_context() {
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "default" ]]; then
       # プロジェクト側の設定が無いプロジェクトは汎用の空フォールバックに
-      # 静かに切り替わる。かつて claude-container 本体の packages.txt に直接
+      # 静かに切り替わる。かつて c3c 本体の packages.txt に直接
       # 書かれていたプロジェクト固有パッケージ（gcc/python3等）が、汎用化リファクタ
       # リング（2026-07-01）後にプロジェクト側の設定へ移行されないまま消失した
       # 実障害（python3-missing インシデント、2026-07-02）があるため、フォール
       # バック使用時は必ず気づけるよう警告を出す。
-      echo "WARNING: $PROJECT_CONF_DIR/$name がありません。claude-container 同梱の空のフォールバック（$name）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$name を作成してください。" >&2
+      echo "WARNING: $PROJECT_CONF_DIR/$name がありません。c3c 同梱の空のフォールバック（$name）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$name を作成してください。" >&2
     fi
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -2358,7 +2358,7 @@ stage_build_context() {
   # 明示 opt-out で、default で埋めずに空のままステージする（計画 §8-5: 空を missing と同一視して
   # Codex を勝手に導入しない）。allowed-ports.txt は任意機能で移行元が無く、無ければ静かに
   # 空ファイルを生成する。空の意味（既定値 443,22 の適用）は init-firewall.sh 自身が解釈する
-  # （`claude-container#31`）。
+  # （`#31`）。
   for name in node-version.txt codex-version.txt allowed-ports.txt; do
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "missing" ]]; then
@@ -2419,11 +2419,11 @@ stage_build_context() {
   fi
 }
 
-# 境界アセットのドリフト検知（`claude-container#30`）。通常起動時・--check の
+# 境界アセットのドリフト検知（`#30`）。通常起動時・--check の
 # 両方から呼ぶ（IMAGE_NAME は compute_project_name()、PROJECT_CONF_DIR は
 # freeze_project_paths() が先に設定している前提）。fail-open: 不一致は guard_warn
 # に留め、起動は止めない。理由: ドリフトは「古いが過去に承認された状態」であって
-# 進行中の攻撃ではない。fail-closed にすると claude-container 自身をセルフホストで
+# 進行中の攻撃ではない。fail-closed にすると c3c 自身をセルフホストで
 # 開発する際（本リポジトリを編集した瞬間に必ずドリフトする）に起動できなくなり、
 # 警告以上の安全性の利得なく開発フローを壊す。
 guard_asset_drift() {
@@ -2466,7 +2466,7 @@ check_one_project() {
   CHECK_HAS_ERROR=0
   CHECK_HAS_WARN=0
   COMPOSE_OVERRIDE_ARGS=()
-  # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（claude-container#39）
+  # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（#39）
   readonly CHECK_MODE
   local dir="$1" from_ledger="$2"
 
@@ -2507,7 +2507,7 @@ check_one_project() {
   ENV_FILE=""
   if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
     ENV_FILE="$PROJECT_CONF_DIR/env"
-    # readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（claude-container#39）。
+    # readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（#39）。
     # この経路は load_env_file が if ブロックの内側にあるため、ブロックの外へ出すと load の後になり
     # --check だけ env の上書きを素通しする。else 分岐は load を呼ばないため露出しない。
     readonly ENV_FILE
@@ -2542,12 +2542,12 @@ check_one_project() {
       echo "[OK]   $file: プロジェクト側設定あり"
     else
       CHECK_HAS_WARN=1
-      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file がありません。claude-container 同梱の空のフォールバック（$file）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$file を作成してください。"
+      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file がありません。c3c 同梱の空のフォールバック（$file）を使います。このプロジェクトでパッケージやドメインが必要なら $PROJECT_CONF_DIR/$file を作成してください。"
     fi
 
     # packages.txt/requirements.txt の内容診断（validate-build-input.sh を
     # outfile なしで dry-run 呼び出し）。allowed-domains.txt はスコープ外
-    # （ドメイン名に packages 用 regex を当てると誤検知するため、claude-container#34）。
+    # （ドメイン名に packages 用 regex を当てると誤検知するため、#34）。
     # スクリプトのパスは resolve_asset_source() の fixed 解決（RUN_DIR 起点）を使う
     # — check_one_project() は上で $WORKING_DIR（利用側プロジェクトのルート）へ
     # cd 済みのため、相対パスで呼ぶと利用側の同名ファイルが実行され fixed の意味が消える。
@@ -2893,7 +2893,7 @@ ENV_FILE=""
 if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
   ENV_FILE="$PROJECT_CONF_DIR/env"
 fi
-# readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（claude-container#39）。
+# readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（#39）。
 # この2行を load の後ろへ動かすと、env が ENV_FILE/CHECK_MODE を上書きしてガードを沈黙させられる。
 readonly ENV_FILE
 readonly CHECK_MODE
@@ -2954,7 +2954,7 @@ if [[ $BUILD -eq 1 || $IMAGE_PRESENT -eq 0 ]]; then
   stage_build_context
 fi
 
-# 境界アセットのハッシュ（`claude-container#30`）。ビルドの有無に関わらず常に
+# 境界アセットのハッシュ（`#30`）。ビルドの有無に関わらず常に
 # 現在のソース（$RUN_DIR・$PROJECT_CONF_DIR）から計算し、build と run 両方の env
 # プレフィックスへ渡す（下記）。build ブロック内だけに限定すると、-b 無しの初回
 # 起動（compose の暗黙ビルド）でラベルが空になり、直後の通常起動で必ず誤警告が出る。

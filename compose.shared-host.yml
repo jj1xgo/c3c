@@ -1,5 +1,5 @@
 # launcher が guard_shared_home_alias() の条件を満たし、かつホストの $HOME が /home/node でない
-# ときだけ追加する固定設定（claude-container#99）。SHARED_MOUNT の実体を、ホストと同じ絶対パス
+# ときだけ追加する固定設定（#99）。SHARED_MOUNT の実体を、ホストと同じ絶対パス
 # （例 /home/<host user>/obsidian-vault）にも :ro で見せる。/shared（compose.yml、rw）は変えない
 # ので、この :ro は境界ではなく「書き込みは /shared 経由」の目印に留まる。
 # source は launcher が実体解決して export した SHARED_MOUNT、target はホストでの綴り（symlink

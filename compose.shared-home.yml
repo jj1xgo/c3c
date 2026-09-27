@@ -1,4 +1,4 @@
-# launcher が guard_shared_home_alias() の条件を満たすときだけ追加する固定設定（claude-container#99）。
+# launcher が guard_shared_home_alias() の条件を満たすときだけ追加する固定設定（#99）。
 # ホストの ~/.claude/CLAUDE.md が `@~/...` で参照する共有ディレクトリ（SHARED_MOUNT）を、コンテナ内の
 # ~（/home/node）配下の同じ相対位置にも :ro で見せる。/shared（compose.yml、rw）は変えないので、
 # この :ro は境界ではなく「書き込みは /shared 経由」の目印に留まる。

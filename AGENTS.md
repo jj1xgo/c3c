@@ -1,12 +1,12 @@
 # AGENTS.md
 
-本ファイルは claude-container 自体を開発する AI エージェント（Claude Code・Codex 等）向けの開発ガイダンスであり、このコンテナを使って別プロジェクトを動かす利用者への指示ではない（利用側プロジェクトの使い方は README.md を参照）。
+本ファイルは c3c 自体を開発する AI エージェント（Claude Code・Codex 等）向けの開発ガイダンスであり、このコンテナを使って別プロジェクトを動かす利用者への指示ではない（利用側プロジェクトの使い方は README.md を参照）。
 
 ## プロジェクト概要
 
 [sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークした Claude Code サンドボックス環境。apt/pip パッケージや Node.js バージョン等の設定は `.c3c/`（旧名 `.claude-container.d/` も移行期間中は読める）で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
 
-claude-container は標準的な技術（Podman・iptables・fine-grained PAT 等）を取り入れつつ、使い易くて堅牢なコンテナ環境を目指す。新規の境界機構は標準技術の組み合わせを優先し、独自実装の追加は監査対象の拡大として避ける。
+c3c は標準的な技術（Podman・iptables・fine-grained PAT 等）を取り入れつつ、使い易くて堅牢なコンテナ環境を目指す。新規の境界機構は標準技術の組み合わせを優先し、独自実装の追加は監査対象の拡大として避ける。
 
 本リポジトリのミッションは「Claude Code を人手の確認プロンプトに頼らず走らせる（既定 `--permission-mode auto`。auto 化より前にビルドした既存イメージは `-b` で再ビルドするまで `--dangerously-skip-permissions` で動く）ための、プロジェクト非依存なサンドボックス境界の提供・維持」である。
 

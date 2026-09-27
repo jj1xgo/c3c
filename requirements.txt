@@ -1,4 +1,4 @@
-# claude-container のデフォルト pip パッケージ一覧。
+# c3c のデフォルト pip パッケージ一覧。
 # プロジェクト側の .c3c/requirements.txt が無い場合にのみ
 # フォールバックとして使用される。名前＋extras＋バージョン指定子のみの
 # allowlist 検証（validate-build-input.sh）を経てコンテナのシステム Python

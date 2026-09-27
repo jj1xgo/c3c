@@ -7,7 +7,7 @@
 # の変数として保持し、実行は「bash examples/hooks/tests/test-block-pr-approve.sh」
 # のみで完結させること。
 #
-# 判定（claude-container#70）: hook の stdout・stderr・終了コードを別々に取り、
+# 判定（#70）: hook の stdout・stderr・終了コードを別々に取り、
 # deny 期待は「終了コード 0 かつ stdout が単一の JSON オブジェクトで permissionDecision が
 # deny」、pass 期待は「終了コード 0 かつ stdout も stderr も空」を要求する。出力の有無だけで
 # 判定すると、deny 応答が allow に変わる回帰や hook 自体の起動失敗を見逃す。
@@ -153,7 +153,7 @@ run_case "引用 heredoc 本文のバッククォート" pass "$heredoc_backtick
 # --- fail-safe（jq不在） ---
 # hook が使う外部コマンド（bash・cat・grep・sed・awk）だけを symlink した shim ディレクトリを
 # PATH にする。PATH から jq のディレクトリを丸ごと落とす方式だと、usrmerge 環境では bash 自体が
-# 消えて hook が起動せず、テストが空振りする（claude-container#70）。
+# 消えて hook が起動せず、テストが空振りする（#70）。
 SHIM="$TMPDIR_T/shim"
 shim_ok=1
 mkdir -p "$SHIM" || shim_ok=0

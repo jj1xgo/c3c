@@ -40,7 +40,7 @@ check() {
 }
 
 # 結果の 3 行を出して FAIL 件数で終了コードを決める。サブモードと全体実行の両方から呼ぶ
-# （claude-container#65: 全体実行だけ FAIL があっても 0 で終わっていた）。
+# （#65: 全体実行だけ FAIL があっても 0 で終わっていた）。
 finish_by_result() {
   log "========================================"
   log "  結果: PASS=${PASS}  FAIL=${FAIL}"
@@ -51,7 +51,7 @@ finish_by_result() {
   exit 1
 }
 
-# --- 層1: validate-build-input.sh のベクタ表・契約異常系テスト（claude-container#34） ---
+# --- 層1: validate-build-input.sh のベクタ表・契約異常系テスト（#34） ---
 # ハーネス本体は1箇所にだけ書き、--validator-only と通常実行の両方から呼ぶ
 # （複製すると中核設計2で排除したドリフトを検査側に再導入する）。
 # 関数定義は早期ディスパッチより前に置く — bash は関数定義文を実行して初めて
@@ -288,7 +288,7 @@ run_validator_contract() {
 
 # 層2: 配線の回帰条件（Dockerfile.claude が validate-build-input.sh を正しく
 # 使っているか。「スクリプトが正しい」ことと「Dockerfile がそれを使っている」こと
-# は別、claude-container#34）。
+# は別、#34）。
 # アンカー規則（実測に基づく設計判断。実装コメントとして残す）:
 #   - apt-get install・packages.txt を単独のアンカーにしない
 #     （現行 Dockerfile で4論理行にヒットし判別力がゼロになる）
@@ -363,7 +363,7 @@ run_validator_layer2() {
 # の対象外（計画の検証手順が定める合格条件 PASS==82 は層1+契約異常系のみを指す）
 # のため、ここには含めず通常実行フロー側で別途呼ぶ。
 run_validator_layer1_and_contract() {
-  log "## 層1: validate-build-input.sh ベクタ表・契約異常系テスト（claude-container#34）"
+  log "## 層1: validate-build-input.sh ベクタ表・契約異常系テスト（#34）"
   run_validator_layer1
   run_validator_contract
   log ""
@@ -672,7 +672,7 @@ snapshot_check_targets() (
   done
 )
 
-# 保護対象（基点の .claude 以下）だけを記録する（claude-container#131）。snapshot_check_targets と
+# 保護対象（基点の .claude 以下）だけを記録する（#131）。snapshot_check_targets と
 # 同じ属性・同じ NUL 区切りだが、起動台帳・承認記録・ステージングを含めない（拒否経路でも
 # 書かれるそれらの差分で、保護対象の不変判定を汚さないため）。引数は基点の .claude。
 snapshot_config_ro_targets() (
@@ -686,7 +686,7 @@ snapshot_config_ro_targets() (
   fi
 )
 
-# 起動前から不正な型の保護対象が 1 つだけある基点を作り直す（claude-container#131）。
+# 起動前から不正な型の保護対象が 1 つだけある基点を作り直す（#131）。
 # 引数: $1=基点、$2=保護対象名、$3=種別（file / dir / link / linkfile / dangling）。
 # 先行する保護対象は欠落のままにし、symlink の実体は .claude の外へ置く（snapshot に混ぜない）。
 config_ro_fixture_setup() {
@@ -1133,7 +1133,7 @@ SHIM
   launcher_sandbox_cleanup
 }
 
-# init-firewall.sh の resolve_allowed_ports() の検証（claude-container#31、#49）。
+# init-firewall.sh の resolve_allowed_ports() の検証（#31、#49）。
 # 関数を sed で抜き出し、本番と同じ `bash -euo pipefail` の独立プロセスで
 # ALLOWED_PORTS_FILE をフィクスチャに向けて素呼びし、rc・ALLOWED_PORTS（stdout）・
 # ERROR 文（stderr）を親で捕捉する。iptables には触れない。
@@ -1239,7 +1239,7 @@ HARNESS_TAIL
   rm -rf "$t"
 }
 
-# guard_codex_dir() の検証（claude-container#36、#48）。実ホストの ~/.codex を指す
+# guard_codex_dir() の検証（#36、#48）。実ホストの ~/.codex を指す
 # CODEX_DIR を、文字列の表記ゆれ・シンボリックリンクによらず実体で検出して fail-closed
 # にすること。各ケースを通常起動と --check の対で見る。
 run_codex_dir_launcher_tests() {
@@ -1418,8 +1418,8 @@ run_codex_host_plugins_launcher_tests() {
   launcher_sandbox_cleanup
 }
 
-# .claude-container.d/env の許可リスト（claude-container#44）と、対象プロジェクト直下の
-# .env を compose の補間に使わせない遮断（claude-container#60）の検証。env ファイルは
+# .claude-container.d/env の許可リスト（#44）と、対象プロジェクト直下の
+# .env を compose の補間に使わせない遮断（#60）の検証。env ファイルは
 # 実際に $proj/.claude-container.d/env へ書く（既存テストのようにシェル環境で渡すと、
 # 「ファイルのキーを export するか」という本題を検証できない）。
 run_env_file_launcher_tests() {
@@ -1441,7 +1441,7 @@ run_env_file_launcher_tests() {
     bash -c "total=\$(grep -c '^ *podman compose ' '${SCRIPT_DIR}/c3c'); with=\$(grep -c '^ *podman compose .*--env-file /dev/null' '${SCRIPT_DIR}/c3c'); [ \"\$total\" -ge 2 ] && [ \"\$total\" -eq \"\$with\" ]"
   rm -f "$proj/.env"
 
-  # 許可リスト（claude-container#44）。偽 grep は実行痕跡を残してから本物へ委譲する
+  # 許可リスト（#44）。偽 grep は実行痕跡を残してから本物へ委譲する
   # （偽物が動いてもランチャーの流れは壊さず、痕跡の有無だけで判定する）。
   local evil="$root/evil" marker="$root/evil-ran" real_grep
   real_grep="$(command -v grep)"
@@ -1545,7 +1545,7 @@ DUMMY
   launcher_sandbox_cleanup
 }
 
-# guard_base_image() の検証（claude-container#50）。base-image.txt に有効行が無い
+# guard_base_image() の検証（#50）。base-image.txt に有効行が無い
 # （空・コメントのみ）ときに通常起動が無言で止まらず既定値で進み、--check と結果が
 # 一致すること。通常起動と --check は同じ関数を別の呼び出し文脈（素呼び／|| true）で
 # 呼ぶため、両者を必ず対で見る。
@@ -1796,7 +1796,7 @@ run_config_ro_launcher_tests() {
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # G: 起動前から存在する型不一致・symlink は、先行する不足項目を作る前に拒否する
-  #    （claude-container#131）。不正にするのは各配列の末尾（dirs の .git、files の
+  #    （#131）。不正にするのは各配列の末尾（dirs の .git、files の
   #    statusline.sh）で、それより前の項目が作られないことを見る。既存の fixture を汚さない
   #    よう別基点へ隔離し、ケース・モードごとに基点ごと作り直す。
   local g_base g_cfg g_case g_name g_kind g_warn g_mode g_snap_ok
@@ -1852,7 +1852,7 @@ GCASES
   launcher_sandbox_cleanup
 }
 
-# plugin 別名マウント（claude-container#98）の検証。launcher がホスト側 plugins/ の綴りを
+# plugin 別名マウント（#98）の検証。launcher がホスト側 plugins/ の綴りを
 # コンテナ内の同じ絶対パスにも :ro で重ねる override（compose.plugins-alias.yml）を選び、
 # build・run の各呼び出しへ export と override を渡すこと。判定関数 plugins_alias_target()
 # は副作用が無いので、関数定義だけを抽出して /home/node を作らずに一致分岐まで検証する。
@@ -1999,7 +1999,7 @@ CURL
   launcher_sandbox_cleanup
 }
 
-# 指示ファイル・スキルの追加共有（claude-container#99）の検証。launcher が opt-in と値を検証し、
+# 指示ファイル・スキルの追加共有（#99）の検証。launcher が opt-in と値を検証し、
 # compose.shared-home.yml / compose.shared-host.yml / compose.agents.yml を build・run の各呼び出しへ
 # export と一緒に渡すこと、不正値と HOME 外・保護先と重なる値を compose に到達する前に拒否すること。
 # shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
@@ -2347,11 +2347,11 @@ rm -rf "$OVERRIDE_PROJECT_DIR" "$OVERRIDE_CONTEXT_DIR"
 log ""
 
 run_validator_layer1_and_contract
-log "## 層2: Dockerfile.claude 配線の回帰条件（claude-container#34）"
+log "## 層2: Dockerfile.claude 配線の回帰条件（#34）"
 run_validator_layer2
 log ""
 
-log "## packages.txt/requirements.txt ビルド時検証テスト（claude-container#34）"
+log "## packages.txt/requirements.txt ビルド時検証テスト（#34）"
 # 失敗期待用ヘルパ。exit≠0 だけを assert しない — 検証段階より前のレイヤー
 # （apt基盤・gh・Claudeインストール等、ネットワーク依存）の偶発失敗でも fail
 # するため、stderr に検証エラーメッセージが含まれることまで assert して
@@ -2533,7 +2533,7 @@ echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.claude-
 
 BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 # 他のランチャーテストと同じく env -i で隔離する。隔離しないと record_project_in_ledger() が
-# 実ユーザーの $HOME の起動台帳に一時パスを 1 行残す（claude-container#59）。
+# 実ユーザーの $HOME の起動台帳に一時パスを 1 行残す（#59）。
 env -i HOME="$ENV_TESTROOT" PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$ENV_PROJECT_DIR" >/dev/null 2>&1
 AFTER_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 NEW_BUILD_CONTEXT="$(comm -13 <(echo "$BEFORE_BUILD_CONTEXTS" | sort) <(echo "$AFTER_BUILD_CONTEXTS" | sort) | head -1)"
@@ -2546,7 +2546,7 @@ else
   check ".claude-container.d/env がビルドコンテキストに含まれない" false
 fi
 
-# 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（claude-container#59）
+# 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（#59）
 check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/claude-container/projects"
 
 rm -rf "$ENV_TESTROOT"

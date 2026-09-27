@@ -324,40 +324,52 @@ PY
 # $HOME から直接算出して readonly にし、プロジェクト側 env からの上書きを封じる（#39）。
 # ここは関数定義セクションより前なので guard_warn は使えない（stderr へ直接出す）。
 resolve_state_dir() {
-  local new="$HOME/.local/state/c3c" old="$HOME/.local/state/claude-container" before after rc=0
+  local new="$HOME/.local/state/c3c" old="$HOME/.local/state/claude-container" before after rc attempt
   CC_LEGACY_STATE_DIR="$old"
-  CC_STATE_DIR="$new"
-  CC_STATE_NOTICE=""
   local notice_both="旧 state $old が残っています（$new を使います）。旧版の c3c のセッションがすべて終わってから、中身を確認して削除してください。"
-  if [[ ! -e "$old" && ! -L "$old" ]]; then
-    return 0
-  fi
-  if [[ -e "$new" || -L "$new" ]]; then
-    CC_STATE_NOTICE="$notice_both"
-  elif [[ ! -d "$old" ]]; then
-    CC_STATE_NOTICE="旧 state $old はディレクトリではないため移行しません（$new を使います）。不要なら削除してください。"
-  elif [[ $CHECK -eq 1 || $CLEAN -eq 1 ]]; then
-    CC_STATE_DIR="$old"
-    CC_STATE_NOTICE="旧 state $old を読みます。次の通常起動で $new へ移行します。"
-  else
-    if ! before=$(stat -c '%d:%i' -- "$old"); then
-      echo "ERROR: 旧 state $old の状態を確認できません。起動を中止します。" >&2
-      exit 1
+  # 判定は最大 2 回。1 回目の途中で旧が消えた（並行起動が先に移し終えた）ときだけ、遷移表をやり直す
+  # （同一性を取る前に旧が消える順序では、rename 後の同一性確認に届かないため）。
+  for attempt in 1 2; do
+    CC_STATE_DIR="$new"
+    CC_STATE_NOTICE=""
+    rc=0
+    if [[ ! -e "$old" && ! -L "$old" ]]; then
+      return 0
     fi
-    rename_noreplace "$old" "$new" || rc=$?
-    if [[ $rc -eq 0 ]]; then
-      CC_STATE_NOTICE="state を $old から $new へ移行しました（承認記録・起動台帳・CLI の記憶を引き継いでいます）。"
-    elif [[ $rc -eq 3 ]]; then
+    if [[ -e "$new" || -L "$new" ]]; then
+      CC_STATE_NOTICE="$notice_both"
+    elif [[ ! -d "$old" ]]; then
+      if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" ]]; then
+        continue
+      fi
+      CC_STATE_NOTICE="旧 state $old はディレクトリではないため移行しません（$new を使います）。不要なら削除してください。"
+    elif [[ $CHECK -eq 1 || $CLEAN -eq 1 ]]; then
       CC_STATE_DIR="$old"
-      CC_STATE_NOTICE="この環境では state を安全に移行できないため（python3 と上書きしない rename の対応が必要。$old がマウントポイントの場合も移せません）、旧 state $old を使います。c3c のセッションがすべて終わってから mv '$old' '$new' で移してください。"
+      CC_STATE_NOTICE="旧 state $old を読みます。次の通常起動で $new へ移行します。"
     else
-      after=$(stat -c '%d:%i' -- "$new" 2>/dev/null || true)
-      if [[ "$after" != "$before" ]]; then
-        echo "ERROR: state を $old から $new へ移行できませんでした。承認記録を失わないよう起動を中止します。$new の中身を確認し、手で移してから再実行してください。" >&2
+      if ! before=$(stat -c '%d:%i' -- "$old" 2>/dev/null); then
+        if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" ]]; then
+          continue
+        fi
+        echo "ERROR: 旧 state $old の状態を確認できません。起動を中止します。" >&2
         exit 1
       fi
+      rename_noreplace "$old" "$new" || rc=$?
+      if [[ $rc -eq 0 ]]; then
+        CC_STATE_NOTICE="state を $old から $new へ移行しました（承認記録・起動台帳・CLI の記憶を引き継いでいます）。"
+      elif [[ $rc -eq 3 ]]; then
+        CC_STATE_DIR="$old"
+        CC_STATE_NOTICE="この環境では state を安全に移行できないため（python3 と上書きしない rename の対応が必要。$old がマウントポイントの場合も移せません）、旧 state $old を使います。c3c のセッションがすべて終わってから mv '$old' '$new' で移してください。"
+      else
+        after=$(stat -c '%d:%i' -- "$new" 2>/dev/null || true)
+        if [[ "$after" != "$before" ]]; then
+          echo "ERROR: state を $old から $new へ移行できませんでした。承認記録を失わないよう起動を中止します。$new の中身を確認し、手で移してから再実行してください。" >&2
+          exit 1
+        fi
+      fi
     fi
-  fi
+    break
+  done
   if [[ -n "$CC_STATE_NOTICE" && $CHECK -ne 1 ]]; then
     echo "WARNING: $CC_STATE_NOTICE" >&2
   fi

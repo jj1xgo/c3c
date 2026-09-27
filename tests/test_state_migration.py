@@ -114,6 +114,19 @@ class StateMigrationTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.fields(r)['DIR'], str(self.new))
 
+    # S-4b: 同一性を取る前（stat の直前）に並行起動が移し終えた → 判定をやり直して新を使う（ERROR で止めない）
+    def test_concurrent_move_before_identity_is_reevaluated(self):
+        self.make_old()
+        override = ('stat() { if [[ ! -e "$HOME/moved" ]]; then : > "$HOME/moved"; '
+                    'mv -T -- "$HOME/.local/state/claude-container" "$HOME/.local/state/c3c"; fi; '
+                    'command stat "$@"; }')
+        r = self.run_resolve(override=override)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.fields(r)['DIR'], str(self.new))
+        self.assertTrue((self.new / 'projects').is_file())
+        self.assertNotIn('ERROR', r.stderr)
+        self.assertNotIn('ディレクトリではない', r.stderr)
+
     # S-5: rename 失敗後に新が別物・無い → ERROR で止まる（黙って空にしない）
     def test_failed_move_with_different_target_stops(self):
         self.make_old()

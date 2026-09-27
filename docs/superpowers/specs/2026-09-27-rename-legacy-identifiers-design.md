@@ -34,6 +34,7 @@
 
 - `CC_*` の内部変数（`CC_AGENT`・`CC_STATE_DIR` 等）: 旧名の文字列ではない。
 - compose のサービス名とイメージ名の接尾辞 `_claude-auth-workspace`: 旧名の文字列ではなく、変えると全イメージの名前が変わる。必要なら別課題。
+- レガシー共有イメージ `localhost/claude-container_claude-auth-workspace`: 現れるのは `clean_all()` のコメントだけで、清掃は汎用の正規表現 `^localhost/.+_claude-auth-workspace$` で拾う。識別子として扱っていないので変えない（コメントは第 2 段で整理してよい）。
 - upstream（sethjensen1/claude-container）の帰属表示と LICENSE、過去の Issue・PR・実行ログの URL（`jj1xgo/claude-container/...` は GitHub が転送する）。
 - `docs/superpowers/plans/`・`specs/` の過去の記録、vault の記述。
 - 旧入口 `claude-container` の移行表（README「旧コマンドからの移行」節）: 旧コマンド名の案内として残す。
@@ -46,9 +47,10 @@
 - `load_env_file()` の後（通常起動・`--check` とも）に、キーの対ごとに解決する:
   - 新旧の両方が空でない値で設定されている → `ERROR` で起動を中止（値が同じでも混ぜない。`--check` は `[FAIL]`）。`.c3c/env` とシェル環境のどちらから来たかは問わない。
   - 旧だけが空でない → `WARNING` で新キー名への書き換えを勧め（`--check` は `[WARN]`）、値を新キーへ写す。
-  - 以降の launcher 内部（`guard_ipv6()`・`NO_FIREWALL=1` の警告等）は新キーだけを見る。
+  - 解決の後は旧キーを unset し、以降の launcher 内部（`guard_ipv6()`・`NO_FIREWALL=1` の警告・compose の補間）は新キーだけを正とする。
 - 空文字は「未設定」と同じに扱う（現行の `${VAR:-}` と同じ。空の export で誤って二重設定と判定しない）。
-- `compose.yml`（と `compose.ipv6.yml`）はコンテナへ新旧両方の名前で同じ値を渡す。第 1 段の新しいイメージの `entrypoint.sh` は新キーを読み、旧イメージの `entrypoint.sh` は旧キーを読むため、`-b` しなくてもファイアウォール無効化・IPv6 のモードが従来どおり効く。
+- `compose.yml` はコンテナ側の `C3C_NO_FIREWALL` と `CLAUDE_CONTAINER_NO_FIREWALL` の両方を、ホスト側の新キー `${C3C_NO_FIREWALL:-}` から補間する（ホスト側の旧キーからは補間しない。旧キーから補間すると、`.c3c/env` を新キーへ書き換えた利用者の旧イメージでファイアウォール無効化が黙って効かなくなる）。IPv6 は固定値なので、`compose.yml`（`"0"`）と `compose.ipv6.yml`（`"1"`）の両方に新旧両方の名前で書く。第 1 段の新しいイメージの `entrypoint.sh` は新キーを読み、旧イメージの `entrypoint.sh` は旧キーを読むため、`-b` しなくてもファイアウォール無効化・IPv6 のモードが従来どおり効く。
+- 利用者が書く `C3C_` 接頭辞のキーは許可リストの 2 つだけ。launcher 内部の `C3C_PREF_KEY`・`C3C_GITCONFIG_SOURCE` 等は許可リスト外で、`.c3c/env` からは設定できない（従来どおり）。
 - `.c3c/env` を grep する `NO_FIREWALL=1` の警告（`c3c` の `guard_*`）は、新旧どちらのキー名でも出す。
 
 ### `C3C_DIR`
@@ -63,8 +65,10 @@
   - rename が失敗し、その後に新がディレクトリとして存在する → 並行起動が先に移したとみなし成功扱い。新が無ければ `ERROR` で中止（承認記録を黙って空にしない）。
   - 新旧の両方がある → 新を使い、旧の残存を `WARNING` で知らせる（中身の確認と削除を案内。自動削除はしない）。
   - 旧が symlink・ファイル等 → 辿らず移さない。旧の残存を `WARNING` で知らせる。
-- `--check` は書き込まない。新が無く旧がディレクトリなら、起動台帳・承認記録の読み取りに旧を使い、次の通常起動で移行する旨を `[WARN]` で出す。新旧の両方があれば `[WARN]`。
+- 移行は、agent-preference の read（前回 CLI の記憶の読み取り）と `freeze_project_paths()` より前に行う。
+- `--check` は書き込まない。新が無く旧がディレクトリなら、起動台帳・承認記録の読み取りに旧を使い、次の通常起動で移行する旨を `[WARN]` で出す。新旧の両方があれば `[WARN]`。実効の読み先は、`CC_STATE_DIR`・`MCP_APPROVAL_STORE` を readonly にする時点（`load_env_file()` より前。#39）で確定し、env から変えられない性質を保つ。具体的な置き場所は計画で定める。
 - `--clean`（全体）は新旧どちらの承認記録と台帳も削除する。
+- 旧版へ戻したとき・古い checkout を動かしたとき: 旧版の c3c は旧 state を空から作り直すため、承認の確認がもう一度出て、起動台帳は空になる。その後に新版へ戻ると「新旧の両方がある」の `WARNING` が出続けるので、旧 state の中身を確認して削除する。README とタグ本文に書く。
 
 ### label
 

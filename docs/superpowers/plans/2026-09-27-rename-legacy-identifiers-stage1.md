@@ -1216,6 +1216,8 @@ Expected: `io.c3c.asset-hash`・`io.c3c.base-image`・`io.c3c.ipv6-support`・`i
 区分: 境界 — ファイアウォールを無効化する env キー、承認記録（state）と秘密のマウント先、`docs/development-invariants.md` の不変条件に触れるため。計画・実装完了時（PR 前）・PR 後の 3 段階で Codex と Claude の二重レビューを行う。
 推奨実装: Opus — 秘密を読む経路（`SECRETS_DIR` のマウント先）と、承認記録を失いうる state の移行という境界の変更を含む（判定基準の 2）。Sonnet を推さないのは、Task 4 の遷移表・同一性確認と Task 5 の組単位の選択で、不変条件と突き合わせる判断が実装中に残るため。Codex を推さないのは、Task 8 の実機確認がホストの実 Podman と持ち主の実 state を要し、`~/.local/state` の移行を伴うため。
 
+実装: Opus（持ち主指定、2026-09-27。実行方法は executing-plans）
+
 ## 計画レビューの記録
 
 - 1 巡目（対象 e793b00）: Codex（gpt-6-astra、`codex exec --sandbox read-only`。依頼文の「コマンド実行はしない」で読めず未実施になったため、読み取り専用コマンドを許可して再実行）は「修正後に渡せる」、Critical 0・Important 7・Minor 3。Claude（claude-opus-5-5、headless 読み取り専用）は「修正後に渡せる」、Critical 0・Important 4・Minor 12。共通の Important は E-R2 の期待の不成立、compose 補間の未検証、Task 2 のテストが entrypoint 後半まで走る点、実装前から緑のテスト。Codex 固有は空値の部分的な新由来 label、symlink の旧 state の清掃漏れ、新 suite の未登録、単独 label の新優先の未検証。Claude 固有は旧 state がマウントポイントのときの `EBUSY`。いずれも反映した。spec の変更（`relevant` 判定と単独 label の「空か欠落」）は Task 5 で行う。

@@ -160,7 +160,6 @@ compose_merged_overrides_ok() {
   return "$rc"
 }
 
-
 if [ "${#scripts[@]}" -eq 0 ]; then
   echo "ERROR: 対象のスクリプトが1つも見つかりません（git ls-files + shebang 判定）。" >&2
   exit 1

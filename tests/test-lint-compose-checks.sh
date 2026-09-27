@@ -126,7 +126,7 @@ long_quoted_tty="services:
 run_case "引用された 'true' も失敗" tty 1 "$long_quoted_tty"
 
 # --- 7 ファイル同時 config（lint.sh の compose_merged_overrides_ok、#174） ---
-# 呼び出し側を部分一致（grep -F 等）へ戻すと、.agents-x の fixture が合格して赤になる。
+# 関数の中の完全一致を部分一致（grep -F 等）へ戻すと、.agents-x の fixture が合格して赤になる。
 merged_short='services:
   claude-auth-workspace:
     network_mode: pasta:-g,fe80::1

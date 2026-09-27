@@ -86,9 +86,9 @@
 
 - `Dockerfile.claude` は `io.c3c.*` と旧 `claude-container.*` の両方を書く（旧版の c3c へ戻したときに、ドリフト検知・IPv6 対応確認・`--clean-missing` が働くように）。配置は既存の不変条件に従う: 由来 label は全命令の最後の単一 `LABEL` に新旧 6 つを入れる（`docs/development-invariants.md` の由来 label の節）。`io.c3c.asset-hash` は旧と同じく CACHEBUST を消費する `RUN` より後に置く。
 - 読み取りの fallback の単位:
-  - 単独のキー（`asset-hash`・`base-image`・`ipv6-support`）はキーごとに、`io.c3c.*` があればそれを、無ければ旧を読む（`guard_asset_drift()`・`guard_ipv6()`）。
+  - 単独のキー（`asset-hash`・`base-image`・`ipv6-support`）はキーごとに、`io.c3c.*` の値があればそれを、空か欠落なら旧を読む（`podman image inspect` の `index` は欠落キーにも空文字を返し、両者を区別できないため）（`guard_asset_drift()`・`guard_ipv6()`）。
   - 由来 label（`project-metadata`・`project-path`・`project-name`）は**組単位**で選ぶ。`io.c3c.project-*` が 1 つでもあれば新の組だけを使い（不完全なら従来どおり不完全として扱い、旧で補わない）、1 つも無いときだけ旧の組を使う。新旧の組を混ぜない（`docs/development-invariants.md` の「不完全な由来ラベルを旧形式照合へフォールバックしない」を保つ）。
-  - `project-images.py` の `relevant` 判定（名前なしイメージの `claude-container.` 前方一致）は、由来 label の新旧どちらかの組のキーを持つかで判定する。`io.c3c.` の前方一致にはしない（`io.c3c.codex-audit-protocol` 等は既存の全イメージに付くので、判定が広がる）。
+  - `project-images.py` の `relevant` 判定（名前なしイメージ）は、従来の `claude-container.` 前方一致を残したうえで、新の由来 label（`io.c3c.project-*`）のキーを持つものも加える。`io.c3c.` の前方一致にはしない（`io.c3c.codex-audit-protocol` 等は既存の全イメージに付くので、判定が広がる）。旧の前方一致を残すのは、第 1 段より前の名前なしイメージの判定を狭めないため（実装計画のレビューで確定）。
 - `Dockerfile.claude` の変更で境界アセットのハッシュが変わるため、既存イメージでは `-b` まで起動時と `--check` でドリフトの `WARNING` が出る（起動は止まらない。v14.1.x と同じ扱い。`Dockerfile.claude`・compose がハッシュ対象かは計画で `ASSET_HASH_TARGETS` を確認する）。
 
 ### コンテナ内のパス

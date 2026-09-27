@@ -829,6 +829,19 @@ load_env_file() {
   fi
 }
 
+# 単独のキーの image label を新名（io.c3c.<suffix>）優先で読み、空なら旧名（claude-container.<suffix>）を読む
+# （改名 第 1 段。第 1 段より前のイメージは旧名だけを持つ）。inspect の index は欠落キーにも空文字を返すので、
+# 欠落と空値は区別しない。由来 label（project-*）は組単位で選ぶ必要があるのでここでは扱わない
+# （project-images.py）。inspect の失敗は従来どおり空として扱う。
+image_label() {
+  local value
+  value=$(podman image inspect --format "{{index .Labels \"io.c3c.$1\"}}" "$IMAGE_NAME" 2>/dev/null || true)
+  if [[ -z "$value" ]]; then
+    value=$(podman image inspect --format "{{index .Labels \"claude-container.$1\"}}" "$IMAGE_NAME" 2>/dev/null || true)
+  fi
+  printf '%s' "$value"
+}
+
 # 設定から固定の Compose override を選ぶ。任意の podman 引数は受け付けない。
 guard_ipv6() {
   case "${C3C_IPV6:-0}" in
@@ -845,7 +858,7 @@ guard_ipv6() {
   command -v podman >/dev/null 2>&1 || return 0
   podman image exists "$IMAGE_NAME" 2>/dev/null || return 0
   local support
-  support=$(podman image inspect --format '{{index .Labels "claude-container.ipv6-support"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  support=$(image_label ipv6-support)
   if [[ "$support" != 1 ]]; then
     guard_fail "ERROR: イメージ $IMAGE_NAME は IPv6 対応を確認できません。-b でリビルドしてください。"
     return 1
@@ -2537,8 +2550,8 @@ guard_asset_drift() {
     return 0
   fi
   local recorded_hash recorded_base_image
-  recorded_hash=$(podman image inspect --format '{{index .Labels "claude-container.asset-hash"}}' "$IMAGE_NAME" 2>/dev/null || true)
-  recorded_base_image=$(podman image inspect --format '{{index .Labels "claude-container.base-image"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  recorded_hash=$(image_label asset-hash)
+  recorded_base_image=$(image_label base-image)
   if ! compute_asset_hash; then
     guard_warn "WARNING: 境界アセットのハッシュ計算に失敗したため、ドリフト確認をスキップしました。"
     return 0
@@ -2550,7 +2563,7 @@ guard_asset_drift() {
   fi
   # base-image.txt を変更 → -b → 元の値に戻して -b 忘れ、という順序では
   # compute_asset_hash() の内容ハッシュが一致してしまい上記の比較では検知できない。
-  # 実ビルド値を記録したラベル（Dockerfile.claude の claude-container.base-image）と
+  # 実ビルド値を記録したラベル（Dockerfile.claude の io.c3c.base-image。旧イメージは旧名）と
   # 現在の解決結果 $BASE_IMAGE（guard_base_image() が先に設定している前提）を
   # 直接比較することで、この場合も検知する。
   if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_base_image" != "$BASE_IMAGE" ]]; then

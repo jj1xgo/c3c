@@ -618,6 +618,11 @@ case "\$1 \$2" in
   "image exists") exit 0 ;;
   "image inspect")
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
+    if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_NEW_SUPPORT-}"; fi
+    if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_NEW-}"; fi
+    if [[ "\$*" == *claude-container.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_OLD-}"; fi
+    if [[ "\$*" == *io.c3c.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_NEW-}"; fi
+    if [[ "\$*" == *claude-container.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_OLD-}"; fi
     # Claude の project 設定ゲート（#163）: 作業ディレクトリに .claude がある場合（F の \$HOME 等）に照合される。
     if [[ "\$*" == *io.c3c.claude-project-audit-protocol* ]]; then printf '%s\n' 1; fi
     exit 0 ;;
@@ -1714,6 +1719,35 @@ CURL
   out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # L 系（改名 第 1 段）: 単独の label の新名優先と旧名 fallback。後続の既存 check の env を消さないよう末尾に置く。
+  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
+  run_launcher TEST_IPV6_NEW_SUPPORT=1 TEST_IPV6_SUPPORT=
+  check "L-1: 新 label io.c3c.ipv6-support だけでも IPv6 対応と判定する（rc=$rc）" bash -c "[ $rc -eq 0 ]"
+  run_launcher TEST_IPV6_NEW_SUPPORT= TEST_IPV6_SUPPORT=
+  check "L-2: 新旧どちらの label も無ければ IPv6 を拒否する（rc=$rc）" bash -c "[ $rc -ne 0 ]"
+  run_launcher TEST_IPV6_NEW_SUPPORT=0 TEST_IPV6_SUPPORT=1
+  check "L-7: 新 label が 1 以外なら、旧 label が 1 でも IPv6 を拒否する（新優先。rc=$rc）" bash -c "[ $rc -ne 0 ]"
+  rm -f "$proj/.claude-container.d/env"
+  run_launcher
+  local real_hash real_base
+  real_hash=$(sed -n 's/^ASSET_HASH=//p' "$root/compose-env")
+  real_base=$(sed -n 's/^BASE_IMAGE=//p' "$root/compose-env")
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_ASSET_HASH_OLD=bogus
+  check "L-3: asset-hash は新 label を優先する（旧が違っても drift なし）" \
+    bash -c "! printf '%s' \"\$0\" | grep -q '境界アセット.*変更されています'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW=bogus TEST_ASSET_HASH_OLD="$real_hash"
+  check "L-4: asset-hash の新 label が違えば、旧が一致していても drift を出す" \
+    bash -c "printf '%s' \"\$0\" | grep -q '境界アセット.*変更されています'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW= TEST_ASSET_HASH_OLD="$real_hash"
+  check "L-5: 新 label が空なら旧 label へ fallback（drift なし）" \
+    bash -c "! printf '%s' \"\$0\" | grep -qE '境界アセット.*変更されています|ハッシュラベルがありません'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW=bogus TEST_BASE_IMAGE_OLD="$real_base"
+  check "L-6: base-image も新 label を優先する" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW= TEST_BASE_IMAGE_OLD=bogus
+  check "L-8: base-image の新 label が空なら旧 label へ fallback する（旧が違えば警告）" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   launcher_sandbox_cleanup
 }

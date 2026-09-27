@@ -327,8 +327,9 @@ resolve_state_dir() {
   local new="$HOME/.local/state/c3c" old="$HOME/.local/state/claude-container" before after rc attempt
   CC_LEGACY_STATE_DIR="$old"
   local notice_both="旧 state $old が残っています（$new を使います）。旧版の c3c のセッションがすべて終わってから、中身を確認して削除してください。"
-  # 判定は最大 2 回。1 回目の途中で旧が消えた（並行起動が先に移し終えた）ときだけ、遷移表をやり直す
-  # （同一性を取る前に旧が消える順序では、rename 後の同一性確認に届かないため）。
+  # 判定は最大 2 回。1 回目の途中で旧が消え、かつ新が現れた（並行起動が先に移し終えた）ときだけ、遷移表を
+  # やり直す（同一性を取る前に旧が消える順序では、rename 後の同一性確認に届かないため）。旧が見えなくなっても
+  # 新が現れていなければ（親の権限の喪失・削除など）並行移行とは扱わず、従来どおり止める。
   for attempt in 1 2; do
     CC_STATE_DIR="$new"
     CC_STATE_NOTICE=""
@@ -339,7 +340,7 @@ resolve_state_dir() {
     if [[ -e "$new" || -L "$new" ]]; then
       CC_STATE_NOTICE="$notice_both"
     elif [[ ! -d "$old" ]]; then
-      if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" ]]; then
+      if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" && ( -e "$new" || -L "$new" ) ]]; then
         continue
       fi
       CC_STATE_NOTICE="旧 state $old はディレクトリではないため移行しません（$new を使います）。不要なら削除してください。"
@@ -348,7 +349,7 @@ resolve_state_dir() {
       CC_STATE_NOTICE="旧 state $old を読みます。次の通常起動で $new へ移行します。"
     else
       if ! before=$(stat -c '%d:%i' -- "$old" 2>/dev/null); then
-        if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" ]]; then
+        if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" && ( -e "$new" || -L "$new" ) ]]; then
           continue
         fi
         echo "ERROR: 旧 state $old の状態を確認できません。起動を中止します。" >&2

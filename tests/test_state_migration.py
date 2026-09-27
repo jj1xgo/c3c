@@ -127,6 +127,16 @@ class StateMigrationTests(unittest.TestCase):
         self.assertNotIn('ERROR', r.stderr)
         self.assertNotIn('ディレクトリではない', r.stderr)
 
+    # S-4c: 旧が見えなくなったのに新も現れていない（権限の喪失・削除など、並行移行ではない）→ 成功扱いにせず止める
+    def test_old_vanishing_without_new_is_not_treated_as_concurrent_move(self):
+        self.make_old()
+        override = ('stat() { if [[ ! -e "$HOME/moved" ]]; then : > "$HOME/moved"; '
+                    'rm -rf -- "$HOME/.local/state/claude-container"; fi; command stat "$@"; }')
+        r = self.run_resolve(override=override)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('ERROR', r.stderr)
+        self.assertFalse(os.path.lexists(self.new))
+
     # S-5: rename 失敗後に新が別物・無い → ERROR で止まる（黙って空にしない）
     def test_failed_move_with_different_target_stops(self):
         self.make_old()

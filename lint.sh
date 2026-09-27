@@ -253,7 +253,7 @@ elif command -v podman >/dev/null 2>&1; then
   # 承認記録の :ro と TTY/stdin 無効は provider の出力形式（短縮 / long syntax、false の省略）に
   # 依らず意味で検査する（compose_mount_is_ro / compose_tty_disabled）。
   if base=$(podman compose -f compose.yml config); then
-    for target in /etc/claude-container/codex-mcp-approved.json /etc/claude-container/mcp-approved-hash /etc/claude-container/claude-project-approved.json /home/node/.gitconfig; do
+    for target in /etc/claude-container/codex-mcp-approved.json /etc/claude-container/mcp-approved-hash /etc/claude-container/claude-project-approved.json /home/node/.gitconfig /home/node/.config/c3c/secrets /home/node/.config/claude-container/secrets; do
       compose_mount_is_ro "$target" <<<"$base" || status=1
     done
     grep -qE '^\s*CC_CODEX_START_MODE:' <<<"$base" \

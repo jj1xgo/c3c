@@ -98,6 +98,10 @@ services:
       # ファイルのみコンテナ内で環境変数として export される — entrypoint.sh 参照）。
       # 未設定時は /dev/null をマウント（EXTRA_MOUNT と同じオプトインパターン。ディレクトリで
       # なく /dev/null になるため entrypoint.sh 側は [ -d ] で判別する）。
+      # 改名 第 1 段: 新パス（~/.config/c3c/secrets）と旧パスの両方へ同じ SECRETS_DIR を :ro で載せる。
+      # 利用者のスクリプト・MCP 設定が第 2 段までに新パスへ移れるよう、-b していない旧イメージでも新パスを
+      # 使えるようにする。entrypoint.sh・git-askpass.sh は第 1 段では旧パスを読む（旧イメージとの整合）。
+      - ${SECRETS_DIR:-/dev/null}:/home/node/.config/c3c/secrets:ro
       - ${SECRETS_DIR:-/dev/null}:/home/node/.config/claude-container/secrets:ro
       # ホスト側 git 設定のオプトインマウント（issue #6: Author identity unknown 対策）。
       # bind 元は launcher の guard_gitconfig_file() が C3C_GITCONFIG_SOURCE に export する:

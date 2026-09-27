@@ -542,6 +542,8 @@ Expected: `rc=0`、`FAIL=0`。
 区分: 境界（`claude-project-audit.py` は `docs/development-invariants.md` が定める境界アセットで、承認記録の読み方を変える。SECURITY-CLAIMS C-5 の保証文も直す。計画・実装完了時（PR 前）・PR 後の 3 段の二重レビュー。4 件を 1 本にまとめるのは、分けると境界の PR と通常の PR でレビューの呼び出しが計 10 回、まとめると 6 回で済むため）
 推奨実装: Codex（実装者の判定 1〜3 に当たらない。コンテナ内でしか成立しない作業ではなく、`~/.claude` 配下・hook・秘密の経路にも触れない。文書の文言まで逐語で確定しているので、設計判断も残らない。4 の「host の checkout で完結し、逐語手順と Expected まで確定」に当たる）
 
+実装: Codex（持ち主指定、2026-09-27。区分は境界で確定）
+
 ## Codex で実装する場合の実行条件
 
 - sandbox: `workspace-write`。外部ネットワークは Task 1〜4 と Task 5 Step 1・2 には不要。ただし、PTY（`pty.openpty`・`TIOCSCTTY`）、`setsid`、loopback の bind（`--launcher-only` の `tests/test_network_timeouts.py`）、`lint.sh` の `podman compose config` は要る。Task 5 Step 3（実 Podman・実ビルド・外部ネットワーク）は Codex では行わず、`not run` として進行役がホストで行う。

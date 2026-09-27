@@ -353,7 +353,7 @@ class ComposeContractTests(EntrypointCase):
         (home / '.claude').mkdir(parents=True, exist_ok=True)
         (home / '.claude.json').touch()
         env = {'PATH': os.environ['PATH'], 'HOME': self.env['HOME'], 'BUILD_CONTEXT_DIR': str(self.root),
-               'CONTEXT': str(self.workspace), 'CLAUDE_CONTAINER_DIR': str(ROOT)}
+               'CONTEXT': str(self.workspace), 'C3C_DIR': str(ROOT)}
         env.update(overrides)
         result = subprocess.run([podman, 'compose', '-f', str(ROOT / 'compose.yml'), '--env-file', '/dev/null', 'config'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
@@ -378,7 +378,7 @@ class ComposeContractTests(EntrypointCase):
         (home / '.claude').mkdir(parents=True, exist_ok=True)
         (home / '.claude.json').touch()
         env = {'PATH': os.environ['PATH'], 'HOME': self.env['HOME'], 'BUILD_CONTEXT_DIR': str(self.root),
-               'CONTEXT': str(self.workspace), 'CLAUDE_CONTAINER_DIR': str(ROOT)}
+               'CONTEXT': str(self.workspace), 'C3C_DIR': str(ROOT)}
         env.update(overrides)
         result = subprocess.run([podman, 'compose', '-f', str(ROOT / 'compose.yml'), '--env-file', '/dev/null', 'config'],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=60)

@@ -56,18 +56,31 @@ fi
 readonly CODEX_START_MODE CODEX_READ_ONLY
 
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
-# 無効化する場合は利用側プロジェクトの .c3c/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
+# 無効化する場合は利用側プロジェクトの .c3c/env に C3C_NO_FIREWALL=1 を書く。
+# 改名 第 1 段: 新キー（C3C_*）を優先し、未設定・空なら旧キー（CLAUDE_CONTAINER_*）を読む。旧 launcher の
+# compose（旧キーだけを渡す）でこのイメージを起動したときも従来どおり効かせるため。新 compose は同じ値を
+# 両方の名前で渡すので、値が食い違うのは想定外の経路 — firewall より前に止める。
+c3c_resolve_mode_key() {
+  local new_value="$1" old_value="$2" name="$3"
+  if [ -n "$new_value" ] && [ -n "$old_value" ] && [ "$new_value" != "$old_value" ]; then
+    echo "ERROR: $name と旧名の値が一致しません（$new_value / $old_value）。起動を中止します" >&2
+    exit 1
+  fi
+  if [ -n "$new_value" ]; then printf '%s' "$new_value"; else printf '%s' "$old_value"; fi
+}
+C3C_IPV6_MODE=$(c3c_resolve_mode_key "${C3C_IPV6:-}" "${CLAUDE_CONTAINER_IPV6:-}" C3C_IPV6) || exit 1
+C3C_NO_FIREWALL_MODE=$(c3c_resolve_mode_key "${C3C_NO_FIREWALL:-}" "${CLAUDE_CONTAINER_NO_FIREWALL:-}" C3C_NO_FIREWALL) || exit 1
 firewall_args=()
-case "${CLAUDE_CONTAINER_IPV6:-0}" in
+case "${C3C_IPV6_MODE:-0}" in
   ''|0) ;;
   1) firewall_args+=(--ipv6) ;;
-  *) echo "ERROR: CLAUDE_CONTAINER_IPV6 は0または1で指定してください。起動を中止します" >&2; exit 1 ;;
+  *) echo "ERROR: C3C_IPV6 は0または1で指定してください。起動を中止します" >&2; exit 1 ;;
 esac
-if [ "${CLAUDE_CONTAINER_NO_FIREWALL:-}" = "1" ]; then
-  echo "WARNING: エグレスファイアウォールは無効です（CLAUDE_CONTAINER_NO_FIREWALL=1）。コンテナのネットワークは無制限です" >&2
+if [ "$C3C_NO_FIREWALL_MODE" = "1" ]; then
+  echo "WARNING: エグレスファイアウォールは無効です（C3C_NO_FIREWALL=1）。コンテナのネットワークは無制限です" >&2
 else
   if ! sudo /usr/local/bin/init-firewall.sh "${firewall_args[@]}"; then
-    echo "ERROR: ファイアウォールの設定に失敗しました。起動を中止します（無効化するには CLAUDE_CONTAINER_NO_FIREWALL=1）" >&2
+    echo "ERROR: ファイアウォールの設定に失敗しました。起動を中止します（無効化するには C3C_NO_FIREWALL=1）" >&2
     exit 1
   fi
   # 初期化後に非特権の監視ヘルパーを起動する。15秒待機後の差分更新、
@@ -115,7 +128,7 @@ fi
 # 対しては opt-out という迂回経路自体を作らない、という設計判断（README「セキュリティ
 # モデル」節、`#29`）。env は全キー無条件で export されるため、
 # opt-out 変数を設ければそのプロジェクト自身の env に書くだけでゲートが無効化できて
-# しまう（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。env 自体は運用者が書く
+# しまう（C3C_NO_FIREWALL と同じ迂回経路）。env 自体は運用者が書く
 # 信頼入力として扱っており（README同節）、この判断は env 全般の信頼性を疑うものではない。
 # Claude 経路だけのゲート。Codex 経路は下の codex-mcp-audit.py による snapshot/verify を通し、
 # Claude 用ゲートを Codex の審査に代用しない（launcher 側の分岐と同じ）。
@@ -243,7 +256,7 @@ if [ -d "$EXPORT_MOUNT" ]; then
       continue
     fi
     # ${!name+x} は set 判定（値でなく「存在するか」）。set-but-empty な compose
-    # 変数（例: CLAUDE_CONTAINER_NO_FIREWALL）や bash の readonly シェル変数
+    # 変数（例: C3C_NO_FIREWALL）や bash の readonly シェル変数
     # （UID 等）も捕捉できるため、非空判定（${!name:-}）より安全側に倒せる。
     if [ -n "${!secret_name+x}" ]; then
       echo "WARNING: secrets/export: '$secret_name' は既に環境変数に設定されています。スキップします" >&2

@@ -411,7 +411,7 @@ class ResolverConsistencyTests(ConfigCase):
 
     def test_same_inputs_stage_identically_and_hash_matches_between_layouts(self):
         self.fill_inputs(self.legacy)
-        (self.proj / '.env').write_text('CODEX_DIR=/evil\nCLAUDE_CONTAINER_NO_FIREWALL=1\n')
+        (self.proj / '.env').write_text('CODEX_DIR=/evil\nC3C_NO_FIREWALL=1\n')
         legacy_run, legacy_staged = self.run_and_capture('claude', str(self.proj))
         self.assertIsNotNone(legacy_staged)
         self.assertEqual(legacy_staged and hashlib.sha256(b'htop\n').hexdigest(), legacy_staged['packages.txt'])

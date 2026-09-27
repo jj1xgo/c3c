@@ -79,8 +79,59 @@ class EntrypointTests(unittest.TestCase):
                                       env={'PATH': td + ':' + os.defpath, 'RECORD': str(record),
                                            'CLAUDE_CONTAINER_IPV6': 'true'}, text=True, capture_output=True)
             self.assertEqual(response.returncode, 1)
-            self.assertIn('CLAUDE_CONTAINER_IPV6', response.stderr)
+            self.assertIn('C3C_IPV6', response.stderr)
             self.assertFalse(record.exists())
+
+    def run_first_half(self, env_extra):
+        # 起動前半（BOUNDARY まで）だけを実行する。後半（秘密の export・ゲート・exec claude）へは進ませない
+        # （test_refresh_loop_preserves_mode と同じ抽出。NO_FIREWALL=1 では sudo を通らないため、全体を実行すると
+        # 後半の helper・/workspace・/dev/tty に触れうる）。
+        full = (ROOT / 'entrypoint.sh').read_text()
+        self.assertIn(BOUNDARY, full)
+        source = full.split(BOUNDARY)[0]
+        self.assertNotIn('\nexec claude', source)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            fake = tmp / 'sudo'
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD"\nexit 1\n')
+            fake.chmod(0o755)
+            env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), **env_extra}
+            response = subprocess.run(['bash', '-c', source], env=env, text=True, capture_output=True,
+                                      stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)
+            record = (tmp / 'record').read_text().splitlines() if (tmp / 'record').exists() else None
+            return response, record
+
+    def test_new_key_preferred_and_old_key_fallback(self):
+        cases = [
+            ({'C3C_IPV6': '1'}, ['--ipv6']),
+            ({'CLAUDE_CONTAINER_IPV6': '1'}, ['--ipv6']),
+            ({'C3C_IPV6': '1', 'CLAUDE_CONTAINER_IPV6': '1'}, ['--ipv6']),
+            ({'C3C_IPV6': '', 'CLAUDE_CONTAINER_IPV6': '1'}, ['--ipv6']),
+            ({'C3C_IPV6': '0', 'CLAUDE_CONTAINER_IPV6': '0'}, []),
+        ]
+        for env_extra, expected in cases:
+            with self.subTest(env=env_extra):
+                response, record = self.run_first_half(env_extra)
+                self.assertEqual(response.returncode, 1)
+                self.assertEqual(record, ['/usr/local/bin/init-firewall.sh', *expected])
+
+    def test_conflicting_new_and_old_values_stop_before_firewall(self):
+        for env_extra in ({'C3C_IPV6': '1', 'CLAUDE_CONTAINER_IPV6': '0'},
+                          {'C3C_NO_FIREWALL': '1', 'CLAUDE_CONTAINER_NO_FIREWALL': '0'}):
+            with self.subTest(env=env_extra):
+                response, record = self.run_first_half(env_extra)
+                self.assertEqual(response.returncode, 1)
+                self.assertIsNone(record)
+                self.assertIn('ERROR', response.stderr)
+
+    def test_no_firewall_new_and_old_keys(self):
+        for env_extra in ({'C3C_NO_FIREWALL': '1'}, {'CLAUDE_CONTAINER_NO_FIREWALL': '1'},
+                          {'C3C_NO_FIREWALL': '1', 'CLAUDE_CONTAINER_NO_FIREWALL': '1'}):
+            with self.subTest(env=env_extra):
+                response, record = self.run_first_half(env_extra)
+                self.assertEqual(response.returncode, 0, response.stderr)
+                self.assertIsNone(record)
+                self.assertIn('エグレスファイアウォールは無効です', response.stderr)
 
 
 if __name__ == '__main__':

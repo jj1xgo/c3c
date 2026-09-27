@@ -3,7 +3,7 @@ services:
   claude-auth-workspace:
     build:
       context: ${BUILD_CONTEXT_DIR}
-      dockerfile: ${CLAUDE_CONTAINER_DIR}/Dockerfile.claude
+      dockerfile: ${C3C_DIR}/Dockerfile.claude
       args:
         TZ: ${TZ:-UTC}
         CACHEBUST: ${CACHEBUST:-unknown}
@@ -40,8 +40,13 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       DISABLE_AUTOUPDATER: "1"
-      CLAUDE_CONTAINER_NO_FIREWALL: ${CLAUDE_CONTAINER_NO_FIREWALL:-}
-      # mode と sysctls/network の不一致を避ける。IPv6用overrideが固定値1へ変える。
+      # エグレス制限の無効化。ホスト側は新キー C3C_NO_FIREWALL だけから補間する（launcher が旧キーを
+      # 新キーへ解決済み）。コンテナへは新旧両方の名前で同じ値を渡す — 改名 第 1 段では -b していない
+      # 旧イメージの entrypoint.sh が旧名しか読まないため（第 2 段で旧名を外す）。
+      C3C_NO_FIREWALL: ${C3C_NO_FIREWALL:-}
+      CLAUDE_CONTAINER_NO_FIREWALL: ${C3C_NO_FIREWALL:-}
+      # mode と sysctls/network の不一致を避ける。IPv6用overrideが固定値1へ変える（新旧両方の名前）。
+      C3C_IPV6: "0"
       CLAUDE_CONTAINER_IPV6: "0"
       # 起動する CLI（c3c 第1段階）。launcher が CLI 引数から導出して明示 export する値だけを渡す
       # （.c3c/env の許可リスト外）。entrypoint.sh が enum を再検証する。
@@ -93,6 +98,10 @@ services:
       # ファイルのみコンテナ内で環境変数として export される — entrypoint.sh 参照）。
       # 未設定時は /dev/null をマウント（EXTRA_MOUNT と同じオプトインパターン。ディレクトリで
       # なく /dev/null になるため entrypoint.sh 側は [ -d ] で判別する）。
+      # 改名 第 1 段: 新パス（~/.config/c3c/secrets）と旧パスの両方へ同じ SECRETS_DIR を :ro で載せる。
+      # 利用者のスクリプト・MCP 設定が第 2 段までに新パスへ移れるよう、-b していない旧イメージでも新パスを
+      # 使えるようにする。entrypoint.sh・git-askpass.sh は第 1 段では旧パスを読む（旧イメージとの整合）。
+      - ${SECRETS_DIR:-/dev/null}:/home/node/.config/c3c/secrets:ro
       - ${SECRETS_DIR:-/dev/null}:/home/node/.config/claude-container/secrets:ro
       # ホスト側 git 設定のオプトインマウント（issue #6: Author identity unknown 対策）。
       # bind 元は launcher の guard_gitconfig_file() が C3C_GITCONFIG_SOURCE に export する:

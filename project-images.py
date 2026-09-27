@@ -11,8 +11,11 @@ import stat
 import subprocess
 import sys
 
-PREFIX = 'claude-container.project-'
-LABELS = tuple(PREFIX + suffix for suffix in ('metadata', 'path', 'name'))
+NEW_PREFIX = 'io.c3c.project-'
+LEGACY_PREFIX = 'claude-container.project-'
+SUFFIXES = ('metadata', 'path', 'name')
+NEW_LABELS = tuple(NEW_PREFIX + suffix for suffix in SUFFIXES)
+LEGACY_LABELS = tuple(LEGACY_PREFIX + suffix for suffix in SUFFIXES)
 IMAGE_NAME = re.compile(r'^localhost/.+_claude-auth-workspace:latest$')
 
 
@@ -157,10 +160,23 @@ def read_inventory():
     return list(unique.values())
 
 
+def provenance_values(labels):
+    """由来 label を組単位で選ぶ（改名 第 1 段）。新の組のキーが 1 つでもあれば新の組だけを使い、
+    旧の組で補わない。新の組のキーが一部だけなら partial=True（値が空でも、台帳の legacy 照合へ落とさず
+    invalid にする）。三つとも揃って空なのは直接ビルドの既存契約で、従来どおり扱う。
+    新の組が 1 つも無いときだけ旧の組（旧の組の扱いは従来と同じ）。"""
+    present = [key in labels for key in NEW_LABELS]
+    if any(present):
+        return [labels.get(key, '') for key in NEW_LABELS], not all(present)
+    return [labels.get(key, '') for key in LEGACY_LABELS], False
+
+
 def provenance(item, ledger):
     """戻り値は対応するパス集合と削除可否の根拠。部分ラベルは旧形式へ落とさない。"""
-    values = [item['labels'].get(key, '') for key in LABELS]
+    values, partial = provenance_values(item['labels'])
     matches = {path for path in ledger if image_name(path) in item['names']}
+    if partial:
+        return matches, 'invalid'
     if not any(values):
         return matches, 'legacy' if len(matches) == 1 else 'unknown'
     schema, path, key = values
@@ -236,10 +252,13 @@ def diagnose(args):
             continue
         if item['names']:
             # Dockerfile を直接ビルドしたテスト用・派生イメージは名前だけでは対象外。
-            relevant = (any(item['labels'].get(k) for k in LABELS)
+            relevant = (any(provenance_values(item['labels'])[0])
                         or any(IMAGE_NAME.fullmatch(n) for n in item['names']))
         else:
+            # 旧 label の前方一致は残す（第 1 段より前の名前なしイメージの判定を狭めない）。io.c3c. の
+            # 前方一致にはしない（io.c3c.codex-audit-protocol 等は既存の全イメージに付く）。
             relevant = (any(k.startswith('claude-container.') for k in item['labels'])
+                        or any(k in item['labels'] for k in NEW_LABELS)
                         or any(IMAGE_NAME.fullmatch(n) for n in item['history']))
         if not relevant:
             continue

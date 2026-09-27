@@ -15,6 +15,7 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / 'project-images.py'
 LABEL = 'claude-container.project-'
+NEW_LABEL = 'io.c3c.project-'
 IMAGE_A = 'a' * 64
 IMAGE_B = 'b' * 64
 
@@ -94,7 +95,7 @@ class ImageTests(unittest.TestCase):
         self.home.mkdir()
         # 基点の .claude.json（#159 のガードが --check でも検査する）
         (self.home / '.claude.json').write_text('{}\n')
-        self.ledger = self.home / '.local/state/claude-container/projects'
+        self.ledger = self.home / '.local/state/c3c/projects'
         self.ledger.parent.mkdir(parents=True)
         self.missing = str(self.root / '旧 project')
         self.live = str(self.root / 'new project')
@@ -111,10 +112,10 @@ class ImageTests(unittest.TestCase):
                     'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
         self.state = {'images': [self.item(self.missing)], 'containers': []}
 
-    def item(self, path, image_id=IMAGE_A, labels=True):
+    def item(self, path, image_id=IMAGE_A, labels=True, namespace=LABEL):
         key = reference_key(path)
-        metadata = {LABEL + 'metadata': '1', LABEL + 'path': path,
-                    LABEL + 'name': key} if labels else {'claude-container.asset-hash': 'old'}
+        metadata = {namespace + 'metadata': '1', namespace + 'path': path,
+                    namespace + 'name': key} if labels else {'claude-container.asset-hash': 'old'}
         return {'Id': image_id, 'Names': [f'localhost/{key}_claude-auth-workspace:latest'],
                 'RepoTags': None, 'Labels': metadata, 'History': [], 'Containers': 0}
 
@@ -192,6 +193,40 @@ class ImageTests(unittest.TestCase):
         with patch.dict(os.environ, self.env), patch.object(mod.subprocess, 'run', short_deadline):
             mod.remove_image(mod.parse_image(self.state['images'][0]), self.missing)
         self.assertEqual(json.loads((self.root / 'state').read_text())['images'], [])
+
+    def test_new_namespace_labels_are_cleaned(self):
+        # 台帳から対象を外し、新 label だけが由来の根拠になる形にする（台帳に残すと、新 label を読まない
+        # 旧実装でも名前と台帳の legacy 照合で清掃され、実装前から緑になる）。
+        self.ledger.write_text(self.live + '\n')
+        self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
+        self.state['images'] = [self.item(self.missing, namespace=NEW_LABEL)]
+        result = self.run_helper(clean=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state['images'], [])
+
+    def test_partial_new_group_with_empty_value_is_invalid(self):
+        # 新の組のキーが一部だけ（値は空）で旧の組が完全 → 新の組を選び、不完全なので invalid（旧で補わず、
+        # 値が全部空だからといって台帳の legacy 照合へも落とさない）。
+        image = self.item(self.missing)
+        image['Labels'][NEW_LABEL + 'metadata'] = ''
+        self.state['images'] = [image]
+        self.assert_kept(self.run_helper(clean=True))
+
+    def test_incomplete_new_group_does_not_borrow_from_complete_old_group(self):
+        image = self.item(self.missing)                       # 旧の組は完全
+        image['Labels'][NEW_LABEL + 'metadata'] = '1'          # 新の組は不完全（path・name なし）
+        self.state['images'] = [image]
+        self.assert_kept(self.run_helper(clean=True))
+
+    def test_new_group_wins_over_old_group_pointing_elsewhere(self):
+        image = self.item(self.live)                           # 旧の組は存在するパス
+        image['Labels'].update({NEW_LABEL + 'metadata': '1', NEW_LABEL + 'path': self.missing,
+                                NEW_LABEL + 'name': reference_key(self.missing)})
+        image['Names'] = [f'localhost/{reference_key(self.missing)}_claude-auth-workspace:latest']
+        self.state['images'] = [image]
+        result = self.run_helper(clean=True)                   # 新の組（欠落パス）で判定され、清掃される
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state['images'], [])
 
     def test_legacy_image_matches_ledger_despite_old_labels(self):
         self.state['images'] = [self.item(self.missing, labels=False)]

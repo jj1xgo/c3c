@@ -128,7 +128,7 @@ echo '{}' > "$root/config/.claude.json"
 cp "$SCRIPT_DIR/tests/runtime-probe.py" "$root/probe/bin/claude"
 chmod 755 "$root/probe/bin/claude"
 clean_env+=("CLAUDE_CONFIG_DIR=$root/config" "CONTEXT=$root/project"
-  "CLAUDE_CONTAINER_DIR=$SCRIPT_DIR" "BUILD_CONTEXT_DIR=$root"
+  "C3C_DIR=$SCRIPT_DIR" "BUILD_CONTEXT_DIR=$root"
   "TEST_IMAGE=$image" "TEST_LOG_DIR=$results/details" "TEST_RUNTIME_USERNS=1")
 
 if [[ "$build" == 1 ]]; then

@@ -46,7 +46,7 @@ except OSError:
 record = {'args': args, 'stdin': stdin,
           'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
                                                   'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
-                                                  'CONTEXT', 'CLAUDE_CONTAINER_DIR', 'ASSET_HASH', 'BASE_IMAGE',
+                                                  'CONTEXT', 'C3C_DIR', 'ASSET_HASH', 'BASE_IMAGE',
                                                   'C3C_GITCONFIG_SOURCE', 'GITCONFIG_FILE')}}
 with open(os.path.join(root, 'calls'), 'a') as out:
     out.write(json.dumps(record) + '\\n')
@@ -163,7 +163,7 @@ class LaunchCase(unittest.TestCase):
         self.state = {'image_exists': True, 'label': '2', 'preflight': {'stdout': protocol()}}
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
                     'TMPDIR': str(self.tmpdir), 'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
-        self.state_dir = self.home / '.local/state/claude-container'
+        self.state_dir = self.home / '.local/state/c3c'
         self.pref_dir = self.state_dir / 'agent-preferences'
         self.store = self.state_dir / 'mcp-approvals'
 
@@ -308,7 +308,7 @@ class EntryResolutionTests(LaunchCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'RUN DIR: {self.runner}', result.stdout)
         (run,) = self.main_runs()
-        self.assertEqual(run['env']['CLAUDE_CONTAINER_DIR'], str(self.runner))
+        self.assertEqual(run['env']['C3C_DIR'], str(self.runner))
         self.assertIn(str(self.runner / 'compose.yml'), run['args'])
         self.assertEqual(run['env']['CC_AGENT'], 'claude')
 
@@ -703,8 +703,8 @@ BASH_PODMAN = '''#!/bin/bash
 root=%r
 if [[ "${1:-}" == --remote=false ]]; then shift; fi
 args_json=$(printf '%%s\\0' "$@" | jq -Rsc 'split("\\u0000")[:-1]')
-jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTEXT-}" --arg ccd "${CLAUDE_CONTAINER_DIR-}" \\
-  '{args: $args, stdin: "?", env: {CC_AGENT: $agent, CONTEXT: $ctx, CLAUDE_CONTAINER_DIR: $ccd}}' >> "$root/calls"
+jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTEXT-}" --arg ccd "${C3C_DIR-}" \\
+  '{args: $args, stdin: "?", env: {CC_AGENT: $agent, CONTEXT: $ctx, C3C_DIR: $ccd}}' >> "$root/calls"
 case "${1:-} ${2:-}" in
   "images --all") echo '[]' ;;
   "image exists") exit 0 ;;
@@ -1008,6 +1008,74 @@ class GitconfigSourceTests(LaunchCase):
         self.assertEqual(len(self.main_runs()), 1)
         for call in self.compose_calls():
             self.assertEqual(call['env']['C3C_GITCONFIG_SOURCE'], str(self.empty()), call['args'])
+
+
+
+class StateMigrationLaunchTests(LaunchCase):
+    """改名 第 1 段: 通常起動でだけ旧 state を移し、--check・--clean は移さず旧を読む。"""
+
+    def make_legacy_state(self, agent='codex'):
+        legacy = self.home / '.local/state/claude-container'
+        pref = legacy / 'agent-preferences' / (self.pref_key() + '.json')
+        pref.parent.mkdir(parents=True, mode=0o700)
+        pref.write_text(json.dumps({'schema': 1, 'agent': agent}, separators=(',', ':')) + '\n')
+        (legacy / 'projects').write_text(str(self.proj) + '\n')
+        return legacy
+
+    def test_normal_launch_migrates_and_keeps_remembered_cli(self):
+        legacy = self.make_legacy_state('codex')
+        self.approve_codex_in(legacy)
+        result = self.run_c3c(str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if '安全に移行できない' in result.stderr:
+            # RENAME_NOREPLACE 非対応の FS では旧 state を使い続ける（S-6 が検査する経路）。
+            self.skipTest('この環境では RENAME_NOREPLACE が使えない')
+        self.assertFalse(os.path.lexists(legacy))
+        self.assertTrue((self.state_dir / 'projects').is_file())
+        (run,) = self.main_runs()
+        self.assertEqual(run['env']['CC_AGENT'], 'codex')
+        self.assertIn('移行しました', result.stderr)
+
+    def approve_codex_in(self, base):
+        record = base / 'mcp-approvals' / 'codex' / self.project_name() / 'project-config.json'
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({'protocol_version': 2, 'hash': HASH_A}, separators=(',', ':')) + '\n')
+
+    def test_check_reads_legacy_ledger_without_writing(self):
+        legacy = self.make_legacy_state()
+        before = self.snapshot(self.home)
+        result = self.run_c3c('--check')
+        self.assertIn(f'=== {self.proj} ===', result.stdout)
+        self.assertIn('[WARN] 旧 state', result.stdout)
+        self.assertEqual(self.snapshot(self.home), before)
+        self.assertTrue(legacy.is_dir())
+        self.assertFalse(os.path.lexists(self.state_dir))
+
+    def test_clean_project_does_not_migrate(self):
+        legacy = self.make_legacy_state()
+        result = self.run_c3c('--clean', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(legacy.is_dir())
+        self.assertFalse(os.path.lexists(self.state_dir))
+        self.assertNotIn(str(self.proj) + '\n', (legacy / 'projects').read_text())
+
+    def test_clean_all_removes_approvals_and_ledger_of_legacy_symlink_state(self):
+        # 新旧が併存し、旧がディレクトリへの symlink の配置でも、旧の承認記録と台帳を消す（選択記憶は残す）。
+        real = self.root / 'legacy-real'
+        real.mkdir()
+        (real / 'mcp-approvals').mkdir()
+        (real / 'mcp-approvals' / 'x').write_text('a')
+        (real / 'projects').write_text(str(self.proj) + '\n')
+        (real / 'agent-preferences').mkdir()
+        (self.home / '.local/state').mkdir(parents=True, exist_ok=True)
+        (self.home / '.local/state/claude-container').symlink_to(real)
+        self.state_dir.mkdir(parents=True)
+        result = self.run_c3c('--clean')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((real / 'mcp-approvals').exists())
+        self.assertFalse((real / 'projects').exists())
+        self.assertTrue((real / 'agent-preferences').is_dir())
+        self.assertTrue((self.home / '.local/state/claude-container').is_symlink())
 
 
 if __name__ == '__main__':

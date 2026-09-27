@@ -527,18 +527,18 @@ run_config_ro_tests() {
     rm -rf "$root"; return
   fi
   check "12項目へ書けず projects/ へは書ける" env \
-    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
   # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
   # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
   check "別名 override 込みでも 12項目へ書けず projects/ へは書ける" env \
-    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
     podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
   check "別名パスから読めて書けず、親ディレクトリにも書けない" env \
-    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
     podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_ALIAS_PROBE"
@@ -553,7 +553,7 @@ run_config_ro_tests() {
   echo seed > "$shared/seed"
   echo seed > "$agents/seed"
   check "SHARED_MOUNT の別名 2 箇所と ~/.agents は読めて書けず、/shared には書ける" env \
-    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     SHARED_MOUNT="$shared" CLAUDE_SHARED_HOME_PATH=/home/node/vault-probe \
     CLAUDE_SHARED_HOST_PATH=/home/hostuser-probe/vault-probe AGENTS_DIR="$agents" \
     podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.shared-home.yml" \
@@ -569,7 +569,7 @@ run_config_ro_tests() {
   mkdir -p "$codex_home/plugins/cache"
   echo seed > "$codex_src/seed"
   check "Codex plugin キャッシュは読めて書けず、CODEX_DIR には書ける" env \
-    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CODEX_DIR="$codex_home" C3C_CODEX_PLUGINS_SOURCE="$codex_src" \
     podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.codex-plugins.yml" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CODEX_PLUGINS_PROBE"
@@ -579,7 +579,7 @@ run_config_ro_tests() {
   rm -rf "$codex_src"
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
-  env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+  env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose "${compose_args[@]}" -p "$proj" --in-pod false down >/dev/null 2>&1
   podman rmi "$svc_image" >/dev/null 2>&1
   rm -rf "$root"
@@ -618,6 +618,11 @@ case "\$1 \$2" in
   "image exists") exit 0 ;;
   "image inspect")
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
+    if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_NEW_SUPPORT-}"; fi
+    if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_NEW-}"; fi
+    if [[ "\$*" == *claude-container.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_OLD-}"; fi
+    if [[ "\$*" == *io.c3c.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_NEW-}"; fi
+    if [[ "\$*" == *claude-container.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_OLD-}"; fi
     # Claude の project 設定ゲート（#163）: 作業ディレクトリに .claude がある場合（F の \$HOME 等）に照合される。
     if [[ "\$*" == *io.c3c.claude-project-audit-protocol* ]]; then printf '%s\n' 1; fi
     exit 0 ;;
@@ -827,6 +832,7 @@ run_launcher_tests() {
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
+  check "state directory の移行（遷移表・RENAME_NOREPLACE・errno の対応・同一性・check/clean の無移行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_state_migration.py"
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
   check "Claude project 設定ゲート helper（全体 hash・停止条件・判定不能・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_audit.py"
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
@@ -859,7 +865,7 @@ run_launcher_tests() {
 run_clean_ledger_launcher_tests() {
   local root bin home proj out rc before_ctx
   launcher_sandbox_init
-  local ledger="$home/.local/state/claude-container/projects" mask
+  local ledger="$home/.local/state/c3c/projects" mask
   run_launcher
   check "起動時に対象を台帳へ記録する（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && grep -qxF -- "$2" "$3" && [ "$(stat -c %a "$3")" = 600 ]' _ "$rc" "$proj" "$ledger"
@@ -902,7 +908,7 @@ run_clean_ledger_launcher_tests() {
   ln -s "$(command -v grep)" "$bin/real-grep"
   cat > "$bin/grep" <<'SHIM'
 #!/bin/bash
-if [[ "${!#}" == "$HOME/.local/state/claude-container/projects" ]]; then
+if [[ "${!#}" == "$HOME/.local/state/c3c/projects" ]]; then
   stat -Lc %a "/proc/$$/fd/1" > "$HOME/ledger-write-mode"
   case "${LEDGER_TEST_FAILURE:-}" in
     empty) exit 2 ;;
@@ -980,7 +986,7 @@ run_missing_directory_launcher_tests() {
   local root bin home proj out rc before_ctx missing input kind launched_name ledger original_proj
   launcher_sandbox_init
   original_proj="$proj"
-  ledger="$home/.local/state/claude-container/projects"
+  ledger="$home/.local/state/c3c/projects"
   log "## 存在しない作業ディレクトリと削除後の清掃（#54）"
   # 削除コマンドの対象を記録する。既存のダミーは compose 側の配線を引き続き検査する。
   mv "$bin/podman" "$bin/base-podman"
@@ -1026,9 +1032,9 @@ SHIM
     check "$kind: 起動時の識別と台帳を記録する" \
       bash -c '[ "$1" = 0 ] && [ -n "$2" ] && grep -qxF -- "$3" "$4"' _ "$rc" "$launched_name" "$proj" "$ledger"
     printf '%s\n' "$root/other-project" >> "$ledger"
-    mkdir -p "$home/.local/state/claude-container/mcp-approvals"
-    printf '承認記録\n' > "$home/.local/state/claude-container/mcp-approvals/$launched_name"
-    printf '保護する別プロジェクト\n' > "$home/.local/state/claude-container/mcp-approvals/other"
+    mkdir -p "$home/.local/state/c3c/mcp-approvals"
+    printf '承認記録\n' > "$home/.local/state/c3c/mcp-approvals/$launched_name"
+    printf '保護する別プロジェクト\n' > "$home/.local/state/c3c/mcp-approvals/other"
     printf 'ビルドの残骸\n' > "${SCRIPT_DIR}/.build-context/$launched_name/seed"
     rmdir "$root/parent/$kind project"
     [[ "$kind" != absolute && "$kind" != symlink ]] || rmdir "$root/parent"
@@ -1055,7 +1061,7 @@ SHIM
     check "$kind: 削除後も起動時と同じイメージ・ネットワークを清掃する" \
       bash -c '[ "$1" = 0 ] && grep -qxF "localhost/${2}_claude-auth-workspace" "$3/podman-args" && grep -qxF "${2}_default" "$3/podman-args"' _ "$rc" "$launched_name" "$home"
     check "$kind: 対象の台帳・ビルド・承認だけを除去する" \
-      bash -c '! grep -qxF -- "$1" "$2" && grep -qxF -- "$3/other-project" "$2" && [ "$(stat -c %a "$2")" = 600 ] && [ ! -e "$4/.build-context/$5" ] && [ ! -e "$6/.local/state/claude-container/mcp-approvals/$5" ] && [ -f "$6/.local/state/claude-container/mcp-approvals/other" ]' _ "$proj" "$ledger" "$root" "$SCRIPT_DIR" "$launched_name" "$home"
+      bash -c '! grep -qxF -- "$1" "$2" && grep -qxF -- "$3/other-project" "$2" && [ "$(stat -c %a "$2")" = 600 ] && [ ! -e "$4/.build-context/$5" ] && [ ! -e "$6/.local/state/c3c/mcp-approvals/$5" ] && [ -f "$6/.local/state/c3c/mcp-approvals/other" ]' _ "$proj" "$ledger" "$root" "$SCRIPT_DIR" "$launched_name" "$home"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
   # cwd の末尾改行をコマンド置換が落とすと、台帳の改行なしの別エントリに一致して誤対象を清掃する（#108）。
@@ -1429,7 +1435,7 @@ run_env_file_launcher_tests() {
   mkdir -p "$proj/.claude-container.d"
 
   # D1: 対象プロジェクト直下の .env は compose へ --env-file /dev/null で遮断される
-  printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$proj/.env"
+  printf 'C3C_NO_FIREWALL=1\n' > "$proj/.env"
   rm -f "$envf"
   run_launcher
   check "D1: compose に --env-file /dev/null が渡る（rc=$rc）" \
@@ -1486,8 +1492,8 @@ DUMMY
   e_codex="$(cd "$home/.codex-container" && pwd -P)"
   {
     printf 'TZ=Asia/Tokyo\n'
-    printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n'
-    printf 'CLAUDE_CONTAINER_IPV6=1\n'
+    printf 'C3C_NO_FIREWALL=1\n'
+    printf 'C3C_IPV6=1\n'
     printf 'CLAUDE_CONFIG_DIR=%s\n' "$e_cfg"
     printf 'EXTRA_MOUNT=%s\n' "$e_extra"
     printf 'SHARED_MOUNT=%s\n' "$e_shared"
@@ -1499,8 +1505,8 @@ DUMMY
   check "E3: 許可キー 9 件が全て compose へ届く（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] \
       && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' \
-      && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env' \
-      && grep -qxF 'CLAUDE_CONTAINER_IPV6=1' '$root/compose-env' \
+      && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' \
+      && grep -qxF 'C3C_IPV6=1' '$root/compose-env' \
       && grep -qxF 'CLAUDE_CONFIG_DIR=$e_cfg' '$root/compose-env' \
       && grep -qxF 'EXTRA_MOUNT=$e_extra' '$root/compose-env' \
       && grep -qxF 'SHARED_MOUNT=$e_shared' '$root/compose-env' \
@@ -1511,6 +1517,53 @@ DUMMY
     bash -c "! printf '%s' \"\$0\" | grep -q '解釈しないため無視'" "$out"
   check "E3b: GITCONFIG_FILE 設定時は ~/.gitconfig の bind 元がそのファイルになる" \
     grep -qxF "C3C_GITCONFIG_SOURCE=$e_gitcfg" "$root/compose-env"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E-R1〜R6: 旧製品名の env キー（CLAUDE_CONTAINER_*）の解決（改名 第 1 段）。
+  # E-R1: 旧キーだけ → WARNING で改名を勧め、compose には新キーの値だけが渡る（旧キーは unset）
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-R1: 旧キーだけは WARNING 付きで有効（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' \
+      && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-R2: 新キーだけ → WARNING なし、compose に新キー
+  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-R2: 新キーだけは改名の WARNING なし（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && ! printf '%s' \"\$0\" | grep -q 'CLAUDE_CONTAINER_NO_FIREWALL' && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'" "$out"
+  # （NO_FIREWALL=1 の警告文は、ファイルに実際に書かれたキー名だけを出す — Step 3。旧名を常に併記すると上の否定が成り立たない）
+  check "E-R2: 新キーでも NO_FIREWALL=1 の WARNING が出る" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*C3C_NO_FIREWALL=1.*無効化'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-R3: 新旧の両方（値が同じでも、ファイルとシェルに分かれていても）→ ERROR で compose へ進まない
+  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher CLAUDE_CONTAINER_NO_FIREWALL=1
+  check "E-R3: ファイルの新キーとシェルの旧キーの併存は ERROR（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' && [ ! -e '$root/compose-env' ]" "$out"
+  printf 'CLAUDE_CONTAINER_IPV6=1\nC3C_IPV6=1\n' > "$envf"
+  run_launcher
+  check "E-R3: 同じファイルの新旧併存も ERROR（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_IPV6.*C3C_IPV6' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-R4: 空文字は未設定扱い（空の旧キーと新キーは併存にならない）
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=\nC3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-R4: 空の旧キーは未設定扱い（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'"
+  # E-R5: env ファイルなしで、シェル環境の旧キーも解決される
+  rm -f "$envf"
+  run_launcher CLAUDE_CONTAINER_NO_FIREWALL=1
+  check "E-R5: シェル環境の旧キーも新キーへ写る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'"
+  # E-R6: --check は旧キーを [WARN]、併存を [FAIL] に集計する（env ファイルなし・シェル環境でも）
+  # （fixture に packages.txt 等が無く、check_one_project は常に WARN を立てるので、「結果: WARN」ではなく改名の警告行で判定する）
+  run_launcher_check CLAUDE_CONTAINER_IPV6=0
+  check "E-R6: --check は旧キーを改名の WARNING で示す（rc=$rc）" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING: CLAUDE_CONTAINER_IPV6 は旧名です。C3C_IPV6'" "$out"
+  run_launcher_check CLAUDE_CONTAINER_IPV6=0 C3C_IPV6=0
+  check "E-R6: --check は併存を FAIL（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR: CLAUDE_CONTAINER_IPV6 と C3C_IPV6 が両方' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # E4: 廃止変数を env ファイルに書いた場合の移行案内（ERROR）は許可リスト化後も維持される
@@ -1623,7 +1676,7 @@ run_ipv6_launcher_tests() {
   launcher_sandbox_init
   mkdir -p "$proj/.claude-container.d"
   for value in '' 0 1; do
-    printf 'CLAUDE_CONTAINER_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
     run_launcher
     if [[ "$value" == 1 ]]; then
       check "IPv6=1 は固定 override を run に渡す" \
@@ -1635,7 +1688,7 @@ run_ipv6_launcher_tests() {
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
   for value in 2 true '1 ' '1;echo unsafe'; do
-    printf 'CLAUDE_CONTAINER_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
     run_launcher
     check "不正な IPv6=$value で起動を止める" \
       bash -c '[ "$1" -ne 0 ] && [ ! -f "$2/compose-args" ] && [[ "$3" == *ERROR:* ]]' _ "$rc" "$root" "$out"
@@ -1643,7 +1696,7 @@ run_ipv6_launcher_tests() {
     check "不正な IPv6=$value を --check も拒否する" [ "$rc" -ne 0 ]
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
-  printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
   run_launcher TEST_IPV6_SUPPORT=
   check "IPv6 未対応の旧イメージでは起動前に -b を案内して拒否" \
     bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
@@ -1666,6 +1719,35 @@ CURL
   out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # L 系（改名 第 1 段）: 単独の label の新名優先と旧名 fallback。後続の既存 check の env を消さないよう末尾に置く。
+  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
+  run_launcher TEST_IPV6_NEW_SUPPORT=1 TEST_IPV6_SUPPORT=
+  check "L-1: 新 label io.c3c.ipv6-support だけでも IPv6 対応と判定する（rc=$rc）" bash -c "[ $rc -eq 0 ]"
+  run_launcher TEST_IPV6_NEW_SUPPORT= TEST_IPV6_SUPPORT=
+  check "L-2: 新旧どちらの label も無ければ IPv6 を拒否する（rc=$rc）" bash -c "[ $rc -ne 0 ]"
+  run_launcher TEST_IPV6_NEW_SUPPORT=0 TEST_IPV6_SUPPORT=1
+  check "L-7: 新 label が 1 以外なら、旧 label が 1 でも IPv6 を拒否する（新優先。rc=$rc）" bash -c "[ $rc -ne 0 ]"
+  rm -f "$proj/.claude-container.d/env"
+  run_launcher
+  local real_hash real_base
+  real_hash=$(sed -n 's/^ASSET_HASH=//p' "$root/compose-env")
+  real_base=$(sed -n 's/^BASE_IMAGE=//p' "$root/compose-env")
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_ASSET_HASH_OLD=bogus
+  check "L-3: asset-hash は新 label を優先する（旧が違っても drift なし）" \
+    bash -c "! printf '%s' \"\$0\" | grep -q '境界アセット.*変更されています'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW=bogus TEST_ASSET_HASH_OLD="$real_hash"
+  check "L-4: asset-hash の新 label が違えば、旧が一致していても drift を出す" \
+    bash -c "printf '%s' \"\$0\" | grep -q '境界アセット.*変更されています'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW= TEST_ASSET_HASH_OLD="$real_hash"
+  check "L-5: 新 label が空なら旧 label へ fallback（drift なし）" \
+    bash -c "! printf '%s' \"\$0\" | grep -qE '境界アセット.*変更されています|ハッシュラベルがありません'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW=bogus TEST_BASE_IMAGE_OLD="$real_base"
+  check "L-6: base-image も新 label を優先する" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW= TEST_BASE_IMAGE_OLD=bogus
+  check "L-8: base-image の新 label が空なら旧 label へ fallback する（旧が違えば警告）" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   launcher_sandbox_cleanup
 }
@@ -1746,10 +1828,10 @@ run_config_ro_launcher_tests() {
   # C: 既存の内容・台帳・承認記録・ステージングも --check で変更しない（#55）。
   # A の通常起動が作った台帳と .build-context に加えて、上書き検出用の内容を置く。
   rm -rf "$home/.claude/skills"
-  check "C: 前提の起動台帳がある" test -s "$home/.local/state/claude-container/projects"
+  check "C: 前提の起動台帳がある" test -s "$home/.local/state/c3c/projects"
   printf 'staging sentinel\n' > "$ctx/existing file"
-  mkdir -p "$home/.local/state/claude-container/mcp-approvals"
-  printf 'approval sentinel\n' > "$home/.local/state/claude-container/mcp-approvals/${ctx##*/}"
+  mkdir -p "$home/.local/state/c3c/mcp-approvals"
+  printf 'approval sentinel\n' > "$home/.local/state/c3c/mcp-approvals/${ctx##*/}"
   printf 'project sentinel\n' > "$proj/existing file"
   snapshot_ok=1
   snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
@@ -1764,7 +1846,7 @@ run_config_ro_launcher_tests() {
   mkdir -p "$home/.claude/skills"
 
   # C2: 台帳の実体不在を報告する失敗経路でも、台帳を修復・削除しない。
-  printf '%s\n' "$root/deleted-project" >> "$home/.local/state/claude-container/projects"
+  printf '%s\n' "$root/deleted-project" >> "$home/.local/state/c3c/projects"
   snapshot_ok=1
   snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" --check 2>&1) && rc=0 || rc=$?
@@ -1929,7 +2011,7 @@ CURL
 
   # P3: IPv6=1 併用の -b では両 override が build・run の各呼び出しに 1 回ずつ共存する
   mkdir -p "$proj/.claude-container.d"
-  printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "P3: IPv6 override と別名 override が build・run に共存する（rc=$rc）" \
@@ -2029,7 +2111,7 @@ run_instruction_mount_launcher_tests() {
     bash -c '[ "$1" -eq 1 ] && [ "$2" = 0 ] && [[ "$3" == *"/home/node/obsidian-vault"* && "$3" == *"AGENTS_DIR"* ]] && cmp -s "$4/before" "$4/after"' _ "$snapshot_ok" "$rc" "$out" "$root"
 
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONTAINER_IPV6=1 \
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" C3C_IPV6=1 \
     "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "build と run に共有・スキル・plugin・IPv6 の override が共存する" \
     bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] || exit 1
@@ -2146,7 +2228,7 @@ log ""
 log "## 静的チェック"
 check "bash -n c3c" bash -n "${SCRIPT_DIR}/c3c"
 check "podman compose config" env \
-  CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$SCRIPT_DIR/.build-context/test" CONTEXT="$SCRIPT_DIR" \
+  C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$SCRIPT_DIR/.build-context/test" CONTEXT="$SCRIPT_DIR" \
   podman compose -f "${SCRIPT_DIR}/compose.yml" config
 log ""
 
@@ -2547,7 +2629,7 @@ else
 fi
 
 # 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（#59）
-check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/claude-container/projects"
+check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/c3c/projects"
 
 rm -rf "$ENV_TESTROOT"
 log ""

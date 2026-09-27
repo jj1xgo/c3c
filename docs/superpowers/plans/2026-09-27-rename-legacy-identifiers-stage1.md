@@ -790,6 +790,9 @@ class StateMigrationLaunchTests(LaunchCase):
         self.approve_codex_in(legacy)
         result = self.run_c3c(str(self.proj))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if '安全に移行できない' in result.stderr:
+            # RENAME_NOREPLACE 非対応の FS では旧 state を使い続ける（S-6 が検査する経路）。
+            self.skipTest('この環境では RENAME_NOREPLACE が使えない')
         self.assertFalse(os.path.lexists(legacy))
         self.assertTrue((self.state_dir / 'projects').is_file())
         (run,) = self.main_runs()
@@ -937,7 +940,7 @@ git commit -m "feat: state directory を ~/.local/state/c3c へ通常起動で�
     if [[ "\$*" == *claude-container.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_OLD-}"; fi
 ```
 
-IPv6 の launcher テストの近くに、新 label だけ `1`（旧 label は空）で IPv6 が通るケースと、新 label が空で旧 label が `1` のとき通るケース（既存）を並べる:
+L 系のテストはすべて、`run_ipv6_launcher_tests()` の末尾（最後の check「IPv6=1 の build と run は同じ override を使う」とそのログ出力の後、`launcher_sandbox_cleanup` の直前）に置く。途中に入れると、L-3 以降の `rm -f` が後続の既存テストの `IPv6=1` の env を消して壊す。まず IPv6 の新優先と fallback（L-1・L-2・L-7）:
 
 ```bash
   printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
@@ -945,6 +948,8 @@ IPv6 の launcher テストの近くに、新 label だけ `1`（旧 label は�
   check "L-1: 新 label io.c3c.ipv6-support だけでも IPv6 対応と判定する（rc=$rc）" bash -c "[ $rc -eq 0 ]"
   run_launcher TEST_IPV6_NEW_SUPPORT= TEST_IPV6_SUPPORT=
   check "L-2: 新旧どちらの label も無ければ IPv6 を拒否する（rc=$rc）" bash -c "[ $rc -ne 0 ]"
+  run_launcher TEST_IPV6_NEW_SUPPORT=0 TEST_IPV6_SUPPORT=1
+  check "L-7: 新 label が 1 以外なら、旧 label が 1 でも IPv6 を拒否する（新優先。rc=$rc）" bash -c "[ $rc -ne 0 ]"
 ```
 
 （`run_launcher` は引数を env として渡すので、fake podman の `TEST_*` に届く。既存テストが使う変数名と `.claude-container.d` の fixture に合わせる。）
@@ -969,6 +974,9 @@ IPv6 の launcher テストの近くに、新 label だけ `1`（旧 label は�
   run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW=bogus TEST_BASE_IMAGE_OLD="$real_base"
   check "L-6: base-image も新 label を優先する" \
     bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW= TEST_BASE_IMAGE_OLD=bogus
+  check "L-8: base-image の新 label が空なら旧 label へ fallback する（旧が違えば警告）" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 ```
 
@@ -977,7 +985,7 @@ IPv6 の launcher テストの近くに、新 label だけ `1`（旧 label は�
 - [ ] **Step 2: 失敗を確認する**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_project_images.py -v 2>&1 | tail -15; ./test-build.sh --launcher-only; grep -E 'L-[0-9].*\[FAIL\]' .claude/test-results/*.log`
-Expected: 新 label の 4 テスト（`test_new_namespace_labels_are_cleaned`・`test_partial_new_group_with_empty_value_is_invalid`・`test_incomplete_new_group_does_not_borrow_from_complete_old_group`・`test_new_group_wins_over_old_group_pointing_elsewhere`）と L-1・L-3・L-6 が FAIL（L-4 は旧実装では旧 label＝一致で drift なし → FAIL。L-2・L-5 は実装前から緑の対照）。
+Expected: 新 label の 4 テスト（`test_new_namespace_labels_are_cleaned`・`test_partial_new_group_with_empty_value_is_invalid`・`test_incomplete_new_group_does_not_borrow_from_complete_old_group`・`test_new_group_wins_over_old_group_pointing_elsewhere`）と L-1・L-3・L-4・L-6・L-7 が FAIL（L-4 は旧実装では旧 label＝一致で drift なし → FAIL。L-2・L-5・L-8 は旧 label だけを読む旧実装でも緑の対照）。
 
 - [ ] **Step 3: 実装する**
 
@@ -1211,3 +1219,4 @@ Expected: `io.c3c.asset-hash`・`io.c3c.base-image`・`io.c3c.ipv6-support`・`i
 ## 計画レビューの記録
 
 - 1 巡目（対象 e793b00）: Codex（gpt-6-astra、`codex exec --sandbox read-only`。依頼文の「コマンド実行はしない」で読めず未実施になったため、読み取り専用コマンドを許可して再実行）は「修正後に渡せる」、Critical 0・Important 7・Minor 3。Claude（claude-opus-5-5、headless 読み取り専用）は「修正後に渡せる」、Critical 0・Important 4・Minor 12。共通の Important は E-R2 の期待の不成立、compose 補間の未検証、Task 2 のテストが entrypoint 後半まで走る点、実装前から緑のテスト。Codex 固有は空値の部分的な新由来 label、symlink の旧 state の清掃漏れ、新 suite の未登録、単独 label の新優先の未検証。Claude 固有は旧 state がマウントポイントのときの `EBUSY`。いずれも反映した。spec の変更（`relevant` 判定と単独 label の「空か欠落」）は Task 5 で行う。
+- 確認限定巡（対象 c06b00a）: Claude は前回 16 件すべて「直った」、新たに L 系テストの挿入位置の曖昧さを指摘。Codex は Important 6 が「一部」（IPv6 の新旧異値の優先と base-image の旧 fallback の検査）、Minor 2 が「一部」（launcher の移行テストの非対応時 skip）。いずれも反映した（L-7・L-8、挿入位置の明記、skip）。

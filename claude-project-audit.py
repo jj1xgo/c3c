@@ -31,6 +31,7 @@ FILE_LIMIT = 1024 * 1024
 DISPLAY_LINES = 200
 DOMAIN = b'c3c-claude-project-audit\x00v1\x00'
 PLUGIN_ENV_PREFIX = 'CLAUDE_CODE_PLUGIN_'
+RECORD_LIMIT = 4096
 RECORD_KEYS = frozenset(('protocol_version', 'hash'))
 HASH_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 CONTROL_CHARS = re.compile(r'[\x00-\x1f\x7f]')
@@ -218,10 +219,13 @@ def snapshot(root):
 
 
 def read_record_hash(path):
-    """承認記録の hash。空・壊れている・別 protocol は None（記録なしと同じ扱い）。"""
+    """承認記録の hash。空・壊れている・RECORD_LIMIT を超える・別 protocol は None（記録なしと同じ扱い）。"""
     try:
         with open(path, 'rb') as handle:
-            data = handle.read(4096)
+            data = handle.read(RECORD_LIMIT + 1)
+        if len(data) > RECORD_LIMIT:
+            # 先頭だけで判定すると、上限より後ろに続くバイトを見落とす（#177）。host は記録全体を比べる。
+            return None
         record = json.loads(data.decode('utf-8'), object_pairs_hook=strict_pairs, parse_constant=reject_constant)
     except (OSError, UnicodeDecodeError, ValueError):
         return None

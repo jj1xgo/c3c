@@ -311,6 +311,29 @@ class VerifyTests(AuditCase):
         self.put('.mcp.json', {'mcpServers': {'r': {'url': 'https://x', 'headersHelper': 'x'}}})
         self.assertEqual(self.run_helper('verify', str(self.record)).returncode, 1)
 
+    def test_verify_rejects_record_with_bytes_beyond_4096(self):
+        # #177: 先頭 4096 バイトだけで有効な JSON と空白が完結し、その先にバイトが続く記録を、承認済みと読まない。
+        self.put('.claude/settings.json', HOOKS)
+        head = json.dumps({'protocol_version': 1, 'hash': self.snapshot()['hash']}, separators=(',', ':')).encode()
+        self.record.write_bytes(head + b' ' * (4096 - len(head)) + b'garbage')
+        self.assertEqual(self.run_helper('verify', str(self.record)).returncode, 3)
+
+    def test_verify_accepts_record_of_exactly_4096_bytes(self):
+        # 上限いっぱいの記録は今までどおり読む（境界を 1 バイト縮めない）。
+        self.put('.claude/settings.json', HOOKS)
+        head = json.dumps({'protocol_version': 1, 'hash': self.snapshot()['hash']}, separators=(',', ':')).encode()
+        self.record.write_bytes(head + b' ' * (4096 - len(head)))
+        self.assertEqual(self.record.stat().st_size, 4096)
+        self.assertEqual(self.run_helper('verify', str(self.record)).returncode, 0)
+
+    def test_verify_treats_newline_padded_record_over_4096_as_missing(self):
+        # host は $(cat) で比べるので末尾の改行を無視し、この記録も helper に渡す。helper は上限を超えた記録を
+        # 記録なしとして扱い、確認に回す（fail-closed 側。#177）。
+        self.put('.claude/settings.json', HOOKS)
+        head = json.dumps({'protocol_version': 1, 'hash': self.snapshot()['hash']}, separators=(',', ':')).encode()
+        self.record.write_bytes(head + b'\n' * 5000)
+        self.assertEqual(self.run_helper('verify', str(self.record)).returncode, 3)
+
 
 if __name__ == '__main__':
     unittest.main()

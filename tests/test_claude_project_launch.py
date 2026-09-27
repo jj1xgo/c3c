@@ -124,6 +124,18 @@ class PreflightTests(ClaudeProjectLaunchCase):
                 self.assertEqual(self.main_runs(), [])
                 self.assertFalse(self.claude_record().exists())
 
+    def test_launcher_strips_control_characters_from_preflight_lines(self):
+        # #175 (a): 検査用コンテナの表示行に ESC 等が混じっても、launcher 側（run_claude_project_preflight の
+        # CONTROL.sub）で除いてから端末へ出す。helper 側の除去とは独立の二重の防御。
+        lines = ['--- .claude/settings.json ---', '  {"x": "\x1b[2J\x1b[Hfake\x07"}']
+        self.state['claude_preflight'] = {'stdout': claude_protocol(lines=lines)}
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('\n  {"x": "[2J[Hfake"}\n', result.stderr)
+        self.assertNotIn('\x1b', result.stderr)
+        self.assertNotIn('\x07', result.stderr)
+        self.assertEqual(self.main_runs(), [])
+
 
 class ApprovalTests(ClaudeProjectLaunchCase):
     def test_first_run_prompts_on_tty_and_records_atomically(self):
@@ -274,6 +286,45 @@ class CheckTests(ClaudeProjectLaunchCase):
         result = self.check()
         self.assertIn('[FAIL]', result.stdout)
         self.assertIn('enabledPlugins', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_outward_or_dangling_skills_symlink_is_fail(self):
+        # #175 (b): .claude/skills/<name> が proj の外を指す、または解決できない symlink なら、--check は
+        # ホストの実 helper の判定不能を [FAIL] で知らせる。helper 単体の検査は test_claude_project_audit.py にある。
+        outside = self.root / 'outside-skill'
+        outside.mkdir()
+        skills = self.proj / '.claude' / 'skills'
+        skills.mkdir()
+        for name, target in (('outward', outside), ('dangling', self.root / 'missing-skill')):
+            with self.subTest(name=name):
+                link = skills / name
+                link.symlink_to(target)
+                try:
+                    result = self.check()
+                finally:
+                    link.unlink()
+                self.assertIn('[FAIL] Claude project 設定ゲート: 起動時に止まります', result.stdout)
+                self.assertIn('判定できません', result.stdout)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_headers_helper_is_fail(self):
+        # #175 (c): .mcp.json の http 型サーバーに headersHelper があれば、--check は [FAIL] を出す。
+        (self.proj / '.mcp.json').write_text(json.dumps(
+            {'mcpServers': {'remote': {'type': 'http', 'url': 'https://example.invalid', 'headersHelper': '/bin/x'}}}))
+        result = self.check()
+        self.assertIn('[FAIL] Claude project 設定ゲート: 起動時に止まります', result.stdout)
+        self.assertIn('headersHelper', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_check_strips_control_characters_from_helper_stderr(self):
+        # #175 (d): --check は helper の stderr を tr -d で除いてから [FAIL] の行に出す（c3c の --check 経路）。
+        # 本物の helper は自分で除くので、runner のコピーを、制御文字を出して rc 1 で終わる stub に差し替える。
+        (self.runner / 'claude-project-audit.py').write_text(
+            'import sys\nsys.stderr.write("ERROR: \\x1b[2Jfake\\x07\\n")\nsys.exit(1)\n')
+        result = self.check()
+        self.assertIn('[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: ERROR: [2Jfake', result.stdout)
+        self.assertNotIn('\x1b', result.stdout)
+        self.assertNotIn('\x07', result.stdout)
         self.assertNotEqual(result.returncode, 0)
 
     def test_old_image_label_is_fail_with_rebuild_hint(self):

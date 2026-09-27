@@ -143,6 +143,23 @@ compose_tty_disabled() {
   return 0
 }
 
+# 7 ファイル同時の compose config（stdin）に、plugin 別名・指示ファイルの共有・AGENTS_DIR・Codex キャッシュの
+# :ro mount と IPv6 の network_mode が残っていることを確かめる（override のマージで消えていないこと）。
+# 部分一致だと /home/node/.agents-x のような別の target でも通るので、mount は target の完全一致で
+# 意味を見る（compose_mount_is_ro）。IPv6 は mount ではないので network_mode の行を行頭と行末で照合する（#112）。
+# tests/test-lint-compose-checks.sh が関数定義だけを抽出して fixture で検証する（#174）。
+compose_merged_overrides_ok() {
+  local merged target rc=0
+  merged=$(cat)
+  for target in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache; do
+    compose_mount_is_ro "$target" <<<"$merged" \
+      || { echo "ERROR: compose の 7 ファイル同時 config に :ro の '$target' がありません（override のマージで消えています）" >&2; rc=1; }
+  done
+  grep -qE -- "^[[:space:]]*network_mode:[[:space:]]*['\"]?pasta:-g,fe80::1['\"]?[[:space:]]*\$" <<<"$merged" \
+    || { echo "ERROR: compose の 7 ファイル同時 config に IPv6 の network_mode がありません（override のマージで消えています）" >&2; rc=1; }
+  return "$rc"
+}
+
 if [ "${#scripts[@]}" -eq 0 ]; then
   echo "ERROR: 対象のスクリプトが1つも見つかりません（git ls-files + shebang 判定）。" >&2
   exit 1
@@ -247,14 +264,7 @@ elif command -v podman >/dev/null 2>&1; then
       CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host AGENTS_DIR=/tmp C3C_CODEX_PLUGINS_SOURCE=/tmp \
       podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml \
         -f compose.shared-home.yml -f compose.shared-host.yml -f compose.agents.yml -f compose.codex-plugins.yml config); then
-    # 部分一致だと /home/node/.agents-x のような別の target でも通るので、mount は target の完全一致で
-    # 意味を見る（compose_mount_is_ro）。IPv6 は mount ではないので network_mode の行を行頭と行末で照合する（#112）。
-    for target in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache; do
-      compose_mount_is_ro "$target" <<<"$merged" \
-        || { echo "ERROR: compose の 7 ファイル同時 config に :ro の '$target' がありません（override のマージで消えています）" >&2; status=1; }
-    done
-    grep -qE -- "^[[:space:]]*network_mode:[[:space:]]*['\"]?pasta:-g,fe80::1['\"]?[[:space:]]*\$" <<<"$merged" \
-      || { echo "ERROR: compose の 7 ファイル同時 config に IPv6 の network_mode がありません（override のマージで消えています）" >&2; status=1; }
+    compose_merged_overrides_ok <<<"$merged" || status=1
   else
     status=1
   fi

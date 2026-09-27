@@ -453,6 +453,7 @@ Claude 経路では、リポジトリの `.claude/settings.json` と `.claude/se
 1. `.claude` か `.mcp.json` を持つリポジトリは `-b` で作り直す（`--check` が `[FAIL]` と `-b` の案内を出す）。
 2. project の `.claude/settings*.json` で plugin を有効にしているリポジトリは起動しなくなる。plugin は user 設定（`~/.claude/settings.json`）で有効にする（`--check` が `[FAIL]` で知らせる）。
 3. 未承認のリポジトリを TTY なし（スクリプト等）で起動していた場合は、一度対話で起動して承認する。
+4. `.claude/skills/` などに、リポジトリの外を指す symlink や解決できない symlink を置いているリポジトリは起動しなくなる。実体をリポジトリ内へ置くか、user 設定（`~/.claude/skills/`）へ移す（`--check` が `[FAIL]` で知らせる）。
 
 ## Codex CLI をセカンドオピニオンとして使う
 

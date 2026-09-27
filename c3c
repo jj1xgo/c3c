@@ -692,7 +692,7 @@ write_agent_preference() {
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 run_main_compose() {
-  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace
 }
 
@@ -1185,7 +1185,7 @@ run_codex_preflight() {
   export CC_CODEX_START_MODE
   # 検査と本起動で同じ mount・working directory・固定引数を使う。preflight 専用 override は
   # tty/stdin_open だけを上書きし、-T と </dev/null でホスト側の TTY も要求しない。
-  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
     run --rm -T claude-auth-workspace </dev/null >"$CODEX_PREFLIGHT_TMP/protocol" || rc=$?
   if [[ $rc -ne 0 ]]; then
@@ -1416,7 +1416,7 @@ run_claude_project_preflight() {
   echo "INFO: Claude project 設定ゲート: リポジトリの .claude/settings*.json を検査用コンテナで読みます（Claude Code は起動しません）" >&2
   CC_CLAUDE_START_MODE=preflight
   export CC_CLAUDE_START_MODE
-  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
     run --rm -T claude-auth-workspace </dev/null >"$CLAUDE_PROJECT_PREFLIGHT_TMP/protocol" || rc=$?
   if [[ $rc -ne 0 ]]; then
@@ -1545,7 +1545,7 @@ run_explicit_build() {
      && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
     codex_cachebust="$(date +%s)"
   fi
-  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
 }
 

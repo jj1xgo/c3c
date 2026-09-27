@@ -55,7 +55,7 @@ jobs:
           # runner 同梱の Docker Compose を Podman の provider として使う。
           PODMAN_COMPOSE_PROVIDER: /usr/libexec/docker/cli-plugins/docker-compose
           CONTEXT: ${{ github.workspace }}
-          CLAUDE_CONTAINER_DIR: ${{ github.workspace }}
+          C3C_DIR: ${{ github.workspace }}
           BUILD_CONTEXT_DIR: ${{ github.workspace }}
         run: |
           set -euo pipefail

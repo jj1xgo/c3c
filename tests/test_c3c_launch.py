@@ -46,7 +46,7 @@ except OSError:
 record = {'args': args, 'stdin': stdin,
           'env': {k: os.environ.get(k) for k in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY',
                                                   'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_FILE', 'CODEX_DIR',
-                                                  'CONTEXT', 'CLAUDE_CONTAINER_DIR', 'ASSET_HASH', 'BASE_IMAGE',
+                                                  'CONTEXT', 'C3C_DIR', 'ASSET_HASH', 'BASE_IMAGE',
                                                   'C3C_GITCONFIG_SOURCE', 'GITCONFIG_FILE')}}
 with open(os.path.join(root, 'calls'), 'a') as out:
     out.write(json.dumps(record) + '\\n')
@@ -308,7 +308,7 @@ class EntryResolutionTests(LaunchCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'RUN DIR: {self.runner}', result.stdout)
         (run,) = self.main_runs()
-        self.assertEqual(run['env']['CLAUDE_CONTAINER_DIR'], str(self.runner))
+        self.assertEqual(run['env']['C3C_DIR'], str(self.runner))
         self.assertIn(str(self.runner / 'compose.yml'), run['args'])
         self.assertEqual(run['env']['CC_AGENT'], 'claude')
 
@@ -703,8 +703,8 @@ BASH_PODMAN = '''#!/bin/bash
 root=%r
 if [[ "${1:-}" == --remote=false ]]; then shift; fi
 args_json=$(printf '%%s\\0' "$@" | jq -Rsc 'split("\\u0000")[:-1]')
-jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTEXT-}" --arg ccd "${CLAUDE_CONTAINER_DIR-}" \\
-  '{args: $args, stdin: "?", env: {CC_AGENT: $agent, CONTEXT: $ctx, CLAUDE_CONTAINER_DIR: $ccd}}' >> "$root/calls"
+jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTEXT-}" --arg ccd "${C3C_DIR-}" \\
+  '{args: $args, stdin: "?", env: {CC_AGENT: $agent, CONTEXT: $ctx, C3C_DIR: $ccd}}' >> "$root/calls"
 case "${1:-} ${2:-}" in
   "images --all") echo '[]' ;;
   "image exists") exit 0 ;;

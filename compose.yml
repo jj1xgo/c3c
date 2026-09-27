@@ -3,7 +3,7 @@ services:
   claude-auth-workspace:
     build:
       context: ${BUILD_CONTEXT_DIR}
-      dockerfile: ${CLAUDE_CONTAINER_DIR}/Dockerfile.claude
+      dockerfile: ${C3C_DIR}/Dockerfile.claude
       args:
         TZ: ${TZ:-UTC}
         CACHEBUST: ${CACHEBUST:-unknown}

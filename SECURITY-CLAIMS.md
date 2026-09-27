@@ -177,7 +177,8 @@ c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に�
 - 定義の承認であり、hook が呼ぶスクリプトや依存パッケージの内容や安全性を保証しない。
 - 表示から除くのは ASCII 制御文字（C0 と DEL）だけで、C1 制御文字（U+0080〜U+009F）や Unicode の bidi 制御等は
   除かない。`env` の値は表示に出る（秘密を置けば見える。永続化するのは hash だけ）。
-- `.claude/skills/` の配下に `/workspace` の外を指す symlink や解決できない symlink があると、判定不能で起動しない。
+- `.claude/skills` 自体と、各項目 `.claude/skills/<name>` から `.claude-plugin/plugin.json` までのどこかの段が、`/workspace` の外を指す symlink や解決できない symlink だと、判定不能で起動しない。それより下にある skill の他のファイル（`SKILL.md` など）の symlink は辿らず、止めない（本文を審査しないのと同じ扱い）。
+- 作業ディレクトリが Claude Code の設定ディレクトリの親（既定ではホームディレクトリ）だと、user 設定（settings と skills）が `/workspace/.claude/` の配下として見え、project 設定として審査される。user 設定での plugin の有効化・`extraKnownMarketplaces`・`CLAUDE_CODE_PLUGIN_*`・skills-directory plugin・外を指す symlink も、確認の前に止める対象や判定不能になる。
 - 網羅性（審査対象の集合）は、実装時（2026-09-26）の公式ドキュメント（permissions の「What runs before you trust
   a folder」、plugins/loading、skills）でだけ確認している。同梱の既定は `CLAUDE_CODE_VERSION=latest` なので、
   新しい版が新しい経路を足しても追えない。`CLAUDE_CODE_PLUGIN_*` を止めるのは、project の `env` から plugin の

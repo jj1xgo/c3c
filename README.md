@@ -445,6 +445,8 @@ Claude 経路では、リポジトリの `.claude/settings.json` と `.claude/se
 - 初回と、前回の承認から内容が変わったときに、ホストの端末へファイルの内容（`env` の値を含む。制御文字は除く）が表示され、`[y/N]` の確認が出る。`y` の承認は `~/.local/state/claude-container/mcp-approvals/claude-project/` に hash だけを記録し、次回からは内容が同じなら確認を省く。
 - TTY が無いと、未承認のまま起動しない。ホストで承認した後、本起動の前に内容が変わった場合は、コンテナ内でもう一度確認が出る（TTY が無ければ止まる）。
 - 確認を出さずに起動を止める条件: project 設定での plugin の有効化（`enabledPlugins`）、`env` の `CLAUDE_CODE_PLUGIN_*`、`extraKnownMarketplaces`、skills-directory plugin（`.claude/skills/*/.claude-plugin/plugin.json`）、`.mcp.json` の `headersHelper`。判定できないとき（壊れた JSON、`/workspace` の外を指す symlink や解決できない symlink、読めないファイル、1 MiB を超えるファイル）も止まる。
+- `.claude/skills/` で確かめるのは、`.claude/skills` 自体と、各項目 `.claude/skills/<name>` から `.claude-plugin/plugin.json` までの各段。どこかの段がリポジトリの外を指す symlink や解決できない symlink なら止まる（権限エラー等で段を確かめられないときも止まる）。それより下にある skill のファイル（例: `.claude/skills/foo/SKILL.md`）がリポジトリの外を指していても止まらない（skills の本文は審査しない。[SECURITY-CLAIMS の C-5](SECURITY-CLAIMS.md#c-5)）。
+- 作業ディレクトリが Claude Code の設定ディレクトリの親（既定の `~/.claude` ならホームディレクトリ。`c3c claude ~` など）だと、user 設定（`~/.claude/settings.json`・`settings.local.json`・`~/.claude/skills/`）が `/workspace/.claude/` の project 設定として見え、表示と確認の対象になる。user 設定が確認の前に止める条件や判定できない条件に当たれば（plugin の有効化、`extraKnownMarketplaces`、`env` の `CLAUDE_CODE_PLUGIN_*`、`~/.claude/skills/` の skills-directory plugin やホームの外を指す symlink など）、起動しない（`--check` も `[FAIL]`）。この構成では、`~/.claude` の読み取り専用保護が `/workspace` 経由の書き込みには効かないので、起動時に WARNING が出る（後述「セキュリティモデル」節の「ホストの Claude Code 設定の読み取り専用保護」の限界 (1)）。
 - `.claude` か `.mcp.json` を持つリポジトリは、この確認に対応していない旧イメージでは起動せず、`-b` での再ビルドを案内する。どちらも持たないリポジトリは従来どおり起動する。
 - 承認記録は `--clean <ディレクトリ>`（そのプロジェクト分）と引数なしの `--clean`（全件）で消える。環境変数による opt-out は無い。
 
@@ -453,7 +455,7 @@ Claude 経路では、リポジトリの `.claude/settings.json` と `.claude/se
 1. `.claude` か `.mcp.json` を持つリポジトリは `-b` で作り直す（`--check` が `[FAIL]` と `-b` の案内を出す）。
 2. project の `.claude/settings*.json` で plugin を有効にしているリポジトリは起動しなくなる。plugin は user 設定（`~/.claude/settings.json`）で有効にする（`--check` が `[FAIL]` で知らせる）。
 3. 未承認のリポジトリを TTY なし（スクリプト等）で起動していた場合は、一度対話で起動して承認する。
-4. `.claude/skills/` などに、リポジトリの外を指す symlink や解決できない symlink を置いているリポジトリは起動しなくなる。実体をリポジトリ内へ置くか、user 設定（`~/.claude/skills/`）へ移す（`--check` が `[FAIL]` で知らせる）。
+4. `.claude`、`.claude/skills` やその各項目 `.claude/skills/<name>`（と、その `.claude-plugin/plugin.json` までの途中の段）、`.claude/settings*.json`、`.mcp.json` を、リポジトリの外を指す symlink や解決できない symlink にしているリポジトリは起動しなくなる。実体をリポジトリ内へ置くか、user 設定（`~/.claude/skills/`）へ移す（`--check` が `[FAIL]` で知らせる）。それより下にある skill のファイル（`SKILL.md` など）の symlink では止まらない。
 
 ## Codex CLI をセカンドオピニオンとして使う
 

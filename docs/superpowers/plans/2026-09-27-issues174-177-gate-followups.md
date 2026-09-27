@@ -225,49 +225,53 @@ Expected: `Ran 28 tests`、`OK`（既存 24 + 4）。
 
 - [ ] **Step 3: ミューテーションで赤を確かめる（4 回。各回の後に必ず戻す）**
 
-本体の変更が無いタスクなので、red は処理を一時的に外して確かめる。各回とも、対象ファイルが clean であることを確かめる（`git diff --quiet -- <file>` が rc 0 のときだけ書き換える）→ 書き換え → 対象テストを実行 → `git checkout -- <file>` で戻す → `git diff --quiet -- <file>` が rc 0 であることを確かめる（テストの追加はまだコミットしていないので、ファイルを指定する）、の順にする。
+本体の変更が無いタスクなので、red は処理を一時的に外して確かめる。各回は `set -e` のサブシェルで行う。対象ファイルが clean でなければ（`git diff --quiet -- <file>` が非 0 なら）何も書き換えずに止まる。clean なら `trap` を置いてから書き換えるので、テストの失敗や中断でサブシェルが終わっても、`git checkout -- <file>` で必ず戻る。最後に、サブシェルの外で `git diff --quiet -- <file>` を確かめる（テストの追加はまだコミットしていないので、ファイルを指定する）。
+
+注意: Task 1 をコミットした後に行うこと（`git checkout --` は、そのファイルの未コミットの変更まで消すため。先頭の clean の確認も、未コミットの変更があれば止める）。
 
 (a) `c3c` の `handle.write(CONTROL.sub('', line) + '\n')` を `handle.write(line + '\n')` にする。
 
 ```bash
-git diff --quiet -- c3c && sed -i "s/handle.write(CONTROL.sub('', line) + '\\\\n')/handle.write(line + '\\\\n')/" c3c
-git diff --stat c3c   # 1 行だけ変わっていること
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k strips_control -v 2>&1 | tail -3
-git checkout -- c3c && git diff --quiet -- c3c && echo restored
+( set -e; f=c3c; git diff --quiet -- "$f"; trap 'git checkout -- "$f"' EXIT
+  sed -i "s/handle.write(CONTROL.sub('', line) + '\\\\n')/handle.write(line + '\\\\n')/" "$f"
+  git diff --stat -- "$f"   # 1 行だけ変わっていること
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k strips_control -v 2>&1 | tail -3 )
+git diff --quiet -- c3c && echo restored
 ```
-Expected: `FAILED (failures=1)`、その後 `restored`。`git diff --stat` が 0 行なら sed が当たっていないので、エディタで同じ 1 行を書き換えて同じ手順を行う。
+Expected: `FAILED (failures=1)`、その後 `restored`。`git diff --stat` の行が出なければ sed が当たっていない（その回はやり直す）。
 
 (b) `claude-project-audit.py` の `check_skills_plugins()` の `names = sorted(os.listdir(skills))` を `names = []` にする。
 
 ```bash
-git diff --quiet -- claude-project-audit.py && sed -i 's/        names = sorted(os.listdir(skills))/        names = []/' claude-project-audit.py
-git diff --stat claude-project-audit.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k skills_symlink -v 2>&1 | tail -3
-git checkout -- claude-project-audit.py && git diff --quiet -- claude-project-audit.py && echo restored
+( set -e; f=claude-project-audit.py; git diff --quiet -- "$f"; trap 'git checkout -- "$f"' EXIT
+  sed -i 's/        names = sorted(os.listdir(skills))/        names = []/' "$f"
+  git diff --stat -- "$f"
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k skills_symlink -v 2>&1 | tail -3 )
+git diff --quiet -- claude-project-audit.py && echo restored
 ```
 Expected: `FAILED (failures=2)`（subTest 2 件とも）、その後 `restored`。
 
 (c) `check_mcp()` の `if 'headersHelper' in server:` を `if False:` にする。
 
 ```bash
-git diff --quiet -- claude-project-audit.py && sed -i "s/        if 'headersHelper' in server:/        if False:/" claude-project-audit.py
-git diff --stat claude-project-audit.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k headers_helper -v 2>&1 | tail -3
-git checkout -- claude-project-audit.py && git diff --quiet -- claude-project-audit.py && echo restored
+( set -e; f=claude-project-audit.py; git diff --quiet -- "$f"; trap 'git checkout -- "$f"' EXIT
+  sed -i "s/        if 'headersHelper' in server:/        if False:/" "$f"
+  git diff --stat -- "$f"
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k headers_helper -v 2>&1 | tail -3 )
+git diff --quiet -- claude-project-audit.py && echo restored
 ```
 Expected: `FAILED (failures=1)`、その後 `restored`。
 
 (d) `c3c` の `--check` の `$(LC_ALL=C tr -d '\000-\037\177' < "$project_err")` を `$(cat "$project_err")` にする。
 
 ```bash
-git diff --quiet -- c3c && sed -i "s/\$(LC_ALL=C tr -d '\\\\000-\\\\037\\\\177' < \"\$project_err\")/\$(cat \"\$project_err\")/" c3c
-git diff --stat c3c   # 1 行だけ変わっていること
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k helper_stderr -v 2>&1 | tail -3
-git checkout -- c3c && git diff --quiet -- c3c && echo restored
+( set -e; f=c3c; git diff --quiet -- "$f"; trap 'git checkout -- "$f"' EXIT
+  sed -i "s/\$(LC_ALL=C tr -d '\\\\000-\\\\037\\\\177' < \"\$project_err\")/\$(cat \"\$project_err\")/" "$f"
+  git diff --stat -- "$f"
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k helper_stderr -v 2>&1 | tail -3 )
+git diff --quiet -- c3c && echo restored
 ```
 Expected: `FAILED (failures=1)`、その後 `restored`。
-
-注意: Task 1 をコミットした後に行うこと（`git checkout --` が Task 1 の未コミットの変更まで消さないため。先頭の `git diff --quiet -- <file>` も、未コミットの変更があれば書き換えを止める）。途中で中断したら、`git checkout -- c3c claude-project-audit.py` で戻す（どちらもコミット済みで、このタスクでは本体を変えないため）。
 
 - [ ] **Step 4: コミット**
 
@@ -407,33 +411,31 @@ Expected: 全ケース `ok`、`結果: 25 ケース、失敗 0`、`rc=0`。`shel
 
 - [ ] **Step 5: ミューテーションで赤を確かめる（2 回。Step 3 の変更はまだコミットしていないので、控えから戻す）**
 
-控えを取る。途中で中断したら `cp "${TMPDIR:-/tmp}/c3c-lint-174.bak" lint.sh` で戻す。
-
-```bash
-bak="${TMPDIR:-/tmp}/c3c-lint-174.bak" && cp lint.sh "$bak"
-```
+各回は `set -e` のサブシェルで行う。控えを取ってから `trap` を置き、書き換えるので、テストの失敗や中断でサブシェルが終わっても控えから必ず戻る。最後に、サブシェルの外で `cmp` で控えと比べる。
 
 (1) 関数の中の完全一致を、部分一致（`grep -qF`）に戻す。
 
 ```bash
 bak="${TMPDIR:-/tmp}/c3c-lint-174.bak"
-sed -i 's/    compose_mount_is_ro "$target" <<<"$merged" \\$/    grep -qF -- "$target" <<<"$merged" \\/' lint.sh
-diff "$bak" lint.sh | grep -c '^> .*grep -qF'   # 1 であること
-bash tests/test-lint-compose-checks.sh; echo rc=$?
-cp "$bak" lint.sh && cmp lint.sh "$bak" && echo restored
+( set -e; cp lint.sh "$bak"; trap 'cp "$bak" lint.sh' EXIT
+  sed -i 's/    compose_mount_is_ro "$target" <<<"$merged" \\$/    grep -qF -- "$target" <<<"$merged" \\/' lint.sh
+  diff "$bak" lint.sh | grep -c '^> .*grep -qF'   # 1 であること
+  bash tests/test-lint-compose-checks.sh | grep -E '^FAIL|結果' )
+cmp lint.sh "$bak" && echo restored
 ```
-Expected: `.agents-x` の 2 ケースと `1 つが :rw なら失敗` の計 3 ケースが `(rc=0, expected 1)` で FAIL、`結果: 25 ケース、失敗 3`、`rc=1`。その後 `restored`。
+Expected: `.agents-x` の 2 ケースと `1 つが :rw なら失敗` の計 3 ケースが `(rc=0, expected 1)` で FAIL、`結果: 25 ケース、失敗 3`。その後 `restored`。
 
 (2) lint 本体の呼び出しを `|| true` にする。
 
 ```bash
 bak="${TMPDIR:-/tmp}/c3c-lint-174.bak"
-sed -i 's/    compose_merged_overrides_ok <<<"$merged" || status=1$/    compose_merged_overrides_ok <<<"$merged" || true/' lint.sh
-diff "$bak" lint.sh | grep -c '^> .*|| true'   # 1 であること
-bash tests/test-lint-compose-checks.sh; echo rc=$?
-cp "$bak" lint.sh && cmp lint.sh "$bak" && echo restored && rm -f "$bak"
+( set -e; cp lint.sh "$bak"; trap 'cp "$bak" lint.sh' EXIT
+  sed -i 's/    compose_merged_overrides_ok <<<"$merged" || status=1$/    compose_merged_overrides_ok <<<"$merged" || true/' lint.sh
+  diff "$bak" lint.sh | grep -c '^> .*|| true'   # 1 であること
+  bash tests/test-lint-compose-checks.sh | grep -E '^FAIL|結果' )
+cmp lint.sh "$bak" && echo restored && rm -f "$bak"
 ```
-Expected: 配線のケースだけが FAIL、`結果: 25 ケース、失敗 1`、`rc=1`。その後 `restored`。
+Expected: 配線のケースだけが FAIL、`結果: 25 ケース、失敗 1`。その後 `restored`。
 
 - [ ] **Step 6: lint 全体を確かめる**
 
@@ -561,4 +563,6 @@ Expected: `rc=0`、`FAIL=0`。
     - Codex の M4 と Claude の M4: ミューテーションの前に clean を確かめるようにした。Task 3 は控えから戻して `cmp` で比べる。
     - Codex の M5 と Claude の M1: skills の検査の範囲の文言を直した（`.claude/skills` 自体を含め、「それより下にある skill のファイル」に限る）。
     - Claude の M2（ホームの場合の停止条件を一般化）、M3（除去後の行を完全一致で検査）、M5（テストの冒頭コメント）、M6（行番号）、M7（「`/workspace` 経由では効かない」）。
-- 確認限定巡: Codex（Important を出したレビュアー）だけで行う。
+- 確認限定 1 巡目（2026-09-27、対象 b9534a1）: Codex（新しい `codex exec`、gpt-6-astra、read-only）だけで行った（Important を出したレビュアーのため）。Important 1〜3 と Minor 5 は「直った」、Minor 4 は「一部」で、判定は「修正後に渡せる」。
+  - 残った Minor 4（Task 2 のブロックで clean の確認が失敗しても後続へ進む、中断時の復元が手動）を直した。各ミューテーションを `set -e` のサブシェルで行い、clean でなければ書き換えずに止め、`trap` で必ず戻す。リポジトリ外の worktree で逐語どおりに試し、未コミットの変更があると止まって変更が残ること、各回が赤になって `restored` で戻ることを確かめた。
+  - 残っていたのは Minor だけなので、確認限定巡を重ねずに実装へ渡す（グローバル指示: 確認限定巡は Critical か Important を出したレビュアーだけで回す）。計画は 1 巡＋確認限定 1 巡で収束した。

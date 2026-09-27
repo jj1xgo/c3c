@@ -1,5 +1,5 @@
 # ベースイメージ。既定は debian:stable。プロジェクトは
-# .c3c/base-image.txt で上書きできる（claude-container がホスト側で
+# .c3c/base-image.txt で上書きできる（c3c がホスト側で
 # 値を検証し build arg として渡す。guard_base_image() を参照）。FROM は COPY より
 # 先に評価されるため、ここでファイルを直接読むことはできず、ARG が唯一の経路。
 # 既定値は compose.yml の build.args と guard_base_image() にも重複している
@@ -45,7 +45,7 @@ RUN set -e; \
 # 黙って落とされないよう、packages.txt ではなくここに置いている。
 #
 # util-linux: /usr/bin/setpriv を提供する。下の ENTRYPOINT がコンテナ起動時に
-# ambient/inheritable capability を剥奪するのに使う（claude-container#33 の
+# ambient/inheritable capability を剥奪するのに使う（#33 の
 # セキュリティ修正）。以前はベースイメージがたまたま含んでいることへの暗黙の
 # 依存だったが、tini と同じ「黙って落とされない」理由でこの固定レイヤーに置く。
 # 下の機能検証レイヤーは、バイナリが存在するだけでなく実際に動作することを確認する。
@@ -117,11 +117,11 @@ RUN set -e; \
     fi
 
 # node-version.txt が指定するバージョン（例: "24.18.0"）の Node.js を nodejs.org 公式の
-# tarball からインストールする。claude-container 同梱の default（c3c 第2b-2段階から固定版）を
+# tarball からインストールする。c3c 同梱の default（c3c 第2b-2段階から固定版）を
 # プロジェクトの .c3c/node-version.txt で上書きでき、空ファイルは明示 opt-out（Node.js を
 # 導入しない）。debian:stable の apt には Node 22.x への経路がない（trixie は 20.x、testing は
 # 22 を飛ばして 24.x）ため、汎用のビルドフックではなく、ここで素のバージョン番号だけを
-# 宣言する（設計の根拠は claude-container#3 を参照）。
+# 宣言する（設計の根拠は #3 を参照）。
 # 展開前に nodejs.org 自身の SHASUMS256.txt と照合して検証する — 不一致や
 # ネットワーク障害があれば（黙ってではなく）ビルドを失敗させる。ビルドホストが
 # x86_64 か arm64 か（例: Apple Silicon 上の podman machine）は自動検出
@@ -149,13 +149,13 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
 # codex-version.txt が指定するバージョン（例: "0.156.0"）か文字どおりの "latest" の
 # Codex CLI を npm からインストールする。上の node-version.txt と同じ設計思想（汎用の
 # ビルドフックではなく宣言的なファイル。設計の根拠は内部運用 issue を参照）で、
-# claude-container 同梱の default（固定版 0.156.0）を
+# c3c 同梱の default（固定版 0.156.0）を
 # プロジェクトの .c3c/codex-version.txt で上書きでき、空ファイルは明示 opt-out（Codex CLI を
 # 導入しない）。npm が必要 — node-version.txt を空にして Node.js を導入しない場合は
 # packages.txt 経由で nodejs/npm を追加するか、codex-version.txt も空にする（npm が無ければ
 # ここでビルドを止める）。"latest" は、下の Claude Code 自身の "latest" インストールと
 # 同様に、インストールのたびに npm 自身の dist-tag で解決される — CODEX_CACHEBUST
-# （codex-version.txt が "latest" のときだけ claude-container が更新する）がこのレイヤーの
+# （codex-version.txt が "latest" のときだけ c3c が更新する）がこのレイヤーの
 # キャッシュだけを破棄するので、`-b` の再ビルドのたびに実際に再インストールが起きる。
 COPY codex-version.txt /tmp/codex-version.txt
 ARG CODEX_CACHEBUST=pinned
@@ -321,7 +321,7 @@ RUN chmod 755 /usr/local/bin/init-firewall.sh && \
 COPY git-askpass.sh /usr/local/bin/git-askpass.sh
 RUN chmod 755 /usr/local/bin/git-askpass.sh
 
-# GitHub meta スナップショット。claude-container の stage_build_context() が
+# GitHub meta スナップショット。c3c の stage_build_context() が
 # ビルドコンテキストへ取得する（ここでは取得しないので、このステップ自体は
 # 未認証の GitHub API のレート制限に一切触れない）。init-firewall.sh は実行時に
 # このスナップショットのみを読む — もはや動的な取得はしない。他のファイアウォール
@@ -332,7 +332,7 @@ RUN chmod 644 /etc/claude-container/github-meta.json && \
 
 # 境界アセット（ASSET_HASH_TARGETS に列挙）: init-firewall.sh・git-askpass.sh と
 # 同じ root 所有の /usr/local/bin に置くことで、ファイル自体もそれを保持する
-# ディレクトリも、実行時に node ユーザーからは書き込めない（claude-container#40）。
+# ディレクトリも、実行時に node ユーザーからは書き込めない（#40）。
 COPY firewall-refresh.py /usr/local/bin/firewall-refresh.py
 RUN chmod 755 /usr/local/bin/firewall-refresh.py
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -376,7 +376,7 @@ RUN echo "cachebust=${CACHEBUST}" \
 # ~/.local/bin を PATH に追加する（ネイティブインストーラが symlink を置く場所）
 ENV PATH=/home/node/.local/bin:$PATH
 
-# 境界アセットのドリフト検出（claude-container#30）: claude-container が起動時に
+# 境界アセットのドリフト検出（#30）: c3c が起動時に
 # 現在のソースから計算した entrypoint.sh/init-firewall.sh 等のハッシュを、
 # ラベルとして焼き込む。これにより後の起動が、このイメージのビルド後にそれらの
 # ソースが変わったことを検知できる。CACHEBUST を消費する上の RUN より後に

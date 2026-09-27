@@ -83,13 +83,13 @@ fi
 # かつてここに plugin メタデータ（~/.claude/plugins/*.json）のホストパスを sed で
 # コンテナ内パスへ書き換える処理があったが、plugins/ を :ro で保護した時点で書けなく
 # なった（書けてはいけない）。plugin の解決は launcher 側の別名マウント
-# （compose.plugins-alias.yml、claude-container#98）が担う。
+# （compose.plugins-alias.yml、#98）が担う。
 
 # Claude 経路の project 設定ゲート（#163、設計 docs/superpowers/specs/2026-09-26-claude-project-settings-gate-design.md）。
 # /workspace の trust は全プロジェクトで共有されるため、リポジトリ同梱の .claude/settings*.json の hook・env・
 # helper 等は確認なしで効く。検査用コンテナ（preflight）で helper の snapshot を fd3 へ出して終了し、
 # 本起動（run）では .mcp.json ゲートの後・秘密の export より前に、host が :ro で渡した承認記録と照合する。
-# opt-out は設けない（.mcp.json ゲートと同じ理由、claude-container#29）。
+# opt-out は設けない（.mcp.json ゲートと同じ理由、#29）。
 CLAUDE_PROJECT_AUDIT=/usr/local/bin/claude-project-audit.py
 CLAUDE_PROJECT_APPROVED=/etc/claude-container/claude-project-approved.json
 CLAUDE_PROJECT_ROOT=/workspace
@@ -113,7 +113,7 @@ fi
 # 環境変数による opt-out は設けない。根拠は「.c3c/env が信頼できない」
 # ではなく、このゲートが対象とする帰結（セッション開始と同時の任意コード実行）に
 # 対しては opt-out という迂回経路自体を作らない、という設計判断（README「セキュリティ
-# モデル」節、`claude-container#29`）。env は全キー無条件で export されるため、
+# モデル」節、`#29`）。env は全キー無条件で export されるため、
 # opt-out 変数を設ければそのプロジェクト自身の env に書くだけでゲートが無効化できて
 # しまう（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。env 自体は運用者が書く
 # 信頼入力として扱っており（README同節）、この判断は env 全般の信頼性を疑うものではない。
@@ -129,7 +129,7 @@ if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
     exit 1
   fi
   if [ -n "$stdio_servers" ]; then
-    # TOFU承認記録との照合（claude-container#28）。ホスト側 claude-container が
+    # TOFU承認記録との照合（#28）。ホスト側 c3c が
     # 事前に対話承認済みなら、その正規化ハッシュが :ro マウントされている
     # （/etc/claude-container/mcp-approved-hash、compose.yml参照）。正規化jqフィルタは
     # ホスト側 check_mcp_approval() と同一でなければならない（変更時は両ファイルを同期）。
@@ -148,7 +148,7 @@ if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
       fi
       # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
       # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
-      # 「ターミナル・スプーフィング」に無防備になる（claude-container#35）。claude-container 側の
+      # 「ターミナル・スプーフィング」に無防備になる（#35）。c3c 側の
       # 同種の表示ロジックと同一のサニタイズ方式（LC_ALL=C tr -d '\000-\037\177'）を使うこと（同期必須）。
       while IFS=$'\t' read -r mcp_name mcp_cmd mcp_args; do
         mcp_name=$(printf '%s' "$mcp_name" | LC_ALL=C tr -d '\000-\037\177')
@@ -200,12 +200,12 @@ if [ "$CC_AGENT" = claude ]; then
   esac
 fi
 
-# GitHub トークン配線（v4〜、claude-container#24）。SECRETS_DIR は exposure 軸で設計する:
+# GitHub トークン配線（v4〜、#24）。SECRETS_DIR は exposure 軸で設計する:
 # 「常時使える（export される）権限は最小に、広い権限は明示操作の壁の向こうに」。
 #   - SECRETS_DIR/export/<NAME> ... コンテナ内で環境変数として export される（issues 限定PAT等）
 #   - SECRETS_DIR/<NAME>（直下）  ... export されない。ファイルとしてのみ読める（メインPAT等）
 # v3 以前とは直下/export の意味が逆転している（旧: 直下=export、noexport/=非export）。
-# 後方互換エイリアスは持たない（claude-container 側の fail-closed ガードが旧レイアウト
+# 後方互換エイリアスは持たない（c3c 側の fail-closed ガードが旧レイアウト
 # 残存を検出する）。GH_TOKEN の ambient export は撤廃済み — gh は既定で未認証になる。
 SECRETS_MOUNT=/home/node/.config/claude-container/secrets
 

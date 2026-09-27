@@ -117,7 +117,7 @@ CI 専用の UID 対応付けを含め、probe の UID:GID は `1000:1000`、
 
 2026-09-15（JST）、初回マージ後の main commit
 `f497a5e6fc68c9f251a41b00779427839b39dffa` を
-[手動実行](https://github.com/jj1xgo/claude-container/actions/runs/34912915312)した。
+[手動実行](https://github.com/jj1xgo/c3c/actions/runs/34912915312)した。
 検査スクリプトは **64 秒、準備込み 69 秒、終了コード 0、全 6 段階 PASS**。
 静的チェック・ビルド・ツール起動 7 件、マウント保護 25 件が PASS、後始末の終了コードも 0 だった。
 Actions のジョブ時刻から計算した開始〜終了は 73 秒で、準備込みの値には artifact 保存と checkout 前後の処理を含めない。
@@ -132,7 +132,7 @@ Compose の sysctls の効果と IPv6 の実疎通は、この実行では確認
 
 main 以外のブランチ指定も、`docs/runtime-ci-hosted-105` の commit
 `055102b4c1d59c8e5e908c718e551a8192ec1d29` を指定した
-[手動実行](https://github.com/jj1xgo/claude-container/actions/runs/34913253632)で成功した。
+[手動実行](https://github.com/jj1xgo/c3c/actions/runs/34913253632)で成功した。
 
 この実測を踏まえ、依存パッケージと runner の変化を定点観測する頻度は週 1 回を維持する。
 定期実行の cron は main に登録済みだが、この記録時点では schedule イベントによる起動は未観測。

@@ -15,7 +15,7 @@ if ! command -v shellcheck >/dev/null 2>&1; then
 fi
 
 # コンテナ内は LANG・LC_ALL とも未設定で、shellcheck が日本語を含む行を出力しようとすると
-# "commitBuffer: invalid argument" で途中で切れる（claude-container#123）。ロケールが
+# "commitBuffer: invalid argument" で途中で切れる（#123）。ロケールが
 # 未指定のときだけ UTF-8 を補う。LC_ALL は LC_CTYPE を含む全カテゴリを上書きしてしまうため
 # 使わず、文字コードだけに効く LC_CTYPE を補う（利用者の LC_CTYPE 個別指定を上書きしない）。
 if [ -z "${LC_ALL:-}" ] && [ -z "${LC_CTYPE:-}" ] && [ -z "${LANG:-}" ]; then
@@ -24,13 +24,13 @@ fi
 
 # 検査ツールの版を表示し、CI（.github/workflows/ci.yml）の固定版と違えば WARNING を出す。
 # 版差で指摘の有無が変わる（0.10.0 の SC2317 と 0.11.0 の SC2329 等）ため、NG の原因の
-# 切り分けを早くする目的で、失敗にはしない（claude-container#123）。
+# 切り分けを早くする目的で、失敗にはしない（#123）。
 shellcheck_version=$(shellcheck --version | awk '/^version:/ { print $2 }')
 ci_shellcheck_version=$(sed -nE 's/^[[:space:]]*SHELLCHECK_VERSION:[[:space:]]*"([^"]+)".*/\1/p' \
   .github/workflows/ci.yml 2>/dev/null | head -n 1)
 echo "shellcheck ${shellcheck_version:-不明}"
 if [ -n "$ci_shellcheck_version" ] && [ "$shellcheck_version" != "$ci_shellcheck_version" ]; then
-  echo "WARNING: shellcheck の版（${shellcheck_version:-不明}）が CI の固定版（$ci_shellcheck_version）と異なります。版差で指摘が増減することがあります（claude-container#123）。" >&2
+  echo "WARNING: shellcheck の版（${shellcheck_version:-不明}）が CI の固定版（$ci_shellcheck_version）と異なります。版差で指摘が増減することがあります（#123）。" >&2
 fi
 
 status=0
@@ -182,7 +182,7 @@ if [ "${LINT_SKIP_COMPOSE:-}" = "1" ]; then
 elif command -v podman >/dev/null 2>&1; then
   podman compose -f compose.yml config >/dev/null || status=1
   podman compose -f compose.yml -f compose.ipv6.yml config >/dev/null || status=1
-  # plugin 別名 override（claude-container#98）。destination は launcher が export するので
+  # plugin 別名 override（#98）。destination は launcher が export するので
   # lint ではダミー値を与える。3 ファイル同時のマージで別名 volume と IPv6 の network・
   # sysctls・environment が消えないことも見る（override 同士の上書きの検出）。
   CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias \
@@ -199,7 +199,7 @@ elif command -v podman >/dev/null 2>&1; then
   else
     status=1
   fi
-  # ${CLAUDE_PLUGINS_HOST_PATH:?} の fail-closed 検査（claude-container#98）。launcher は
+  # ${CLAUDE_PLUGINS_HOST_PATH:?} の fail-closed 検査（#98）。launcher は
   # 別名 override を選ぶとき必ず export するが、compose provider によっては :? が空文字を
   # 通す可能性があるため、未設定・空文字の両方で config が失敗することを直接確認する。
   # ホスト実測（podman-compose 1.6.0）ではどちらも rc=1。provider が通してしまう場合は
@@ -219,7 +219,7 @@ elif command -v podman >/dev/null 2>&1; then
       "$compose_var_literal" >&2
     status=1
   fi
-  # 指示ファイル・スキルの追加共有 override（claude-container#99）。source と destination は
+  # 指示ファイル・スキルの追加共有 override（#99）。source と destination は
   # launcher が export するので lint ではダミー値を与える。7 ファイル同時のマージで plugin 別名・
   # IPv6・3 本の指示ファイル別名 volume・Codex キャッシュが消えないことも見る。
   SHARED_MOUNT=/tmp CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home \

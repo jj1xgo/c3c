@@ -1,6 +1,6 @@
 # examples/hooks/
 
-claude-container のプロダクト本体には配線されていない、任意採用の Claude Code hook 例です。
+c3c のプロダクト本体には配線されていない、任意採用の Claude Code hook 例です。
 必要なプロジェクトの `.claude/settings.json` に自分で配線してください。
 
 ## block-pr-approve.sh
@@ -37,7 +37,7 @@ x=`gh pr review 1 --approve`
 
 ### 配線方法
 
-対象プロジェクトの `.claude/settings.json` に以下を追加します（`claude-container` を使わずホスト直接
+対象プロジェクトの `.claude/settings.json` に以下を追加します（`c3c` を使わずホスト直接
 実行の場合も同様）:
 
 ```json

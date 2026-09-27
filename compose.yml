@@ -63,9 +63,9 @@ services:
       # を起動した時点（user settings の hooks は file watcher で稼働中セッションにも）
       # ホストの権限で実行されるため。認証・transcript・memory 等の状態は rw のまま。
       # マウント先がホストに無いと podman がサブ uid 所有の実体を作って残骸になるため、
-      # claude-container の prepare_claude_config_ro() が起動直前に空で作る。
+      # c3c の prepare_claude_config_ro() が起動直前に空で作る。
       # 基点は親と同じ ${CLAUDE_CONFIG_DIR:-~} に固定し、別実体を指せないようにする。
-      # 項目を増減するときは claude-container 側の一覧と test-build.sh を同期すること。
+      # 項目を増減するときは c3c 側の一覧と test-build.sh を同期すること。
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/hooks:/home/node/.claude/hooks:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/skills:/home/node/.claude/skills:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/plugins:/home/node/.claude/plugins:ro
@@ -74,7 +74,7 @@ services:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/workflows:/home/node/.claude/workflows:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/rules:/home/node/.claude/rules:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/output-styles:/home/node/.claude/output-styles:ro
-      # ~/.claude 自体を git リポジトリにしているホスト向け（claude-container#129）。.git/hooks と
+      # ~/.claude 自体を git リポジトリにしているホスト向け（#129）。.git/hooks と
       # .git/config（core.hooksPath 等）はホストで git を打った時点でホスト権限で実行・参照される。
       # リポジトリでないホストでも空で作って重ね、コンテナが .git を植え付ける経路を閉じる。
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/.git:/home/node/.claude/.git:ro
@@ -83,7 +83,7 @@ services:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/statusline.sh:/home/node/.claude/statusline.sh:ro
       - ${CONTEXT}:/workspace
       - ${EXTRA_MOUNT:-/dev/null}:/data
-      # 第2の追加マウント（claude-container#46）。複数プロジェクトから同一ホスト
+      # 第2の追加マウント（#46）。複数プロジェクトから同一ホスト
       # ディレクトリ（共有ノート置き場等）を固定名 /shared で参照するための opt-in。
       # EXTRA_MOUNT（/data）が既に他用途で使用中のプロジェクト向け。rw（共有ノートへの
       # 書き込みが用途のため）。未設定時は /dev/null（EXTRA_MOUNT と同じオプトインパターン）。
@@ -111,7 +111,7 @@ services:
       # （SECRETS_DIR と同じオプトインパターン）。entrypoint.sh 側の特別処理は不要
       # （codex CLI が直接読む、gitconfig と同型）。
       - ${CODEX_DIR:-/dev/null}:/home/node/.codex
-      # MCP監査ゲートのTOFU承認記録（claude-container#28）。ホスト側 claude-container
+      # MCP監査ゲートのTOFU承認記録（#28）。ホスト側 c3c
       # スクリプトが人間の対話承認後にのみ書き込む1行ハッシュファイル。:ro必須 —
       # コンテナ内から書き換えられると次回起動の自動承認を偽装できてしまうため。
       # 未設定時は /dev/null（SECRETS_DIR と同じオプトインパターン）。

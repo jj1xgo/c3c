@@ -1,4 +1,4 @@
-# launcher が guard_agents_dir() で AGENTS_DIR を検証したときだけ追加する固定設定（claude-container#99）。
+# launcher が guard_agents_dir() で AGENTS_DIR を検証したときだけ追加する固定設定（#99）。
 # エージェント共通のスキル置き場（通常 ~/.agents。~/.claude/agents/ の subagent 定義とは別物）を
 # コンテナ内の /home/node/.agents に :ro で付ける。compose.yml の CODEX_DIR のような
 # ${VAR:-/dev/null} の 1 行にしないのは、未設定時に ~/.agents へ /dev/null の実体が現れて

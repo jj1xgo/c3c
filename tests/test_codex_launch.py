@@ -291,7 +291,7 @@ class ExplicitClaudeTests(LaunchCase):
         self.assertIn(run['env']['CC_CODEX_READ_ONLY'], (None, '0'))
         self.assertIn(run['env']['CODEX_MCP_APPROVAL_FILE'], (None, ''))
         for key in ('CC_AGENT', 'CC_CODEX_START_MODE', 'CC_CODEX_READ_ONLY', 'CODEX_MCP_APPROVAL_FILE', 'MCP_APPROVAL_STORE'):
-            self.assertIn(f'キー {key} は claude-container が解釈しない', result.stdout + result.stderr)
+            self.assertIn(f'キー {key} は c3c が解釈しない', result.stdout + result.stderr)
 
 
 class CodexStaticGuardTests(LaunchCase):

@@ -46,7 +46,7 @@ for option in "$@"; do
 done
 
 # CHAIN 経由の ACCEPT ルール（下の add_cidr/add_cidr_tagged）が、それ以外は許可された
-# IP に対して許可するポート（claude-container#31）。init モードと --refresh-domains モードの
+# IP に対して許可するポート（#31）。init モードと --refresh-domains モードの
 # 両方が同じ値を見るよう、ここで一度だけ読む。DNS リゾルバのルールや full_init() の
 # ホストネットワークのルールには適用されない — それらは CHAIN を完全にバイパスし、
 # 制限なしのままとなる（CHAIN 作成箇所のコメントを参照）。
@@ -56,7 +56,7 @@ resolve_allowed_ports() {
   if [ -f "$ALLOWED_PORTS_FILE" ]; then
     # `|| [ -n "$raw" ]` により、末尾に改行のない最終行も読む
     # （read はその行で非 0 を返すが変数は埋まっている。これがないと
-    # 最終エントリが黙って落ちていた — claude-container#49）。
+    # 最終エントリが黙って落ちていた — #49）。
     while IFS= read -r raw || [ -n "$raw" ]; do
       raw="${raw%%#*}"
       raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
@@ -99,7 +99,7 @@ resolve_allowed_ports() {
   # 80 番が遮断されていることを前提にしている。どちらかに反する設定は、以前は
   # そこで「ネットワークの問題」に見えるメッセージ（"unable to reach ...:443"）や
   # 「ルールが壊れている」ように見えるメッセージ（"port restriction not enforced"）で
-  # 失敗していたため、ここで本当の理由とともに検証する（claude-container#49）。
+  # 失敗していたため、ここで本当の理由とともに検証する（#49）。
   # 範囲は両端を含む。入力値は上で先頭ゼロのない十進表記へ正規化済み。
   local has_443=0 has_80=0
   for entry in "${ports[@]}"; do
@@ -165,7 +165,7 @@ add_cidr_tagged() {
 # 実測で確認済み（iptables 1.8.11/nf_tables）: -S は add_cidr* の呼び出しで
 # 渡した順序に関わらず、常にコアフィールド（-A CHAIN -d IP/32 -p ...）を
 # マッチ拡張フラグ（-m multiport、-m comment）より先に出力するため、下の
-# "-d ${ip}/32 " での grep は、add_cidr_tagged にポート制限（claude-container#31）を
+# "-d ${ip}/32 " での grep は、add_cidr_tagged にポート制限（#31）を
 # 追加した後も一致し続ける。
 add_or_touch_domain_ip() {
   local ip="$1" domain="$2" generation="$3"
@@ -357,7 +357,7 @@ verify_ipv4() {
     echo "ERROR: ファイアウォール検証に失敗しました。https://api.anthropic.com へ到達できません（curl rc=$curl_rc、接続10秒・全体20秒上限、再試行なし）" >&2
     exit 1
   fi
-  # ポート制限（claude-container#31）が、それ以外は許可された IP の非許可
+  # ポート制限（#31）が、それ以外は許可された IP の非許可
   # ポートを実際に遮断していることを確認する。github.com は実際に 80 番でも
   # 待ち受けている（HTTP → HTTPS リダイレクト）ので、ここでの失敗は「相手が
   # 待ち受けていなかった」とは混同しようがなく、必ず自分のルールが拒否している
@@ -394,7 +394,7 @@ full_init() {
   iptables -t mangle -X
 
   # 許可リストチェーン: 許可された CIDR/IP ごとに 1 つの ACCEPT を、
-  # $ALLOWED_PORTS に制限して置く（add_cidr/add_cidr_tagged、claude-container#31）。
+  # $ALLOWED_PORTS に制限して置く（add_cidr/add_cidr_tagged、#31）。
   # この制限がかかるのは GitHub の CIDR とタグ付きのドメインごとのルール「のみ」。
   # 下の DNS リゾルバのルールと、さらに下のホストネットワークのルールは CHAIN を
   # 完全にバイパスし（INPUT/OUTPUT へ直接追加される）、ポート制限を受けない。
@@ -428,7 +428,7 @@ full_init() {
 
   # GitHub の IP 範囲（HTTPS・SSH 経由の git/gh 用）。ここでは動的な取得をしない
   # — それをすると、コンテナ起動のたびに未認証の GitHub API のレート制限
-  # （IP あたり 60 req/h）を消費してしまう。代わりに、claude-container の
+  # （IP あたり 60 req/h）を消費してしまう。代わりに、c3c の
   # stage_build_context() が一度取得しビルド時にイメージへ焼き込んだ
   # スナップショットを読む — この範囲はめったに変わらないため、古いコピーでも
   # 使い続けられる。
@@ -454,7 +454,7 @@ full_init() {
   fi
 
   # ホストネットワーク（ゲートウェイのみ）、ホスト側サービス用。単一のゲートウェイ
-  # IP に限定し、その /24 全体ではない（claude-container#31） — ポート制限なし
+  # IP に限定し、その /24 全体ではない（#31） — ポート制限なし
   # （これは CHAIN をバイパスする。上の CHAIN 作成箇所の注記を参照）。
   local host_ip host_network
   host_ip=$(ip route | awk '/^default/ {print $3; exit}')

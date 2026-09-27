@@ -34,7 +34,7 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 
 ## C-2
 
-**対象**: claude-in-chrome 連携（`jj1xgo/claude-container#32`）
+**対象**: claude-in-chrome 連携（`#32`）
 
 **主張**: claude-in-chrome 連携（`mcp__claude-in-chrome__*`）はファイアウォールでは**原理的に遮断できない**。
 
@@ -56,7 +56,7 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 を書く方法があるが、他の MCP 向け `permissions.deny` 同様**コンテナ内から書き換え可能なソフトゲート**
 にすぎない。
 
-**根拠**: `jj1xgo/claude-container#32`（実機調査の記録）。
+**根拠**: `#32`（実機調査の記録）。
 
 **再確認契機**: 静的（claude-in-chrome 連携の実装変更時に再確認）。
 
@@ -140,9 +140,9 @@ CLI 間の認証・状態の完全隔離は未達成である。Codex 専用 hom
 確認する。対象はリポジトリ同梱の `/workspace/.claude/settings.json` と `/workspace/.claude/settings.local.json`
 （第三者が内容を制御しうる project 設定。`settings.local.json` は git で追跡していなくても対象にする）。
 前提として、Claude Code は workspace trust を `~/.claude.json` の `projects["<repo root>"]` に保存し、
-claude-container は全プロジェクトを `/workspace` にマウントして `~/.claude.json` を共有するため、`/workspace` の
+c3c は全プロジェクトを `/workspace` にマウントして `~/.claude.json` を共有するため、`/workspace` の
 trust は全プロジェクトで 1 つになる。一度受け入れると、この 2 ファイルの hook・`env`・`apiKeyHelper` 等の helper・
-`statusLine`・allow 規則は確認なしで効く。README「帰結の重大性で線を引いている」節（`claude-container#29`）の
+`statusLine`・allow 規則は確認なしで効く。README「帰結の重大性で線を引いている」節（`#29`）の
 基準（セッション開始と同時の任意コード実行）に当たるため、`.mcp.json` の stdio ゲートと同じ扱いでゲートを置く。
 
 **保証する動作**: `.claude` か `.mcp.json`（symlink を含む）を持つ repo だけを対象にする。イメージの label

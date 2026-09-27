@@ -1429,7 +1429,7 @@ run_env_file_launcher_tests() {
   mkdir -p "$proj/.claude-container.d"
 
   # D1: 対象プロジェクト直下の .env は compose へ --env-file /dev/null で遮断される
-  printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$proj/.env"
+  printf 'C3C_NO_FIREWALL=1\n' > "$proj/.env"
   rm -f "$envf"
   run_launcher
   check "D1: compose に --env-file /dev/null が渡る（rc=$rc）" \
@@ -1486,8 +1486,8 @@ DUMMY
   e_codex="$(cd "$home/.codex-container" && pwd -P)"
   {
     printf 'TZ=Asia/Tokyo\n'
-    printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n'
-    printf 'CLAUDE_CONTAINER_IPV6=1\n'
+    printf 'C3C_NO_FIREWALL=1\n'
+    printf 'C3C_IPV6=1\n'
     printf 'CLAUDE_CONFIG_DIR=%s\n' "$e_cfg"
     printf 'EXTRA_MOUNT=%s\n' "$e_extra"
     printf 'SHARED_MOUNT=%s\n' "$e_shared"
@@ -1499,8 +1499,8 @@ DUMMY
   check "E3: 許可キー 9 件が全て compose へ届く（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] \
       && grep -qxF 'TZ=Asia/Tokyo' '$root/compose-env' \
-      && grep -qxF 'CLAUDE_CONTAINER_NO_FIREWALL=1' '$root/compose-env' \
-      && grep -qxF 'CLAUDE_CONTAINER_IPV6=1' '$root/compose-env' \
+      && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' \
+      && grep -qxF 'C3C_IPV6=1' '$root/compose-env' \
       && grep -qxF 'CLAUDE_CONFIG_DIR=$e_cfg' '$root/compose-env' \
       && grep -qxF 'EXTRA_MOUNT=$e_extra' '$root/compose-env' \
       && grep -qxF 'SHARED_MOUNT=$e_shared' '$root/compose-env' \
@@ -1511,6 +1511,53 @@ DUMMY
     bash -c "! printf '%s' \"\$0\" | grep -q '解釈しないため無視'" "$out"
   check "E3b: GITCONFIG_FILE 設定時は ~/.gitconfig の bind 元がそのファイルになる" \
     grep -qxF "C3C_GITCONFIG_SOURCE=$e_gitcfg" "$root/compose-env"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # E-R1〜R6: 旧製品名の env キー（CLAUDE_CONTAINER_*）の解決（改名 第 1 段）。
+  # E-R1: 旧キーだけ → WARNING で改名を勧め、compose には新キーの値だけが渡る（旧キーは unset）
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-R1: 旧キーだけは WARNING 付きで有効（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' \
+      && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-R2: 新キーだけ → WARNING なし、compose に新キー
+  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-R2: 新キーだけは改名の WARNING なし（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && ! printf '%s' \"\$0\" | grep -q 'CLAUDE_CONTAINER_NO_FIREWALL' && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'" "$out"
+  # （NO_FIREWALL=1 の警告文は、ファイルに実際に書かれたキー名だけを出す — Step 3。旧名を常に併記すると上の否定が成り立たない）
+  check "E-R2: 新キーでも NO_FIREWALL=1 の WARNING が出る" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*C3C_NO_FIREWALL=1.*無効化'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-R3: 新旧の両方（値が同じでも、ファイルとシェルに分かれていても）→ ERROR で compose へ進まない
+  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher CLAUDE_CONTAINER_NO_FIREWALL=1
+  check "E-R3: ファイルの新キーとシェルの旧キーの併存は ERROR（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' && [ ! -e '$root/compose-env' ]" "$out"
+  printf 'CLAUDE_CONTAINER_IPV6=1\nC3C_IPV6=1\n' > "$envf"
+  run_launcher
+  check "E-R3: 同じファイルの新旧併存も ERROR（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_IPV6.*C3C_IPV6' && [ ! -e '$root/compose-env' ]" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-R4: 空文字は未設定扱い（空の旧キーと新キーは併存にならない）
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=\nC3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-R4: 空の旧キーは未設定扱い（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'"
+  # E-R5: env ファイルなしで、シェル環境の旧キーも解決される
+  rm -f "$envf"
+  run_launcher CLAUDE_CONTAINER_NO_FIREWALL=1
+  check "E-R5: シェル環境の旧キーも新キーへ写る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'"
+  # E-R6: --check は旧キーを [WARN]、併存を [FAIL] に集計する（env ファイルなし・シェル環境でも）
+  # （fixture に packages.txt 等が無く、check_one_project は常に WARN を立てるので、「結果: WARN」ではなく改名の警告行で判定する）
+  run_launcher_check CLAUDE_CONTAINER_IPV6=0
+  check "E-R6: --check は旧キーを改名の WARNING で示す（rc=$rc）" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING: CLAUDE_CONTAINER_IPV6 は旧名です。C3C_IPV6'" "$out"
+  run_launcher_check CLAUDE_CONTAINER_IPV6=0 C3C_IPV6=0
+  check "E-R6: --check は併存を FAIL（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR: CLAUDE_CONTAINER_IPV6 と C3C_IPV6 が両方' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # E4: 廃止変数を env ファイルに書いた場合の移行案内（ERROR）は許可リスト化後も維持される
@@ -1623,7 +1670,7 @@ run_ipv6_launcher_tests() {
   launcher_sandbox_init
   mkdir -p "$proj/.claude-container.d"
   for value in '' 0 1; do
-    printf 'CLAUDE_CONTAINER_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
     run_launcher
     if [[ "$value" == 1 ]]; then
       check "IPv6=1 は固定 override を run に渡す" \
@@ -1635,7 +1682,7 @@ run_ipv6_launcher_tests() {
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
   for value in 2 true '1 ' '1;echo unsafe'; do
-    printf 'CLAUDE_CONTAINER_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
     run_launcher
     check "不正な IPv6=$value で起動を止める" \
       bash -c '[ "$1" -ne 0 ] && [ ! -f "$2/compose-args" ] && [[ "$3" == *ERROR:* ]]' _ "$rc" "$root" "$out"
@@ -1643,7 +1690,7 @@ run_ipv6_launcher_tests() {
     check "不正な IPv6=$value を --check も拒否する" [ "$rc" -ne 0 ]
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
-  printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
   run_launcher TEST_IPV6_SUPPORT=
   check "IPv6 未対応の旧イメージでは起動前に -b を案内して拒否" \
     bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
@@ -1929,7 +1976,7 @@ CURL
 
   # P3: IPv6=1 併用の -b では両 override が build・run の各呼び出しに 1 回ずつ共存する
   mkdir -p "$proj/.claude-container.d"
-  printf 'CLAUDE_CONTAINER_IPV6=1\n' > "$proj/.claude-container.d/env"
+  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "P3: IPv6 override と別名 override が build・run に共存する（rc=$rc）" \
@@ -2029,7 +2076,7 @@ run_instruction_mount_launcher_tests() {
     bash -c '[ "$1" -eq 1 ] && [ "$2" = 0 ] && [[ "$3" == *"/home/node/obsidian-vault"* && "$3" == *"AGENTS_DIR"* ]] && cmp -s "$4/before" "$4/after"' _ "$snapshot_ok" "$rc" "$out" "$root"
 
   launcher_sandbox_reset_records
-  out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONTAINER_IPV6=1 \
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" C3C_IPV6=1 \
     "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "build と run に共有・スキル・plugin・IPv6 の override が共存する" \
     bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] || exit 1

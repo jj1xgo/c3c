@@ -176,6 +176,7 @@ class ClaudePathTests(EntrypointCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('TTY', result.stderr)
         self.assertFalse(any(r.startswith('claude') for r in self.records))
+        self.assertNotIn('/dev/tty:', result.stderr)
 
 
 class AgentValidationTests(EntrypointCase):

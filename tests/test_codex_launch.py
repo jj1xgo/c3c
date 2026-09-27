@@ -562,6 +562,7 @@ class ApprovalTests(LaunchCase):
                 self.assertEqual(self.main_runs(), [])
                 self.assertFalse(self.record_path().exists())
                 self.assertNotIn('コンテナ内', result.stderr)
+                self.assertNotIn('/dev/tty:', result.stderr)
 
     def test_zero_servers_is_approved_without_prompt_and_still_verified(self):
         empty_hash = 'e' * 64

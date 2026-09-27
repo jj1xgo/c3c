@@ -1297,7 +1297,7 @@ check_codex_approval() {
     printf '%s\n' "${CODEX_DISPLAY[@]}" >&2
     printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
     local codex_confirm=""
-    if ! read -r codex_confirm </dev/tty 2>/dev/null; then
+    if ! { read -r codex_confirm </dev/tty; } 2>/dev/null; then
       echo "ERROR: 対話可能な TTY がないため Codex の MCP 実行定義を確認できません。Codex は起動しません" >&2
       exit 1
     fi
@@ -1489,7 +1489,7 @@ check_claude_project_approval() {
     printf '%s\n' "${CLAUDE_PROJECT_DISPLAY[@]}" >&2
     printf 'この project 設定で Claude Code を起動し、この承認を記憶しますか? [y/N] ' >&2
     local project_confirm=""
-    if ! read -r project_confirm </dev/tty 2>/dev/null; then
+    if ! { read -r project_confirm </dev/tty; } 2>/dev/null; then
       echo "ERROR: 対話可能な TTY がないため project 設定を確認できません。起動を中止します" >&2
       exit 1
     fi
@@ -2196,7 +2196,7 @@ check_mcp_approval() {
       echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' | LC_ALL=C tr -d '\000-\037\177' >&2
       printf 'これらの MCP サーバーの起動を許可し、この承認を記憶しますか? [y/N] ' >&2
       local mcp_confirm=""
-      if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
+      if ! { read -r mcp_confirm </dev/tty; } 2>/dev/null; then
         echo "INFO: 対話可能な TTY がないため、確認はコンテナ内の MCP 監査ゲートに委ねます。" >&2
         export MCP_APPROVAL_FILE
         return 0

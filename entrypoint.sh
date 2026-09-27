@@ -157,7 +157,7 @@ if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
         echo "  - $mcp_name: $mcp_cmd $mcp_args" >&2
       done <<<"$stdio_servers"
       printf 'これらの MCP サーバーの起動を許可しますか? [y/N] ' >&2
-      if ! read -r mcp_confirm </dev/tty; then
+      if ! { read -r mcp_confirm </dev/tty; } 2>/dev/null; then
         echo "ERROR: MCP stdio 型サーバーを確認する対話可能な TTY がありません。起動を中止します" >&2
         exit 1
       fi
@@ -182,7 +182,7 @@ if [ "$CC_AGENT" = claude ]; then
     3)
       echo "WARNING: 上の project 設定（.claude/settings*.json）がホストで承認されていないか、承認後に変わっています。hook・env・helper はセッション開始と同時に実行され、export された全ての秘密を読めます（承認は定義の承認で、スクリプトの中身は保証しません）" >&2
       printf 'この project 設定で Claude Code を起動しますか? [y/N] ' >&2
-      if ! read -r project_confirm </dev/tty; then
+      if ! { read -r project_confirm </dev/tty; } 2>/dev/null; then
         echo "ERROR: project 設定を確認する対話可能な TTY がありません。起動を中止します" >&2
         exit 1
       fi

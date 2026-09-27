@@ -155,6 +155,20 @@ class ApprovalTests(ClaudeProjectLaunchCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('TTY', result.stderr)
         self.assertEqual(self.main_runs(), [])
+        self.assertNotIn('/dev/tty:', result.stderr)
+
+    def test_no_tty_mcp_gate_defers_without_redirect_error(self):
+        # #170: TTY なしで .mcp.json の確認に来ても、bash のリダイレクト失敗の行を出さずにコンテナ内ゲートへ委ねる。
+        if shutil.which('jq') is None:
+            self.skipTest('jq がないため .mcp.json ゲートに到達しない')
+        self.approve_claude()
+        (self.proj / '.mcp.json').write_text(json.dumps({'mcpServers': {'s': {'command': 'evil'}}}))
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('確認はコンテナ内の MCP 監査ゲートに委ねます', result.stderr)
+        self.assertNotIn('/dev/tty:', result.stderr)
+        (run,) = self.main_runs()
+        self.assertIn(run['env'].get('MCP_APPROVAL_FILE'), (None, ''))
 
     def test_zero_count_passes_without_record(self):
         self.state['claude_preflight'] = {'stdout': claude_protocol(count=0)}

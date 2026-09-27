@@ -26,24 +26,34 @@
 ## 前提（計画時に確かめた事実、main 58acf3a）
 
 - **#177**:
-  - `claude-project-audit.py:218-230` の `read_record_hash()` は `handle.read(4096)` で読む。先頭 4096 バイトが「有効な JSON と空白」だけで完結し、その先に何かが続く記録を、有効として扱う。有効な JSON の直後に破損を置いた記録は、今でも `json.loads` の trailing data で失敗する。このため、red のテストは空白で 4096 バイトまで埋める必要がある。
-  - ホスト側（`c3c:1480-1484` の `check_claude_project_approval`）は、記録の内容が `claude_project_record_content` の出力と完全一致したときだけ `CLAUDE_PROJECT_APPROVAL_FILE` に記録を渡す（`$(cat)` なので末尾の改行だけは無視する）。したがって、通常の起動経路では 4096 バイトを超える記録はコンテナの helper に届かない。この修正は、helper が単独で呼ばれたときの深層防御と、ホストと helper の読み方を揃えるためのものである。
-  - c3c が書く記録は `{"protocol_version":1,"hash":"<64 hex>"}\n` の 107 バイト。
+  - `claude-project-audit.py:220-232` の `read_record_hash()` は `handle.read(4096)` で読む。先頭 4096 バイトが「有効な JSON と空白」だけで完結し、その先に何かが続く記録を、有効として扱う。有効な JSON の直後に破損を置いた記録は、今でも `json.loads` の trailing data で失敗する。このため、red のテストは空白で 4096 バイトまで埋める必要がある。
+  - c3c が書く記録は `{"protocol_version":1,"hash":"<64 hex>"}\n` の 97 バイト。
+  - ホスト側（`c3c:1480-1484` の `check_claude_project_approval`）は、記録の内容が `claude_project_record_content` の出力と一致したときだけ `CLAUDE_PROJECT_APPROVAL_FILE` に記録を渡す。比べるのは `$(cat)` の結果なので、末尾の改行はいくつあっても無視される。このため、97 バイトの記録の末尾に改行を足した記録（例: 5097 バイト）でもホストの比較は一致し、コンテナの helper に届く（計画時に実測。計画レビューで Codex が指摘）。c3c 自身がそういう記録を書くことはなく、ホスト側で記録を書き換えた場合に限られる。
+  - 修正の後、そうした 4096 バイトを超える記録は helper で「記録なし」になり、コンテナ内で確認が出る（TTY が無ければ止まる）。確認が増える側（fail-closed 側）の変化で、迂回にはならない。修正の目的は、上限より後ろのバイトを見ないまま承認済みと判定することを無くすこと（深層防御）である。Task 1 に、この場合を固定するテストも入れる。
 - **#175**:
   - PR #168 の Claude レビューの M6 の原文は、(a)「launcher 側で表示行から制御文字を除く処理（`CONTROL.sub`）を試すテストがない」、(b)「skills の項目が外向きの symlink のとき判定不能になるテストがない」、(c)「`--check` が `.mcp.json` の `headersHelper` を `[FAIL]` にするテストがない」。
   - (a) の `CONTROL.sub` は `c3c` の `run_claude_project_preflight()` に埋め込んだ Python（`handle.write(CONTROL.sub('', line) + '\n')`）にある。検査用コンテナの出力は、テストでは fake compose が `state['claude_preflight']` から返す。表示行に ESC を入れれば、この行を外したときに赤になる。
   - (b) は、helper 単体ではすでに `tests/test_claude_project_audit.py` の `test_error_messages_strip_control_characters_from_repo_names` が確かめている（skills に、名前に ESC を含み、root の外を指す symlink を置いて「判定できません」を検査する）。通常起動の経路は fake compose なので、本物の helper は走らない。そのため、本物の helper を launcher 経由で走らせる `--check` の経路（`c3c:2635-2640`）に絞る。Issue #175 の本文は「通常起動と `--check`」と書いたが、通常起動の経路では fake の出力をなぞるだけになるので、ここで範囲を絞る（PR 本文に書く）。
-  - launcher テストは、実 launcher と実アセットを `self.runner`（一時ディレクトリ）へ **コピー** して使う（`tests/test_codex_launch.py:141-149`）。helper もコピーされる。ミューテーション確認は、リポジトリのファイルを一時的に書き換え、確かめた後に `git checkout --` で戻す。
+  - Issue #175 の完了条件は、`--check` の表示で helper の stderr から制御文字を除く `tr -d`（`c3c:2638`）にも触れている（M6 の原文より広い）。本物の helper は自分で制御文字を除くので、helper を使うテストでは `tr -d` を外しても赤にならない。そこで、runner のコピーの helper を stub に差し替え、制御文字を含む stderr を返させて確かめる（計画レビューで Codex が指摘）。これを (d) として足す。
+  - launcher テストは、実 launcher と実アセットを `self.runner`（一時ディレクトリ）へ **コピー** して使う（`tests/test_codex_launch.py:141-149`）。helper もコピーされるので、テストの中で `self.runner / 'claude-project-audit.py'` を書き換えても、リポジトリのファイルは変わらない。ミューテーション確認は、対象ファイルが clean であることを確かめてからリポジトリのファイルを一時的に書き換え、確かめた後に `git checkout --` で戻す。
   - `self.proj` は `self.root / 'proj'`。`self.root` の直下は proj の外に当たる。
 - **#174**:
   - 7 ファイル同時検査は `lint.sh:246-259`。ループの target は `/tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache` の 5 つ。IPv6 は `network_mode: pasta:-g,fe80::1` の行を grep する。
   - `tests/test-lint-compose-checks.sh` は `test-build.sh:841`（`run_launcher_tests()` の中）から呼ばれる。CI の `--launcher-only` でも走る。
+  - 関数を fixture で試すだけでは、lint 本体の呼び出しを `|| true` に変えても赤にならない（計画レビューで Codex が指摘）。偽の provider で `lint.sh` 全体を走らせる方式は採らない。`lint.sh` は他にも十数回 `podman compose` を呼び、`${VAR:?}` の検査は config の失敗を期待するので、偽の provider がそれを全部まねる必要があるためである。代わりに、7 ファイル同時の config を取る `if` の直後の行が `compose_merged_overrides_ok <<<"$merged" || status=1` であることを、同じテストで固定する。
+  - 7 ファイル同時の config を取る `if` の行は、`-f compose.agents.yml -f compose.codex-plugins.yml config); then` で終わる唯一の行である（`-f compose.codex-plugins.yml config); then` で終わる行は、Codex キャッシュ単独の検査にもう 1 行ある）。
 - **#176**:
   - 実測（計画時、ホスト）: ホームディレクトリを作業ディレクトリにして `c3c claude --check <ホーム>` を実行した。user 設定 `~/.claude/settings.json` の `enabledPlugins` で plugin を有効にしていると、`[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: ERROR: ... .claude/settings.json の enabledPlugins で plugin が有効になっています（...）` が出る。同時に、既存の `WARNING: <ホーム> が <ホーム>/.claude を含む（または含まれる）ため、別の rw マウント経由で書けます。` も出る。
-  - helper の `check_skills_plugins()`（`claude-project-audit.py:166-177`）は、`.claude/skills` を列挙し、各 `<name>` について `.claude/skills/<name>/.claude-plugin/plugin.json` を `resolve()` で段ごとに解決する。どの段であれ root の外・dangling・循環の symlink なら判定不能で止まる。skill の中の他のファイル（`SKILL.md` など）は辿らない。
+  - helper の `check_skills_plugins()`（`claude-project-audit.py:166-177`）は、まず `.claude/skills` 自体を `resolve()` で解決し（`.claude` と `.claude/skills` の段を確かめる）、列挙した各 `<name>` について `.claude/skills/<name>/.claude-plugin/plugin.json` を段ごとに解決する。どの段であれ root の外・dangling・循環の symlink や、`lstat`・`stat` の失敗（権限エラー等）なら判定不能で止まる。これより下にある skill の他のファイル（`SKILL.md` など）は辿らない。
+  - ホームを作業ディレクトリにしたときに user 設定で止まりうる条件は、plugin の有効化に限らない。`check_settings` の停止条件（`enabledPlugins`・`extraKnownMarketplaces`・`env` の `CLAUDE_CODE_PLUGIN_*`）と、`~/.claude/skills/` の skills-directory plugin や `/workspace` の外を指す symlink（計画レビューで Claude が指摘）。
   - 直す文言は 3 か所。README 441 節の箇条書き（「確認を出さずに起動を止める条件」の後）、同節の移行手順 4、SECURITY-CLAIMS C-5 の「限界・非対象」の skills の項。
 
-- 計画時の試行（main 58acf3a から切ったリポジトリ外の worktree とコピー。リポジトリの実装対象は編集していない）: Task 1〜3 のコードとコマンドを、この計画から逐語で抜き出して適用した。Task 1 の red（`0 != 3`）と green（37 件 OK）、Task 2 の green（27 件 OK）とミューテーション 3 回（それぞれ FAIL 1・2・1、戻した後に `restored`）、Task 3 の red（6 件 FAIL）、green（24 ケース、shellcheck rc 0）、ミューテーション（3 件 FAIL）を確かめた。切り出した関数は、ホストの実 Podman で作った 7 ファイル同時の config でも rc 0 で、`.agents` の target を `.agents-x` に書き換えると rc 1 になった。
+- 計画時の試行（main 58acf3a から切ったリポジトリ外の worktree。リポジトリの実装対象は編集していない。計画レビューの反映後にやり直した）: Task 1〜4 のコードとコマンドを、この計画から逐語で抜き出して適用した。
+  - Task 1: red は `FAILED (failures=2)`、green は 38 件 OK。
+  - Task 2: green は 28 件 OK。ミューテーション 4 回は、それぞれ FAIL 1・2・1・1 で、どれも戻した後に `restored`。
+  - Task 3: red は 25 ケース中 7 件 FAIL、green は 25 ケース・shellcheck rc 0。ミューテーション 2 回は、それぞれ 3 件・1 件 FAIL で、どちらも `restored`。worktree での `./lint.sh` は rc 0・`lint OK`（実 Podman の Compose 検証を含む）。
+  - Task 4: `git diff --check` は出力なし。grep の件数は Expected どおり。
+  - 切り出した関数は、ホストの実 Podman で作った 7 ファイル同時の config でも rc 0 だった。`.agents` の target を `.agents-x` に書き換えると rc 1 になった。
 
 ## Review Focus
 
@@ -51,14 +61,14 @@
 2. **docker compose の long syntax**: CI の Compose 検証は docker compose provider で走るので、切り出した関数は long syntax の config でも合格する必要がある。→ Task 3 の long syntax の合格ケース。
 3. **IPv6 の network_mode の欠落**: 関数に切り出しても、network_mode の検査を落とさない。→ Task 3 の「network_mode なしは失敗」ケース。
 4. **skills の項目が dangling の symlink**: 外向きの symlink だけでなく、解決できない symlink でも `--check` は `[FAIL]` を出す。→ Task 2 の (b) の subTest。
-5. **制御文字の除去で表示の本文まで消さない**: ESC を除いた後も、同じ行の本文（`fake`）は表示に残る。→ Task 2 の (a) の `assertIn('fake', ...)`。
+5. **制御文字の除去で表示の本文まで消さない**: ESC を除いた後も、同じ行の本文は表示に残る。→ Task 2 の (a) で、除去後の行そのもの（`  {"x": "[2J[Hfake"}`）が stderr の 1 行として出ることを検査する。
 
 ---
 
 ### Task 1: helper が承認記録を上限まで読み、超えたら記録なしとして扱う（#177）
 
 **Files:**
-- Modify: `claude-project-audit.py`（定数の並び 29-40 行、`read_record_hash()` 218-230 行）
+- Modify: `claude-project-audit.py`（定数の並び 29-40 行、`read_record_hash()` 220-232 行）
 - Test: `tests/test_claude_project_audit.py`（`VerifyTests` の末尾、`test_blocked_state_wins_over_matching_record` の後）
 
 **Interfaces:**
@@ -67,7 +77,7 @@
 
 - [ ] **Step 1: 失敗するテストを書く**
 
-`tests/test_claude_project_audit.py` の `VerifyTests` の `test_blocked_state_wins_over_matching_record` の直後（`if __name__ == '__main__':` の前）に、次の 2 つを足す。
+`tests/test_claude_project_audit.py` の `VerifyTests` の `test_blocked_state_wins_over_matching_record` の直後（`if __name__ == '__main__':` の前）に、次の 3 つを足す。
 
 ```python
     def test_verify_rejects_record_with_bytes_beyond_4096(self):
@@ -84,12 +94,20 @@
         self.record.write_bytes(head + b' ' * (4096 - len(head)))
         self.assertEqual(self.record.stat().st_size, 4096)
         self.assertEqual(self.run_helper('verify', str(self.record)).returncode, 0)
+
+    def test_verify_treats_newline_padded_record_over_4096_as_missing(self):
+        # host は $(cat) で比べるので末尾の改行を無視し、この記録も helper に渡す。helper は上限を超えた記録を
+        # 記録なしとして扱い、確認に回す（fail-closed 側。#177）。
+        self.put('.claude/settings.json', HOOKS)
+        head = json.dumps({'protocol_version': 1, 'hash': self.snapshot()['hash']}, separators=(',', ':')).encode()
+        self.record.write_bytes(head + b'\n' * 5000)
+        self.assertEqual(self.run_helper('verify', str(self.record)).returncode, 3)
 ```
 
 - [ ] **Step 2: 赤を確かめる**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_audit.py -k 4096 -v`
-Expected: `test_verify_rejects_record_with_bytes_beyond_4096` が FAIL（`AssertionError: 0 != 3`）。`test_verify_accepts_record_of_exactly_4096_bytes` は ok。
+Expected: `Ran 3 tests`、`FAILED (failures=2)`。`test_verify_rejects_record_with_bytes_beyond_4096` と `test_verify_treats_newline_padded_record_over_4096_as_missing` が FAIL（どちらも `AssertionError: 0 != 3`）。`test_verify_accepts_record_of_exactly_4096_bytes` は ok。
 
 - [ ] **Step 3: 最小の実装**
 
@@ -120,7 +138,7 @@ def read_record_hash(path):
 - [ ] **Step 4: 緑を確かめる**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_audit.py -v 2>&1 | tail -3`
-Expected: `Ran 37 tests`、`OK`（既存 35 + 2）。
+Expected: `Ran 38 tests`、`OK`（既存 35 + 3）。
 
 - [ ] **Step 5: コミット**
 
@@ -151,7 +169,7 @@ git commit -m "fix: helper が承認記録の 4096 バイトより後ろを見�
         self.state['claude_preflight'] = {'stdout': claude_protocol(lines=lines)}
         result = self.launch()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('fake', result.stderr)
+        self.assertIn('\n  {"x": "[2J[Hfake"}\n', result.stderr)
         self.assertNotIn('\x1b', result.stderr)
         self.assertNotIn('\x07', result.stderr)
         self.assertEqual(self.main_runs(), [])
@@ -187,21 +205,32 @@ git commit -m "fix: helper が承認記録の 4096 バイトより後ろを見�
         self.assertIn('[FAIL] Claude project 設定ゲート: 起動時に止まります', result.stdout)
         self.assertIn('headersHelper', result.stdout)
         self.assertNotEqual(result.returncode, 0)
+
+    def test_check_strips_control_characters_from_helper_stderr(self):
+        # #175 (d): --check は helper の stderr を tr -d で除いてから [FAIL] の行に出す（c3c の --check 経路）。
+        # 本物の helper は自分で除くので、runner のコピーを、制御文字を出して rc 1 で終わる stub に差し替える。
+        (self.runner / 'claude-project-audit.py').write_text(
+            'import sys\nsys.stderr.write("ERROR: \\x1b[2Jfake\\x07\\n")\nsys.exit(1)\n')
+        result = self.check()
+        self.assertIn('[FAIL] Claude project 設定ゲート: 起動時に止まります（ホストでの参考判定）: ERROR: [2Jfake', result.stdout)
+        self.assertNotIn('\x1b', result.stdout)
+        self.assertNotIn('\x07', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
 ```
 
 - [ ] **Step 2: 緑を確かめる**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -v 2>&1 | tail -3`
-Expected: `OK`（件数は既存 24 + 3 = 27）。
+Expected: `Ran 28 tests`、`OK`（既存 24 + 4）。
 
-- [ ] **Step 3: ミューテーションで赤を確かめる（3 回。各回の後に必ず戻す）**
+- [ ] **Step 3: ミューテーションで赤を確かめる（4 回。各回の後に必ず戻す）**
 
-本体の変更が無いタスクなので、red は処理を一時的に外して確かめる。各回とも、書き換え → 対象テストを実行 → `git checkout -- <file>` で戻す → `git diff --quiet -- <file>` が rc 0 であることを確かめる（テストの追加はまだコミットしていないので、ファイルを指定する）、の順にする。
+本体の変更が無いタスクなので、red は処理を一時的に外して確かめる。各回とも、対象ファイルが clean であることを確かめる（`git diff --quiet -- <file>` が rc 0 のときだけ書き換える）→ 書き換え → 対象テストを実行 → `git checkout -- <file>` で戻す → `git diff --quiet -- <file>` が rc 0 であることを確かめる（テストの追加はまだコミットしていないので、ファイルを指定する）、の順にする。
 
 (a) `c3c` の `handle.write(CONTROL.sub('', line) + '\n')` を `handle.write(line + '\n')` にする。
 
 ```bash
-sed -i "s/handle.write(CONTROL.sub('', line) + '\\\\n')/handle.write(line + '\\\\n')/" c3c
+git diff --quiet -- c3c && sed -i "s/handle.write(CONTROL.sub('', line) + '\\\\n')/handle.write(line + '\\\\n')/" c3c
 git diff --stat c3c   # 1 行だけ変わっていること
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k strips_control -v 2>&1 | tail -3
 git checkout -- c3c && git diff --quiet -- c3c && echo restored
@@ -211,7 +240,7 @@ Expected: `FAILED (failures=1)`、その後 `restored`。`git diff --stat` が 0
 (b) `claude-project-audit.py` の `check_skills_plugins()` の `names = sorted(os.listdir(skills))` を `names = []` にする。
 
 ```bash
-sed -i 's/        names = sorted(os.listdir(skills))/        names = []/' claude-project-audit.py
+git diff --quiet -- claude-project-audit.py && sed -i 's/        names = sorted(os.listdir(skills))/        names = []/' claude-project-audit.py
 git diff --stat claude-project-audit.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k skills_symlink -v 2>&1 | tail -3
 git checkout -- claude-project-audit.py && git diff --quiet -- claude-project-audit.py && echo restored
@@ -221,14 +250,24 @@ Expected: `FAILED (failures=2)`（subTest 2 件とも）、その後 `restored`�
 (c) `check_mcp()` の `if 'headersHelper' in server:` を `if False:` にする。
 
 ```bash
-sed -i "s/        if 'headersHelper' in server:/        if False:/" claude-project-audit.py
+git diff --quiet -- claude-project-audit.py && sed -i "s/        if 'headersHelper' in server:/        if False:/" claude-project-audit.py
 git diff --stat claude-project-audit.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k headers_helper -v 2>&1 | tail -3
 git checkout -- claude-project-audit.py && git diff --quiet -- claude-project-audit.py && echo restored
 ```
 Expected: `FAILED (failures=1)`、その後 `restored`。
 
-注意: Task 1 をコミットした後に行うこと（`git checkout --` が Task 1 の未コミットの変更まで消さないため）。
+(d) `c3c` の `--check` の `$(LC_ALL=C tr -d '\000-\037\177' < "$project_err")` を `$(cat "$project_err")` にする。
+
+```bash
+git diff --quiet -- c3c && sed -i "s/\$(LC_ALL=C tr -d '\\\\000-\\\\037\\\\177' < \"\$project_err\")/\$(cat \"\$project_err\")/" c3c
+git diff --stat c3c   # 1 行だけ変わっていること
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_claude_project_launch.py -k helper_stderr -v 2>&1 | tail -3
+git checkout -- c3c && git diff --quiet -- c3c && echo restored
+```
+Expected: `FAILED (failures=1)`、その後 `restored`。
+
+注意: Task 1 をコミットした後に行うこと（`git checkout --` が Task 1 の未コミットの変更まで消さないため。先頭の `git diff --quiet -- <file>` も、未コミットの変更があれば書き換えを止める）。途中で中断したら、`git checkout -- c3c claude-project-audit.py` で戻す（どちらもコミット済みで、このタスクでは本体を変えないため）。
 
 - [ ] **Step 4: コミット**
 
@@ -249,7 +288,9 @@ git commit -m "test: project 設定ゲートの launcher と --check 経路の�
 
 - [ ] **Step 1: 失敗するテストを書く**
 
-`tests/test-lint-compose-checks.sh` を 3 か所直す。
+`tests/test-lint-compose-checks.sh` を 4 か所直す。
+
+0. 冒頭コメント（2 行目）の `（compose_mount_is_ro / compose_tty_disabled）` を `（compose_mount_is_ro / compose_tty_disabled / compose_merged_overrides_ok と、その lint 本体への配線）` に置き換える。
 
 1. harness を作る sed に、新しい関数の抽出を足す。
 
@@ -304,12 +345,23 @@ run_case '7 ファイル（long syntax）: .agents が .agents-x に化けてい
 [[ "${merged_short/\/home\/node\/.agents:ro/\/home\/node\/.agents-x:ro}" != "$merged_short" \
   && "${merged_long/target: \/home\/node\/.agents$'\n'/target: \/home\/node\/.agents-x$'\n'}" != "$merged_long" \
   && "$merged_no_ipv6" != "$merged_short" ]] || { echo 'FAIL - 7 ファイルの対照 fixture の生成'; fail=$((fail + 1)); }
+# lint 本体の配線（#174）: 7 ファイル同時 config を取る if の直後の行が、関数の結果を status へ反映する呼び出しであること。
+# 偽の provider で lint.sh 全体を走らせる方式は採らない（lint.sh は他にも十数回 compose を呼び、${VAR:?} の検査は
+# config の失敗を期待するので、偽の provider がそれを全部まねる必要がある）。呼び出しを || true 等へ変えると赤になる。
+wiring=$(awk 'prev ~ /-f compose\.agents\.yml -f compose\.codex-plugins\.yml config\); then$/ { print; exit } { prev = $0 }' "$ROOT/lint.sh")
+count=$((count + 1))
+# shellcheck disable=SC2016 # 意図的にリテラル（lint.sh の 1 行と文字どおり比べる。変数展開ではない）
+if [[ "$wiring" == '    compose_merged_overrides_ok <<<"$merged" || status=1' ]]; then
+  echo 'ok - lint 本体: 7 ファイル同時 config の検査結果を status へ反映している'
+else
+  echo "FAIL - lint 本体: 7 ファイル同時 config の直後の行が想定と違う: ${wiring:-（見つからない）}"; fail=$((fail + 1))
+fi
 ```
 
 - [ ] **Step 2: 赤を確かめる**
 
 Run: `bash tests/test-lint-compose-checks.sh; echo rc=$?`
-Expected: 関数がまだ無いので、`7 ファイル（...）` の 6 ケースすべてが `(rc=127, expected ...)` で FAIL になり、`結果: 24 ケース、失敗 6`、`rc=1`。失敗を期待するケースも、rc 127 では `ERROR:` が無いので FAIL になる。既存の 18 ケースは ok のまま。（計画時にリポジトリ外のコピーで確かめた）
+Expected: 関数がまだ無いので、`7 ファイル（...）` の 6 ケースすべてが `(rc=127, expected ...)` で FAIL になる（失敗を期待するケースも、rc 127 では `ERROR:` が無いので FAIL）。配線のケースも、直後の行がまだ `# 部分一致だと…` のコメントなので FAIL。`結果: 25 ケース、失敗 7`、`rc=1`。既存の 18 ケースは ok のまま。（計画時にリポジトリ外のコピーで確かめた）
 
 - [ ] **Step 3: 最小の実装**
 
@@ -351,22 +403,37 @@ compose_merged_overrides_ok() {
 - [ ] **Step 4: 緑を確かめる**
 
 Run: `bash tests/test-lint-compose-checks.sh; echo rc=$?`
-Expected: 全ケース `ok`、`結果: 24 ケース、失敗 0`、`rc=0`。`shellcheck -x lint.sh tests/test-lint-compose-checks.sh` も rc 0（呼び出し側を置き換える前は、新しい関数に SC2329「never invoked」が出る）。
+Expected: 全ケース `ok`、`結果: 25 ケース、失敗 0`、`rc=0`。`shellcheck -x lint.sh tests/test-lint-compose-checks.sh` も rc 0（呼び出し側を置き換える前は、新しい関数に SC2329「never invoked」が出る。配線の比較の SC2016 は、テストに書いた disable の注記で抑える）。
 
-- [ ] **Step 5: ミューテーションで、呼び出し側を部分一致に戻したときに赤になることを確かめる**
+- [ ] **Step 5: ミューテーションで赤を確かめる（2 回。Step 3 の変更はまだコミットしていないので、控えから戻す）**
+
+控えを取る。途中で中断したら `cp "${TMPDIR:-/tmp}/c3c-lint-174.bak" lint.sh` で戻す。
 
 ```bash
+bak="${TMPDIR:-/tmp}/c3c-lint-174.bak" && cp lint.sh "$bak"
+```
+
+(1) 関数の中の完全一致を、部分一致（`grep -qF`）に戻す。
+
+```bash
+bak="${TMPDIR:-/tmp}/c3c-lint-174.bak"
 sed -i 's/    compose_mount_is_ro "$target" <<<"$merged" \\$/    grep -qF -- "$target" <<<"$merged" \\/' lint.sh
-git diff lint.sh | grep -c 'grep -qF'   # 1 であること
+diff "$bak" lint.sh | grep -c '^> .*grep -qF'   # 1 であること
 bash tests/test-lint-compose-checks.sh; echo rc=$?
+cp "$bak" lint.sh && cmp lint.sh "$bak" && echo restored
 ```
-Expected: `.agents-x` の 2 ケースと `1 つが :rw なら失敗` の計 3 ケースが `(rc=0, expected 1)` で FAIL、`結果: 24 ケース、失敗 3`、`rc=1`。確かめたら、sed で入れた 1 行だけを元に戻す（Step 3 の変更は残す）。
+Expected: `.agents-x` の 2 ケースと `1 つが :rw なら失敗` の計 3 ケースが `(rc=0, expected 1)` で FAIL、`結果: 25 ケース、失敗 3`、`rc=1`。その後 `restored`。
+
+(2) lint 本体の呼び出しを `|| true` にする。
 
 ```bash
-sed -i 's/    grep -qF -- "$target" <<<"$merged" \\$/    compose_mount_is_ro "$target" <<<"$merged" \\/' lint.sh
+bak="${TMPDIR:-/tmp}/c3c-lint-174.bak"
+sed -i 's/    compose_merged_overrides_ok <<<"$merged" || status=1$/    compose_merged_overrides_ok <<<"$merged" || true/' lint.sh
+diff "$bak" lint.sh | grep -c '^> .*|| true'   # 1 であること
 bash tests/test-lint-compose-checks.sh; echo rc=$?
+cp "$bak" lint.sh && cmp lint.sh "$bak" && echo restored && rm -f "$bak"
 ```
-Expected: 全ケース `ok`、`rc=0`。`git diff lint.sh | grep -c 'grep -qF'` が 0。
+Expected: 配線のケースだけが FAIL、`結果: 25 ケース、失敗 1`、`rc=1`。その後 `restored`。
 
 - [ ] **Step 6: lint 全体を確かめる**
 
@@ -393,8 +460,8 @@ git commit -m "test: lint の 7 ファイル同時検査を関数に切り出し
 441 節の箇条書きで、`- 確認を出さずに起動を止める条件: ...（...1 MiB を超えるファイル）も止まる。` の行の直後、`- \`.claude\` か \`.mcp.json\` を持つリポジトリは、...` の行の前に、次の 2 行を足す。
 
 ```markdown
-- `.claude/skills/` で確かめるのは、各項目 `.claude/skills/<name>` から `.claude-plugin/plugin.json` までのパスだけ。この途中の段がリポジトリの外を指す symlink や解決できない symlink なら止まる。skill の中のファイル（例: `.claude/skills/foo/SKILL.md`）がリポジトリの外を指していても止まらない（skills の本文は審査しない。[SECURITY-CLAIMS の C-5](SECURITY-CLAIMS.md#c-5)）。
-- 作業ディレクトリが Claude Code の設定ディレクトリの親（既定の `~/.claude` ならホームディレクトリ。`c3c claude ~` など）だと、user 設定の `~/.claude/settings.json`・`settings.local.json` が `/workspace/.claude/` の project 設定として見え、表示と確認の対象になる。user 設定で plugin を有効にしていれば（`enabledPlugins`）、確認の前に止まる（`--check` も `[FAIL]`）。この構成では `~/.claude` の読み取り専用保護も効かないので、起動時に WARNING が出る（後述「セキュリティモデル」節の「ホストの Claude Code 設定の読み取り専用保護」の限界 (1)）。
+- `.claude/skills/` で確かめるのは、`.claude/skills` 自体と、各項目 `.claude/skills/<name>` から `.claude-plugin/plugin.json` までの各段。どこかの段がリポジトリの外を指す symlink や解決できない symlink なら止まる（権限エラー等で段を確かめられないときも止まる）。それより下にある skill のファイル（例: `.claude/skills/foo/SKILL.md`）がリポジトリの外を指していても止まらない（skills の本文は審査しない。[SECURITY-CLAIMS の C-5](SECURITY-CLAIMS.md#c-5)）。
+- 作業ディレクトリが Claude Code の設定ディレクトリの親（既定の `~/.claude` ならホームディレクトリ。`c3c claude ~` など）だと、user 設定（`~/.claude/settings.json`・`settings.local.json`・`~/.claude/skills/`）が `/workspace/.claude/` の project 設定として見え、表示と確認の対象になる。user 設定が確認の前に止める条件や判定できない条件に当たれば（plugin の有効化、`extraKnownMarketplaces`、`env` の `CLAUDE_CODE_PLUGIN_*`、`~/.claude/skills/` の skills-directory plugin やホームの外を指す symlink など）、起動しない（`--check` も `[FAIL]`）。この構成では、`~/.claude` の読み取り専用保護が `/workspace` 経由の書き込みには効かないので、起動時に WARNING が出る（後述「セキュリティモデル」節の「ホストの Claude Code 設定の読み取り専用保護」の限界 (1)）。
 ```
 
 - [ ] **Step 2: README の移行手順 4 を直す**
@@ -402,7 +469,7 @@ git commit -m "test: lint の 7 ファイル同時検査を関数に切り出し
 移行手順の 4 を、次の 1 行に置き換える。
 
 ```markdown
-4. `.claude/skills/<name>` 自体（またはその `.claude-plugin/plugin.json` までの途中の段）、`.claude/settings*.json`、`.mcp.json` やその親ディレクトリを、リポジトリの外を指す symlink や解決できない symlink にしているリポジトリは起動しなくなる。実体をリポジトリ内へ置くか、user 設定（`~/.claude/skills/`）へ移す（`--check` が `[FAIL]` で知らせる）。skill の中のファイルの symlink では止まらない。
+4. `.claude`、`.claude/skills` やその各項目 `.claude/skills/<name>`（と、その `.claude-plugin/plugin.json` までの途中の段）、`.claude/settings*.json`、`.mcp.json` を、リポジトリの外を指す symlink や解決できない symlink にしているリポジトリは起動しなくなる。実体をリポジトリ内へ置くか、user 設定（`~/.claude/skills/`）へ移す（`--check` が `[FAIL]` で知らせる）。それより下にある skill のファイル（`SKILL.md` など）の symlink では止まらない。
 ```
 
 - [ ] **Step 3: C-5 の「限界・非対象」を直す**
@@ -418,16 +485,16 @@ git commit -m "test: lint の 7 ファイル同時検査を関数に切り出し
 置き換え後（2 項目）:
 
 ```markdown
-- `.claude/skills/<name>` から `.claude-plugin/plugin.json` までのパスのどこかの段が、`/workspace` の外を指す symlink や解決できない symlink だと、判定不能で起動しない。skill の中の他のファイル（`SKILL.md` など）の symlink は辿らず、止めない（本文を審査しないのと同じ扱い）。
-- 作業ディレクトリが Claude Code の設定ディレクトリの親（既定ではホームディレクトリ）だと、user 設定が `/workspace/.claude/settings*.json` として見え、project 設定として審査される。user 設定での plugin の有効化も、確認の前に止める対象になる。
+- `.claude/skills` 自体と、各項目 `.claude/skills/<name>` から `.claude-plugin/plugin.json` までのどこかの段が、`/workspace` の外を指す symlink や解決できない symlink だと、判定不能で起動しない。それより下にある skill の他のファイル（`SKILL.md` など）の symlink は辿らず、止めない（本文を審査しないのと同じ扱い）。
+- 作業ディレクトリが Claude Code の設定ディレクトリの親（既定ではホームディレクトリ）だと、user 設定（settings と skills）が `/workspace/.claude/` の配下として見え、project 設定として審査される。user 設定での plugin の有効化・`extraKnownMarketplaces`・`CLAUDE_CODE_PLUGIN_*`・skills-directory plugin・外を指す symlink も、確認の前に止める対象や判定不能になる。
 ```
 
 - [ ] **Step 4: 表記と整合を確かめる**
 
-Run: `git diff --check && grep -n 'skill の中' README.md SECURITY-CLAIMS.md`
-Expected: `git diff --check` は出力なし。grep は README の 2 か所と SECURITY-CLAIMS の 1 か所。
+Run: `git diff --check && grep -c 'それより下にある skill' README.md SECURITY-CLAIMS.md`
+Expected: `git diff --check` は出力なし。grep は `README.md:2`、`SECURITY-CLAIMS.md:1`。
 
-読み比べる点: README の 2 項目と C-5 の 2 項目で、止まる条件（`<name>` から `plugin.json` までの段、ホームを作業ディレクトリにしたときの plugin）が食い違っていない。README の他の箇所（171 行の `--check` の説明、691 行の #163 の説明）と矛盾しない。
+読み比べる点: README の 2 項目と C-5 の 2 項目で、止まる条件（`.claude/skills` 自体と `<name>` から `plugin.json` までの段、ホームを作業ディレクトリにしたときの user 設定の停止条件）が食い違っていない。README の他の箇所（171 行の `--check` の説明、691 行の #163 の説明）と矛盾しない。
 
 - [ ] **Step 5: コミット**
 
@@ -462,10 +529,11 @@ Expected: `rc=0`、`FAIL=0`。
 ## PR 本文に書くこと
 
 - closes #174、#175、#176、#177。
-- #175 (b) は、通常起動の経路では検査用コンテナが fake なので、`--check` の経路に絞った（helper 単体は既存のテストが確かめている）。
-- #177 は、通常の起動経路ではホストが完全一致した記録だけを渡すため届かない。深層防御の修正である。
+- #175 (b) は、通常起動の経路では検査用コンテナが fake なので、`--check` の経路に絞った（helper 単体は既存のテストが確かめている）。(d) の `--check` の `tr -d` は、M6 の原文には無く Issue の完了条件にあったので足した。
+- #177 は深層防御の修正である。c3c が書いた記録では挙動は変わらない。ホストで末尾に改行を足した 4096 バイト超の記録だけが、コンテナ内で確認に回るようになる（fail-closed 側）。
+- #174 の lint 本体の配線は、偽の provider で lint.sh 全体を走らせる代わりに、呼び出しの 1 行をテストで固定した（理由は計画の前提）。
 - `claude-project-audit.py` が変わるので、既存のイメージは `-b` で再ビルドするまで境界アセットのドリフトの WARNING が出る。
-- SemVer: CLI 引数・設定形式・既定の挙動は変わらない（#177 は通常経路に届かない）。タグは提案しない。
+- SemVer: CLI 引数・設定形式・既定の挙動は変わらない（#177 で変わるのは、ホストで書き換えた記録の扱いだけ）。タグは提案しない。
 
 ---
 
@@ -478,4 +546,19 @@ Expected: `rc=0`、`FAIL=0`。
 - #170 の実装では、sandbox 内で `/run/user/<uid>/libpod` が read-only のため、ComposeContractTests と lint の Compose 検証が失敗した。sandbox の制約（PTY・`setsid`・socket・Podman・`/tmp` の書き込み・`.git` への書き込み）でテストが ERROR になる、Compose 検証がスキップされる、commit が拒否される場合は、該当の名前とエラー文を記録する。そのうえで昇格を求めて sandbox 外で再実行するか、差分を残して報告して止まる。sandbox 由来の失敗やスキップを FAIL=0 や完了と報告しない。
 - `/goal` に渡す文面:
 
-  > `docs/superpowers/plans/2026-09-27-issues174-177-gate-followups.md` の計画を、superpowers:executing-plans に従ってブランチ `fix/issues174-177-gate-followups` で Task 1 から順に実装する。Task ごとに 1 コミットにする（計 4 コミット）。Task 1 と Task 3 は red を確かめてから実装し、Task 2 と Task 3 のミューテーション確認は、各回の後に書き換えを戻したことを `git diff` で確かめる。Task 5 は Step 1・2 を行い、Step 3 は `not run` として進行役に残す。push と PR 作成はしない。実装完了時（PR 前）の二重レビューは進行役が行う。完了時は次を報告して止まる: コミットの一覧、各 red・ミューテーションの結果（FAIL の件数と該当行）、green の件数、lint と `--launcher-only` の rc と実出力の該当行、`not run` にした項目（Compose 検証のスキップ、sandbox 由来の ERROR を含む）とその理由。
+  > `docs/superpowers/plans/2026-09-27-issues174-177-gate-followups.md` の計画を、superpowers:executing-plans に従ってブランチ `fix/issues174-177-gate-followups` で Task 1 から順に実装する。Task ごとに 1 コミットにする（計 4 コミット）。Task 1 と Task 3 は red を確かめてから実装し、Task 2 と Task 3 のミューテーション確認は、書き換える前に対象が clean（Task 3 は控えを取る）であることを確かめ、各回の後に戻したことを `git diff --quiet -- <file>`（Task 3 は `cmp`）で確かめる。Task 5 は Step 1・2 を行い、Step 3 は `not run` として進行役に残す。push と PR 作成はしない。実装完了時（PR 前）の二重レビューは進行役が行う。完了時は次を報告して止まる: コミットの一覧、各 red・ミューテーションの結果（FAIL の件数と該当行）、green の件数、lint と `--launcher-only` の rc と実出力の該当行、`not run` にした項目（Compose 検証のスキップ、sandbox 由来の ERROR を含む）とその理由。
+
+## 計画レビューの記録
+
+- 1 巡目（2026-09-27、対象 c30b1a2）:
+  - Codex（gpt-6-astra、`codex exec --sandbox read-only`）: 修正後に渡せる。Critical 0・Important 3・Minor 2。
+  - Claude（claude-opus-5-5、headless、Read/Grep/Glob）: 実装に渡せる。Critical 0・Important 0・Minor 7。
+  - 深刻度が割れたので、重い方（Codex の Important）を暫定で採った。3 件とも実物で確かめ、正しかった。
+  - 反映した:
+    - Codex の I1: #177 の前提を直した（ホストの `$(cat)` は末尾の改行を無視するので、改行を足した 4096 バイト超の記録は helper に届く。記録は 97 バイト）。この場合を固定するテストを足し、PR 本文と SemVer の根拠を書き直した。
+    - Codex の I2: `--check` の `tr -d` を守るテスト (d) と、そのミューテーションを足した。
+    - Codex の I3: lint 本体の呼び出しの 1 行を固定する検査と、`|| true` のミューテーションを足した。偽の provider で lint 全体を走らせる方式を採らない理由は、前提に書いた。
+    - Codex の M4 と Claude の M4: ミューテーションの前に clean を確かめるようにした。Task 3 は控えから戻して `cmp` で比べる。
+    - Codex の M5 と Claude の M1: skills の検査の範囲の文言を直した（`.claude/skills` 自体を含め、「それより下にある skill のファイル」に限る）。
+    - Claude の M2（ホームの場合の停止条件を一般化）、M3（除去後の行を完全一致で検査）、M5（テストの冒頭コメント）、M6（行番号）、M7（「`/workspace` 経由では効かない」）。
+- 確認限定巡: Codex（Important を出したレビュアー）だけで行う。

@@ -14,7 +14,7 @@
 #     cyberjapandata.gsi.go.jp は A レコード一式が 13〜60 秒ごとに丸ごと入れ替わり、
 #     起動時 1 回だけの解決では長いセッション中に確実に古くなる）。
 # entrypoint.sh から sudo 経由で root として実行する。初回実行では fail-closed を
-# 保つ必要がある: エラーが起きればコンテナ起動を中止する（CLAUDE_CONTAINER_NO_FIREWALL=1 で無効化可）。
+# 保つ必要がある: エラーが起きればコンテナ起動を中止する（C3C_NO_FIREWALL=1 で無効化可）。
 # `--refresh-domains` モード（末尾を参照）はこの原則の軽量な fail-open 例外である
 # — 定期的なバックグラウンドの手直しであり、起動時の安全ゲートではない。
 set -euo pipefail

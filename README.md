@@ -101,7 +101,7 @@ c3c --clean /path/to/project
 
 スクリプトはシンボリックリンク経由でも動作する（`c3c` を指していれば旧名 `claude-container` を含むどの呼出名でも、実ファイルまで symlink を辿ってから自身のディレクトリを解決する。絶対・相対・多段リンク、PATH 経由、`bash ./c3c` のいずれも同じ基点になり、解決できない場合は起動前にエラーで止まる）。異なるターゲットプロジェクトを交互に起動・リビルドしても互いのイメージ・ビルドコンテキストを上書きしない（後述「アーキテクチャ」参照）。同時に別々のプロジェクトを起動することもできる。
 
-通常起動には実在してアクセスできるディレクトリが必要で、不正なパスは `ERROR:` で案内する。`--clean <ディレクトリ>` は、削除済みでも起動台帳（`~/.local/state/claude-container/projects`）に同じ絶対パスが残っていれば実行できる。相対パス・`.`・`..`・末尾の `/` は正規化し、シンボリックリンクの綴りは起動時と同じものを使う（リンク先の実体パスとは別プロジェクト扱い）。先頭が `//` の綴りで起動したプロジェクトは対象外（bash は先頭の `//` を保持し `realpath` は `/` に畳むため、削除後の照合が一致せずエラーで停止する）。台帳にない削除済みパスや、改行を含む削除済みパスからは清掃対象を推測せず、エラーで停止する。現在のディレクトリを特定できない場合（cwd が削除済みで環境の `PWD` も無いか空）も、相対パスからは対象を推測せず、絶対パスの指定を求めてエラーで停止する。cwd が削除済みのまま `.`・`..` を指定した場合も同様で、bash は削除済み cwd からの `cd .` を成功させ `pwd -L` が `.` をそのまま返すため、通常起動・`--clean`・`--check` のいずれも `.` の幽霊名で清掃・台帳記録・診断を始めず、絶対パスの指定を求めてエラーで停止する。同じ状態でも `--clean <存在しない子ディレクトリ名>` は、環境の `PWD` と結合した絶対パスが起動台帳にあれば、それを対象にして進む（`resolve_project_directory()` の台帳照合の分岐）。環境の `PWD` が無いか空なら止まる（前述）。実在する相対パス（`.`・`..`・`../<隣>` 等）は `pwd -L` が相対のまま返すため、この場合も止まる。`.`・`..` は利用者の意図が曖昧なので絶対パスを求める（[`#127`](https://github.com/jj1xgo/c3c/issues/127)）。対象のイメージ・ネットワーク・ビルドコンテキスト・MCP 承認記録・台帳エントリを清掃するほか、従来どおり最後に dangling イメージ全体を整理する。
+通常起動には実在してアクセスできるディレクトリが必要で、不正なパスは `ERROR:` で案内する。`--clean <ディレクトリ>` は、削除済みでも起動台帳（`~/.local/state/c3c/projects`）に同じ絶対パスが残っていれば実行できる。相対パス・`.`・`..`・末尾の `/` は正規化し、シンボリックリンクの綴りは起動時と同じものを使う（リンク先の実体パスとは別プロジェクト扱い）。先頭が `//` の綴りで起動したプロジェクトは対象外（bash は先頭の `//` を保持し `realpath` は `/` に畳むため、削除後の照合が一致せずエラーで停止する）。台帳にない削除済みパスや、改行を含む削除済みパスからは清掃対象を推測せず、エラーで停止する。現在のディレクトリを特定できない場合（cwd が削除済みで環境の `PWD` も無いか空）も、相対パスからは対象を推測せず、絶対パスの指定を求めてエラーで停止する。cwd が削除済みのまま `.`・`..` を指定した場合も同様で、bash は削除済み cwd からの `cd .` を成功させ `pwd -L` が `.` をそのまま返すため、通常起動・`--clean`・`--check` のいずれも `.` の幽霊名で清掃・台帳記録・診断を始めず、絶対パスの指定を求めてエラーで停止する。同じ状態でも `--clean <存在しない子ディレクトリ名>` は、環境の `PWD` と結合した絶対パスが起動台帳にあれば、それを対象にして進む（`resolve_project_directory()` の台帳照合の分岐）。環境の `PWD` が無いか空なら止まる（前述）。実在する相対パス（`.`・`..`・`../<隣>` 等）は `pwd -L` が相対のまま返すため、この場合も止まる。`.`・`..` は利用者の意図が曖昧なので絶対パスを求める（[`#127`](https://github.com/jj1xgo/c3c/issues/127)）。対象のイメージ・ネットワーク・ビルドコンテキスト・MCP 承認記録・台帳エントリを清掃するほか、従来どおり最後に dangling イメージ全体を整理する。
 
 `CDPATH` を使って相対パスから起動したプロジェクトを削除した場合は、起動台帳に記録された絶対パスを `--clean` に指定する。削除済みパスの復元では `CDPATH` を探索しない。
 
@@ -129,7 +129,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 
 `--check` は入口移行の案内（旧入口は削除済み、外部の呼び出しは `c3c claude` / `c3c codex` へ）を表示する。外部のスクリプト・alias・PATH を自動走査する機能ではなく、案内が出ないことは利用側すべての移行完了を意味しない。
 
-切替後は `c3c --check` と各 CLI の起動を確認する。問題があれば、旧入口を残した v11 系（v11.1.0 以降）の checkout に戻す。`c3c claude` / `c3c codex` は互換版でも利用できる。設定・認証・承認記録・CLI 選択の記憶の削除や再作成は不要。旧設定 `.claude-container.d/` の互換読込や内部の保存先（`CLAUDE_CONTAINER_*` の env キー、`~/.local/state/claude-container/`、イメージ名）は今回のコマンド削除とは別で、引き続き維持する。
+切替後は `c3c --check` と各 CLI の起動を確認する。問題があれば、旧入口を残した v11 系（v11.1.0 以降）の checkout に戻す。`c3c claude` / `c3c codex` は互換版でも利用できる。設定・認証・承認記録・CLI 選択の記憶の削除や再作成は不要。旧設定 `.claude-container.d/` の互換読込や内部の保存先（env キー、state directory、イメージ名）はこのコマンド削除とは別の話で、旧名の識別子の改名は後述「[旧名 claude-container の識別子からの移行](#旧名-claude-container-の識別子からの移行)」で扱う。
 
 ## 起動前チェック（`--check`）
 
@@ -153,7 +153,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 
 削除前に対象を表示し、対象ごとに名前・ラベル・パス・参照を再検査する。強制削除や全体 prune は使わず、`rmi --no-prune` で親イメージも保持する。中間イメージ・キャッシュが残るため、ディスク使用量の回収が小さい場合がある。結果には削除成功・対象なし・保留理由・失敗を分けて表示する。**台帳、ネットワーク、MCP 承認記録、ビルドコンテキストは変更しない。** 台帳を保持するので、後から従来の `--clean <path>` も使える（この旧コマンドは全体の dangling prune を伴う）。清掃後も通常の `--check` は欠落台帳パスを FAIL として報告する。清掃モードで対象イメージが既にない場合は正常終了する。由来ラベルから見つかった台帳外の実在ディレクトリも、清掃モードでは通常のプロジェクト診断に回す。
 
-新しいビルドには `claude-container.project-metadata` / `project-path` / `project-name` ラベルを記録する。**ホストの絶対パスはイメージを共有・export した場合にも含まれる。** 既存イメージへの後付けはせず、次回 `-b` または暗黙ビルドから付く。Dockerfile の変更による既存のドリフト診断は、従来どおり再ビルドを案内する。改行や先頭 `//` を含むパスは清掃用の由来情報を付けない。
+新しいビルドには `io.c3c.project-metadata` / `project-path` / `project-name` ラベルを記録する（v15.1 系では旧名 `claude-container.project-*` も同じ値で併記する。読むときは新名の組を優先し、新旧を混ぜない）。**ホストの絶対パスはイメージを共有・export した場合にも含まれる。** 既存イメージへの後付けはせず、次回 `-b` または暗黙ビルドから付く。Dockerfile の変更による既存のドリフト診断は、従来どおり再ビルドを案内する。改行や先頭 `//` を含むパスは清掃用の由来情報を付けない。
 
 清掃はこのホストのローカル Podman を対象とし、`--remote=false` で接続先の切り替えを防ぐ。未マウントの媒体・切断中の共有上のプロジェクトも欠落と判定されうるため、媒体を接続した状態で実行する。検査と削除は全体として原子的ではないので、同時にビルド・タグ変更・起動・移動を行わない。読み取りの Podman 検査は30秒を上限とし、タイムアウトも失敗として報告する。削除処理には上限を設けず完了を待つ（ストレージ更新中の強制終了を避けるため）。
 
@@ -165,7 +165,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 
 ### 通常診断の契約
 
-- **起動台帳**: 通常起動（`--clean`/`--check` を除く）のたびに、対象ディレクトリのホスト絶対パスが `~/.local/state/claude-container/projects` へ自動記録される（手動メンテ不要）。`--check` を引数なしで実行すると、この台帳に記録された全プロジェクトを一括診断する。`--clean <directory>` はそのプロジェクトを台帳からも削除し、`--clean`（引数なし）は台帳自体を削除する。シンボリックリンク経由と実体パスで起動すると別エントリとして記録される点に注意（`compute_project_name()` のプロジェクト識別基準と同じ）。
+- **起動台帳**: 通常起動（`--clean`/`--check` を除く）のたびに、対象ディレクトリのホスト絶対パスが `~/.local/state/c3c/projects` へ自動記録される（手動メンテ不要）。`--check` を引数なしで実行すると、この台帳に記録された全プロジェクトを一括診断する。`--clean <directory>` はそのプロジェクトを台帳からも削除し、`--clean`（引数なし）は台帳自体を削除する。シンボリックリンク経由と実体パスで起動すると別エントリとして記録される点に注意（`compute_project_name()` のプロジェクト識別基準と同じ）。
 - **検査項目**: 設定ディレクトリの選択（`.c3c/` と旧 `.claude-container.d/` の有無・型・二重配置。前述「利用側プロジェクトの設定」節）・legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・基点の `.claude.json` の有無と型（前述「前提」）・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無（`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
 - **非対話・対象リポジトリは不変**: `--check` は TTY 確認を一切行わない（MCP stdio 型サーバーが未承認の場合は「初回起動時に確認プロンプトが出ます」と報告するのみ）。台帳に記録があるが実体が見つからないプロジェクトも FAIL として報告するだけで、台帳を黙って書き換えない。**保証の範囲は「対象リポジトリと `.build-context/` を変更しない」こと**（内容診断は `mktemp` 経由で `/tmp` 配下に作業ファイルを必ず作るため、無限定の「書き込みゼロ」ではない）。
 - **Claude project 設定ゲート**（#163、Claude 経路だけ）: `.claude` も `.mcp.json` も無ければ `[OK]` 対象なし。あれば、イメージの `io.c3c.claude-project-audit-protocol` を照合し（未対応は `[FAIL]` と `-b` の案内、未ビルドは `[INFO]`、podman が無ければ `[SKIP]`）、ホストの python3 で `claude-project-audit.py` を参考実行する。承認済みは `[OK]`、未承認・変更ありは `[INFO]`（起動時に確認が出る）、起動時に止まる設定（plugin の有効化・判定できない状態等）とホストに python3 が無い場合は `[FAIL]`。判定はホスト上での参考で、コンテナ内の見え方（symlink 等）と違う場合は起動時の判定が優先される。検査用コンテナは起動せず、確認も記録の書き込みも行わない。Codex 経路では `[INFO]` で「使用しない」と出す。後述「リポジトリの Claude 設定の確認」節も参照。
@@ -295,6 +295,27 @@ Dockerfile・entrypoint のエラー文は新名 `.c3c/` で案内する（c3c �
 
 MCP の承認記録・イメージ・起動台帳は起動パス単位、CLI 選択の記憶は Git common directory 単位（非 Git はパスの実体単位）で管理する。いずれも設定ディレクトリの名前には依存しないため移行で変わらない（設定名の変更だけで MCP を再承認済みにはしない — `.mcp.json` や Codex の MCP 定義が変わっていれば従来どおり確認プロンプトが出る）。
 
+### 旧名 claude-container の識別子からの移行
+
+v15.1 系で、旧製品名 `claude-container` を含む識別子を `c3c` の名前へ移した。旧名は `WARNING` を出したうえで従来どおり動き、利用者が何もしなくても起動できる（`-b` も強制しない）。旧名は次のメジャー版で使えなくなるので、それまでに移行する。
+
+| 対象 | 旧名 | 新名 | v15.1 系での扱い |
+|---|---|---|---|
+| env キー（`.c3c/env`・シェル環境） | `CLAUDE_CONTAINER_NO_FIREWALL`・`CLAUDE_CONTAINER_IPV6` | `C3C_NO_FIREWALL`・`C3C_IPV6` | 旧キーは `WARNING` 付きで同じ意味に読む。新旧を同時に設定すると、値が同じでも起動と `--check` で拒否する |
+| state directory（承認記録・起動台帳・CLI の記憶） | `~/.local/state/claude-container/` | `~/.local/state/c3c/` | 通常起動で自動的に移す（下記） |
+| イメージ label | `claude-container.*` | `io.c3c.*` | 新しいビルドは両方を書く。読むときは新名を優先する |
+| コンテナ内の秘密のパス | `/home/node/.config/claude-container/secrets` | `/home/node/.config/c3c/secrets` | 両方に同じ `SECRETS_DIR` を読み取り専用でマウントする。自分のスクリプトや MCP 設定は新パスへ移す |
+
+**env キー**: `.c3c/env` とシェルの起動ファイル（`export CLAUDE_CONTAINER_...`）の両方を確認して、新キーに書き換える。片方だけ書き換えると、新旧の併存として起動が止まる。
+
+**state directory**: 通常起動のとき、`~/.local/state/c3c` が無く旧 state がディレクトリ（またはディレクトリへの symlink）なら、そのエントリを同じ親の中で上書きしない rename（`renameat2` の `RENAME_NOREPLACE`）で移し、`WARNING` で一度知らせる。コピーはしない。symlink はリンク自体が移り、指す先は変わらない。`--check` と `--clean` は移さず、新が無ければ旧を読む（`--check` は `[WARN]` で次の通常起動での移行を知らせる）。ホストに python3 が無い、ファイルシステムが対応しない、旧 state がマウントポイント、といった理由で安全に移せない環境では、旧 state をそのまま使い続け、手で移す手順（c3c のセッションがすべて終わってから `mv ~/.local/state/claude-container ~/.local/state/c3c`）を案内する。新旧の両方がある場合は新を使い、旧が残っていることを `WARNING` で知らせる（自動では消さない。旧版の c3c のセッションがすべて終わってから、中身を確認して削除する）。`--clean`（全体）は新旧どちらの承認記録と起動台帳も削除する（CLI の記憶は従来どおり消さない）。
+
+**イメージ**: 境界アセット（`Dockerfile.claude`・`compose.ipv6.yml`・`entrypoint.sh`）が変わったので、既存のイメージでは `-b` で再ビルドするまで、起動時と `--check` でドリフトの `WARNING` が出る（起動は止まらない）。再ビルドを推奨する。
+
+**次のメジャー版へ上げる前に**: `c3c --check --clean-missing` で、削除済みのプロジェクトのイメージを清掃しておく。次のメジャー版は旧 label を読まないため、旧 label だけを持つイメージは自動清掃の対象から外れる。
+
+**旧版へ戻したとき**: 旧版の c3c は `C3C_*` のキーを「解釈しない」`WARNING` 付きで無視するので、新キーに書き換えた後に戻すと、ファイアウォールの無効化と IPv6 は効かない（有効・IPv4 のまま＝安全側）。旧版は旧 state を空から作り直すため、MCP 等の承認の確認がもう一度出て、起動台帳は空になる。その後に新版へ戻すと、「新旧の両方がある」の `WARNING` が出続けるので、旧 state の中身を確認して削除する。新しいイメージを旧版の c3c で起動しても、イメージ側は旧キー・旧 label も読める。
+
 ## GitHub トークンの配線
 
 設計原則（v4〜、`#24`）: **常時使える（export される）権限は最小に、広い権限は明示操作の壁の向こうに、残るリスクは文書で正直に。** GitHub へ書き込む（`gh` CLI・MCP 経由問わず）トークンは、汎用シークレットディレクトリ（`SECRETS_DIR`）1本に集約する。
@@ -314,21 +335,21 @@ fine-grained PAT はトークン単位で、選択した全リポジトリに同
    - Repository access: `Only select repositories` → 書き込み先リポジトリのみ選択（複数選択すると、以下のパーミッションが選択した全リポジトリに一律適用される点に注意）
    - Repository permissions: 必要最小限のみ付与する。MCP／issues 用トークンなら `Issues: Read and write` のみを推奨。メイン PAT に `Pull requests: Read and write` を足すと自リポジトリの PR レビューまで、`Contents: write` を足すと push・PR マージ・Release 作成までコンテナ内から実行可能になる（`Contents: write` を付与しない限り push・マージ・Release作成はホスト側限定のまま維持される）
    - Expiration: 90日以下を推奨
-2. ホストにディレクトリを作り（例: `~/.config/claude-container/secrets.d/<project>`）、`chmod 700` する。中に置く各ファイルの**ファイル名がそのままコンテナ内の環境変数名（`export/` 配下のみ）になる**（`^[A-Za-z_][A-Za-z0-9_]*$` に合致しない名前は起動時に WARNING を出してスキップされる）。各ファイルは `chmod 600` し、中身はトークン文字列1行のみ（`export/` では CR・LF が除去されるが、複数行の値は連結されるため非対応。後述の gh 明示読みでは末尾の LF だけが除去されるので、CR や余分な空白を含めない）。各ファイルは実体（通常ファイル）として置くこと — コンテナにはこのディレクトリ単体がマウントされるため、ディレクトリ外を指すシンボリックリンクはコンテナ内でリンク先を解決できず、**警告なしにスキップされる**（既存のトークンファイルを流用したい場合はシンボリックリンクでなく値をコピーする）
+2. ホストにディレクトリを作り（例: `~/.config/c3c/secrets.d/<project>`）、`chmod 700` する。中に置く各ファイルの**ファイル名がそのままコンテナ内の環境変数名（`export/` 配下のみ）になる**（`^[A-Za-z_][A-Za-z0-9_]*$` に合致しない名前は起動時に WARNING を出してスキップされる）。各ファイルは `chmod 600` し、中身はトークン文字列1行のみ（`export/` では CR・LF が除去されるが、複数行の値は連結されるため非対応。後述の gh 明示読みでは末尾の LF だけが除去されるので、CR や余分な空白を含めない）。各ファイルは実体（通常ファイル）として置くこと — コンテナにはこのディレクトリ単体がマウントされるため、ディレクトリ外を指すシンボリックリンクはコンテナ内でリンク先を解決できず、**警告なしにスキップされる**（既存のトークンファイルを流用したい場合はシンボリックリンクでなく値をコピーする）
 3. メイン PAT は `SECRETS_DIR` 直下に置く（例 `SECRETS_DIR/GITHUB_MAIN_PAT`）。Issues 用を gh の明示読みだけで使う場合も直下に置く（例 `SECRETS_DIR/GITHUB_ISSUES_PAT`）。MCP・hook 等が環境変数を必要とする場合だけ `SECRETS_DIR/export/` 配下に置く（例 `export/GITHUB_MCP_PAT`。`export/` ディレクトリ自体も `chmod 700`）
-4. ターゲットプロジェクトの `.c3c/env` に `SECRETS_DIR=~/.config/claude-container/secrets.d/<project>` のようにパスを書く。`.c3c/env` はホスト固有のパスを含みうるため gitignore 対象であり、そもそもコミットされない
+4. ターゲットプロジェクトの `.c3c/env` に `SECRETS_DIR=~/.config/c3c/secrets.d/<project>` のようにパスを書く。`.c3c/env` はホスト固有のパスを含みうるため gitignore 対象であり、そもそもコミットされない
 5. ディレクトリが存在しない場合は起動時にエラーで停止する（fail-closed）。ディレクトリが `700` でない、または中のファイルが `600` でない場合は警告が出る
 
 トークンはホスト上のファイルとしてのみ扱われ、コンテナの `environment:` には渡らない（`podman inspect` 等にも露出しない）。メイン PAT はファイルパスのみが `GITHUB_MAIN_PAT_FILE` として export され、値自体は export されない。`export/` 配下のトークンのみ、ファイル名と同名の環境変数として値ごと export される。**既に環境に存在する変数名（`PATH` 等）と衝突する場合は、既存の値を上書きせず警告を出してスキップする**。
 
 これは汎用の環境変数注入機構であり、GitHub トークンに限らず任意のシークレットを持ち込める。持ち込んだ変数はコンテナ内の全プロセス（Claude 本体・hooks・任意の npm スクリプト等）から読めるため、1コンテナに持ち込むのはそのプロジェクトで実際に使う最小本数に留めること。**`export/` に `GH_TOKEN`/`GITHUB_TOKEN` という名前のファイルを置くと `gh` CLI の ambient 認証が復活する**（本設計の意図に反するため非推奨。明示的な opt-in と理解した上でのみ行うこと。同様の理由でコンテナ内での `gh auth login` の実行も推奨しない）。
 
-**PAT を gh CLI に明示的に渡す**: 次はコンテナ内で、直下の `GITHUB_ISSUES_PAT` を使う例。`OWNER/REPO` は対象リポジトリへ置き換える。ホストの `SECRETS_DIR` はコンテナ内では `/home/node/.config/claude-container/secrets` にマウントされる。
+**PAT を gh CLI に明示的に渡す**: 次はコンテナ内で、直下の `GITHUB_ISSUES_PAT` を使う例。`OWNER/REPO` は対象リポジトリへ置き換える。ホストの `SECRETS_DIR` はコンテナ内では `/home/node/.config/c3c/secrets` にマウントされる（v15.1 系では旧パス `/home/node/.config/claude-container/secrets` にも同じ内容が読み取り専用で見える。旧パスは次のメジャー版で廃止する）。
 
 ```bash
 (
   set +x
-  github_pat=$(cat /home/node/.config/claude-container/secrets/GITHUB_ISSUES_PAT) || exit 1
+  github_pat=$(cat /home/node/.config/c3c/secrets/GITHUB_ISSUES_PAT) || exit 1
   [ -n "$github_pat" ] || { echo "ERROR: PAT ファイルが空です" >&2; exit 1; }
   GH_TOKEN="$github_pat" gh issue list --repo OWNER/REPO
 )
@@ -436,7 +457,7 @@ GITCONFIG_FILE=~/.gitconfig
 
 stdio タイプのサーバーをどうしても使いたい場合は、`npx` 等の実行時取得（＝セッション開始のたびネットワーク越しに未検証のコードを取得する経路）でなく、`.c3c/packages.txt` 等によるビルド時焼き込み、またはホスト側インストール＋bind mount（`EXTRA_MOUNT` 等）で導入することを推奨する。**`packages.txt` 経路ではバージョン固定ができない**（`pkg=version` 形式のバージョンピンは allowlist 検証で拒否される）ため、バージョン固定が必要な場合は bind mount 経路を採ること。あわせて、npm レジストリ（`registry.npmjs.org` 等）を `allowed-domains.txt` へ追加しないこと — 追加すると `npx` 経由の実行時取得が成立し、上記の対話確認を毎回強制されるだけでなく、取得するコード自体の検証が効かなくなる。
 
-**TOFU（Trust On First Use）による確認の省略**（#28）: 対話確認で `y` と回答すると、`c3c` スクリプトが承認時点の stdio サーバー定義のハッシュを、ホスト側 `~/.local/state/claude-container/mcp-approvals/<project>` に記録する（`.mcp.json` 自体やコンテナ内には保存しない — コンテナ側から改変できない場所に置くのが目的）。次回以降の起動では、`.mcp.json` の stdio サーバー定義がこの記録と一致する限り対話確認を自動的にスキップし、定義が変化した場合のみ再度確認を求める。記録はプロジェクトごとに独立しており、`--clean <directory>` で当該プロジェクト分のみ、引数なしの `--clean` で全プロジェクト分をまとめて削除できる。
+**TOFU（Trust On First Use）による確認の省略**（#28）: 対話確認で `y` と回答すると、`c3c` スクリプトが承認時点の stdio サーバー定義のハッシュを、ホスト側 `~/.local/state/c3c/mcp-approvals/<project>` に記録する（`.mcp.json` 自体やコンテナ内には保存しない — コンテナ側から改変できない場所に置くのが目的）。次回以降の起動では、`.mcp.json` の stdio サーバー定義がこの記録と一致する限り対話確認を自動的にスキップし、定義が変化した場合のみ再度確認を求める。記録はプロジェクトごとに独立しており、`--clean <directory>` で当該プロジェクト分のみ、引数なしの `--clean` で全プロジェクト分をまとめて削除できる。
 
 なお `claude mcp add` によるローカル／ユーザースコープの登録（`~/.claude.json` 側）はこのゲートの対象外である。これはリポジトリ側が制御できないファイルへの登録のため「悪意あるリポジトリの初回起動」という脅威モデルには当てはまらず、各プロジェクトの利用者が自己管理する範囲になる。
 
@@ -444,7 +465,7 @@ stdio タイプのサーバーをどうしても使いたい場合は、`npx` �
 
 Claude 経路では、リポジトリの `.claude/settings.json` と `.claude/settings.local.json`（git で追跡していない local も対象）を、Claude Code の起動前に確認する（#163。理由は後述「セキュリティモデル」節）。
 
-- 初回と、前回の承認から内容が変わったときに、ホストの端末へファイルの内容（`env` の値を含む。制御文字は除く）が表示され、`[y/N]` の確認が出る。`y` の承認は `~/.local/state/claude-container/mcp-approvals/claude-project/` に hash だけを記録し、次回からは内容が同じなら確認を省く。
+- 初回と、前回の承認から内容が変わったときに、ホストの端末へファイルの内容（`env` の値を含む。制御文字は除く）が表示され、`[y/N]` の確認が出る。`y` の承認は `~/.local/state/c3c/mcp-approvals/claude-project/` に hash だけを記録し、次回からは内容が同じなら確認を省く。
 - TTY が無いと、未承認のまま起動しない。ホストで承認した後、本起動の前に内容が変わった場合は、コンテナ内でもう一度確認が出る（TTY が無ければ止まる）。
 - 確認を出さずに起動を止める条件: project 設定での plugin の有効化（`enabledPlugins`）、`env` の `CLAUDE_CODE_PLUGIN_*`、`extraKnownMarketplaces`、skills-directory plugin（`.claude/skills/*/.claude-plugin/plugin.json`）、`.mcp.json` の `headersHelper`。判定できないとき（壊れた JSON、`/workspace` の外を指す symlink や解決できない symlink、読めないファイル、1 MiB を超えるファイル）も止まる。
 - `.claude/skills/` で確かめるのは、`.claude/skills` 自体と、各項目 `.claude/skills/<name>` から `.claude-plugin/plugin.json` までの各段。どこかの段がリポジトリの外を指す symlink や解決できない symlink なら止まる（権限エラー等で段を確かめられないときも止まる）。それより下にある skill のファイル（例: `.claude/skills/foo/SKILL.md`）がリポジトリの外を指していても止まらない（skills の本文は審査しない。[SECURITY-CLAIMS の C-5](SECURITY-CLAIMS.md#c-5)）。
@@ -502,7 +523,7 @@ codex -c 'cli_auth_credentials_store="file"' login status
 
 CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一時コードを利用者自身が入力する。デバイス認証なので localhost callback のポート公開は行わない。URL・コードの表示だけで成功とせず、CLI の成功終了と `login status` の ChatGPT ログイン表示を確認する。この操作は [第0B-4の認証試験](docs/superpowers/plans/2026-09-20-c3c-phase0b4-results.md) で成立したが、その試験は既存イメージと認証用 shim を使っており、現在の `--agent codex` 起動全体の受入とは別である。期限切れ認証の refresh も、この成功だけでは確認できない。
 
-**起動フロー**: 通常の初期化とガードの後、(1) イメージが無ければ `-b` なしでも明示ビルドし（イメージがあり `-b` なしならビルドしない）、(2) 実際に起動するイメージの固定 label `io.c3c.codex-audit-protocol=2` を確認する。label が無い・値が異なる旧イメージでは検査用コンテナも本起動も行わず `-b` を案内する。(3) 同じマウント・作業ディレクトリの検査用コンテナ（非 TTY、`compose.codex-preflight.yml`、stdin は `/dev/null`）を起動し、コンテナ内の `codex-mcp-audit.py` がリポジトリ同梱の `/workspace/.codex/config.toml` を読んで、enabled な stdio 定義の canonical hash と表示用情報だけを 1 つの JSON 文書として返す。Codex CLI・agent・MCP の command はこの段階で起動しない。(4) launcher は stdout 全体が対応 protocol の JSON 1 文書であることを検証し（余分な出力・破損・protocol 違いは拒否）、ホスト側の承認記録 `~/.local/state/claude-container/mcp-approvals/codex/<project>/project-config.json` と照合する。初回・変更時は対象の名前・command・args・cwd・env のキー名・env_vars・environment（指定時）を表示して `[y/N]` で確認し（env の値・HTTP header は表示しない）、拒否・TTY 無し・EOF では Codex を起動しない。対象 0 件（ファイルが無い場合を含む）は空定義として確認なしで記録する。(5) 本起動でも同じファイルを読み直して hash を再計算し、`:ro` で渡した記録と一致した場合だけ Codex へ進む（検査と本起動の再照合の間に審査対象の定義が変われば拒否）。
+**起動フロー**: 通常の初期化とガードの後、(1) イメージが無ければ `-b` なしでも明示ビルドし（イメージがあり `-b` なしならビルドしない）、(2) 実際に起動するイメージの固定 label `io.c3c.codex-audit-protocol=2` を確認する。label が無い・値が異なる旧イメージでは検査用コンテナも本起動も行わず `-b` を案内する。(3) 同じマウント・作業ディレクトリの検査用コンテナ（非 TTY、`compose.codex-preflight.yml`、stdin は `/dev/null`）を起動し、コンテナ内の `codex-mcp-audit.py` がリポジトリ同梱の `/workspace/.codex/config.toml` を読んで、enabled な stdio 定義の canonical hash と表示用情報だけを 1 つの JSON 文書として返す。Codex CLI・agent・MCP の command はこの段階で起動しない。(4) launcher は stdout 全体が対応 protocol の JSON 1 文書であることを検証し（余分な出力・破損・protocol 違いは拒否）、ホスト側の承認記録 `~/.local/state/c3c/mcp-approvals/codex/<project>/project-config.json` と照合する。初回・変更時は対象の名前・command・args・cwd・env のキー名・env_vars・environment（指定時）を表示して `[y/N]` で確認し（env の値・HTTP header は表示しない）、拒否・TTY 無し・EOF では Codex を起動しない。対象 0 件（ファイルが無い場合を含む）は空定義として確認なしで記録する。(5) 本起動でも同じファイルを読み直して hash を再計算し、`:ro` で渡した記録と一致した場合だけ Codex へ進む（検査と本起動の再照合の間に審査対象の定義が変われば拒否）。
 
 **審査の範囲と限界**: 対象はリポジトリ同梱の `/workspace/.codex/config.toml`（第三者が内容を制御しうる project 設定）の `mcp_servers` で、enabled な stdio 定義を hash して確認する。`http_headers_helper` を持つ enabled な定義は、ローカル command の実行定義を審査できないとして起動を拒否する（定義を無効化すれば起動できる）。helper の無い HTTP 型は外側のエグレス制限に委ね、URL 変更は再承認の対象にしない。hash には名前・command・args・cwd・env の値・env_vars・environment_id を含め、無効な定義と timeout 等の診断値は含めない。同じファイルで plugin が有効化されていれば（`enabled = false` は通す）、plugin の中身を c3c が読めないため確認の前に起動を拒否する。marketplace が定義されていれば、plugin の取得元を差し替えうるため同じく拒否する。未知の key・値の型違い（無効な定義も含む）・壊れた TOML・command と url の併記は判定不能として停止する。`CODEX_DIR` の user 設定と plugin キャッシュ・user 層で有効化した plugin は審査しない（Claude 経路の `~/.claude.json` と同じ扱い。「セキュリティモデル」節の #29 の線引き）。そのため、セッションが `CODEX_DIR` の `config.toml` に MCP を書き足しても次回起動の確認は出ない。Codex は設定層を table ごとに深く merge するので、project の `url` だけの定義が user 層の同名定義の宛先を変えたり、project の `command` だけの定義に user 層の `args`・`env` が合わさったりしうる（確認表示は project 設定の内容だけ）。網羅性（project 層の探索規則、MCP・plugin・marketplace 以外に repo から実行経路を持ち込める設定が無いこと、許可 key の集合）は codex-cli 0.156.0 で確認した。`latest` 等で入った別の版がリポジトリ設定から新しい実行経路を取り込んでも追えない。起動後の設定変更・再接続は Codex の標準機能で、継続監視はしない（既存 Claude の TOFU と同じ限界）。ファイアウォールの初期化は検査と本起動で 2 回走る。固定の trust override（`projects={"/workspace"={trust_level="trusted"}}`）は本起動に渡すため、repo 側 `.codex/config.toml` の hooks・sandbox 設定等も有効になるが、MCP 以外の定義を c3c が承認した意味にはならない（hooks は Codex 自身の個別確認に委ねる）。sandbox と approval の CLI 指定は固定するが、追加の書込み先や exec policy などは native 設定の影響を受ける。実行ファイルや script 自体の内容の改変は、この定義 hash では検出しない。第1段階では `~/.claude.json` と `~/.claude` の rw 共有はそのまま残るため、Codex セッションからも Claude の認証・履歴等が見える（CLI ごとの認証隔離は未達成。全面分離は後続段階）。審査範囲と隔離の限界は [SECURITY-CLAIMS C-3](SECURITY-CLAIMS.md#c-3)・[C-4](SECURITY-CLAIMS.md#c-4) を参照。
 
@@ -543,7 +564,7 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 - `c3c` では最初の位置引数の `claude` / `codex` だけをサブコマンドにする。同名のディレクトリは `./codex` や `-- codex` と書く。`--` 以降はすべて位置引数。通常起動と `--clean` のディレクトリは最大 1 件、未知のオプションは終了コード 2（旧入口の「未知オプションを位置引数として扱う」解釈は削除済みで、旧名の symlink から呼んでも同じ）。
 - **初回選択**: 記憶が無いとき `/dev/tty` から `1`（Claude）か `2`（Codex）を 1 回だけ読む（stdin は消費しない）。不正値・EOF は終了コード 2、Ctrl-C は 130、端末が無い（パイプ・cron 等）場合は待たずに終了コード 2 で `c3c claude <dir>` / `c3c codex <dir>` の明示指定を案内する。失敗後の再プロンプトや別 CLI への自動 fallback は無い。
 - **記憶の単位**: 同じ Git リポジトリ（`git rev-parse --git-common-dir` の実体が同じ。main checkout・linked worktree・symlink 別名・リポジトリ内のサブディレクトリは同じ単位、別 clone は別）。非 Git ディレクトリはパスの実体単位。リポジトリを移動すると新しい記憶になり再選択する（旧記憶の探索・移し替えはしない）。既存のイメージ・承認記録・起動台帳の識別（起動パス単位）はこの変更で変えない。
-- **記憶の保存先と形式**: `~/.local/state/claude-container/agent-preferences/<sha256>.json`（directory 0700・file 0600、内容は `{"schema":1,"agent":"codex"}`）。ホスト専用の `agent-preference.py` が Git 識別・検証・原子的保存を担当し、`c3c` からだけ呼ばれる。`.c3c/env` やシェル環境から保存先・値を変えることはできない。symlink・非通常ファイル・4096 byte 超・未知の値は不正として扱い、不正な記憶は WARNING の後に初回選択へ進む（明示指定なら不正な記憶を無視して起動する）。
+- **記憶の保存先と形式**: `~/.local/state/c3c/agent-preferences/<sha256>.json`（directory 0700・file 0600、内容は `{"schema":1,"agent":"codex"}`）。ホスト専用の `agent-preference.py` が Git 識別・検証・原子的保存を担当し、`c3c` からだけ呼ばれる。`.c3c/env` やシェル環境から保存先・値を変えることはできない。symlink・非通常ファイル・4096 byte 超・未知の値は不正として扱い、不正な記憶は WARNING の後に初回選択へ進む（明示指定なら不正な記憶を無視して起動する）。
 - **更新時点**: 本起動の `podman compose run` が終了コード 0 で戻った後だけ更新する（「最後に正常終了した CLI」の記憶。起動直後のクラッシュは記憶しない）。preflight・ビルド・承認拒否・中断・CLI の非ゼロ終了では旧値を保持し、launcher の終了コードは常に本起動の終了コードになる。保存に失敗しても WARNING だけで終了コードは変えない。同時セッションは最後に正常終了した書込が勝ち、JSON が部分書込になることはない。
 - **記憶が使えないとき**: Python 3 が無い、祖先に `.git` があるのに Git として解決できない（壊れた gitfile・権限不足・`--path-format=absolute` 非対応の古い Git 等）場合、明示指定なら WARNING を出して記憶せずに起動し、無指定なら明示指定を案内して終了コード 2 で止まる（別リポジトリの記憶へ誘導しない。継承した `GIT_DIR` 等の `GIT_*` は Git 子プロセスへ渡さず、system/global 設定も無効にして対象ディレクトリから解決する）。記憶した CLI がガード（`CODEX_DIR` 未設定・`codex-version.txt`・イメージの label）で使えない場合は既存の理由に加えて明示再選択のコマンドを案内して終了する。
 - **終了コード**: 引数の誤り・選択の不成立は 2、初回選択の Ctrl-C は 130、ガードによる中止は従来どおり 1、それ以外は本起動の終了コード。

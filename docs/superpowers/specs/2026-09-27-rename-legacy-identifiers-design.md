@@ -1,6 +1,6 @@
 # 旧製品名 claude-container の識別子を c3c へ改名する 設計
 
-**状態:** 設計の合意済み（持ち主 2026-09-27）。spec の二重レビューは確認限定巡まで実施し、その指摘を反映済み（Codex の 2 巡目確認の前）。持ち主の spec レビュー待ち。
+**状態:** 設計の合意済み（持ち主 2026-09-27）。spec の二重レビューは収束（Codex・Claude とも「実装計画に渡せる」）。持ち主の spec レビュー待ち。
 **区分:** 境界（ファイアウォールを無効化する env キー、MCP・project 設定の承認記録と秘密のマウント先、`docs/development-invariants.md` の不変条件に触れる）。
 **関連:** [増分移行の設計](2026-09-20-c3c-incremental-design.md) の第2段階（136・141・191 行目の「内部識別子の見た目だけの改名は行わない」「`CLAUDE_CONTAINER_*` は互換のため維持」）を、本設計で持ち主の判断により見直す。
 
@@ -142,3 +142,4 @@
 
 - 1 巡目（対象 4d99546）: Codex（gpt-6-astra、`codex exec --sandbox read-only`）は「修正後に渡せる」、Critical 0・Important 5・Minor 1。Claude（claude-opus-5-5、headless `claude -p` 読み取り専用。`modelUsage` で確認）は「修正後に渡せる」、Critical 0・Important 2・Minor 9。両者共通の Important は、新イメージ × 旧 launcher で env キーが効かない点と、由来 label の fallback の単位が未定義な点。Codex 固有の Important（state 移行の成功判定、旧 state が symlink の利用の引き継ぎ、第 2 段の旧イメージ清掃の案内）と全 Minor を反映した。
 - 確認限定巡（対象 93796b2）: Claude は前回 11 件すべて「直った」、判定「実装計画に渡せる」。新たな矛盾 2 件（`--check` は選択記憶を読まない、python3 不在時の移行の機会）を指摘。Codex は Important 5 件中 4 件「直った」、Important 2（原子的な非上書き）が「一部」、判定「修正後に渡せる」。新たな矛盾 2 件（python3 不在時と成功条件、`--clean` の書き込み）を指摘。いずれも反映した。
+- 確認限定巡 2 回目（対象 c952ee3、Codex のみ）: Important 2 と新たな矛盾 2 件がすべて「直った」、判定「実装計画に渡せる」。

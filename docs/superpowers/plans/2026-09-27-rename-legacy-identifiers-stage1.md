@@ -26,9 +26,9 @@
 
 ## Review Focus
 
-- `-b` していない旧イメージを、`.c3c/env` を `C3C_NO_FIREWALL=1` に書き換えた利用者が新 launcher で起動する → ファイアウォールが無効になる（compose がコンテナ側の旧名にも新キーの値を渡す）。Task 1 の E-R5 が compose へ渡る値を、Task 8 の実機確認が実コンテナを見る。
+- `-b` していない旧イメージを、`.c3c/env` を `C3C_NO_FIREWALL=1` に書き換えた利用者が新 launcher で起動する → ファイアウォールが無効になる（compose がコンテナ側の旧名にも新キーの値を渡す）。Task 1 の lint の compose 補間検査（C-1）が、実 `podman compose config` の出力でコンテナ側の新旧両方の名前に新キーの値が入ることを見る。E-R5 はホスト側で launcher が新キーを export することだけを見る（fake podman の環境は補間前）。Task 8 の実機確認が実コンテナを見る。
 - シェルの起動ファイルで旧キーを export したまま、`.c3c/env` に新キーを書いた利用者 → 両方が空でないので `ERROR` で止まり、どちらを消すか案内される。Task 1 の E-R3。
-- 旧 state が別ファイルシステムへの symlink・bind mount の利用者 → コピーされず、symlink ならリンク自体が移る。rename できない FS なら旧 state を使い続ける。Task 4 の S-2・S-6。
+- 旧 state が別ファイルシステムへの symlink・bind mount（マウントポイント）の利用者 → コピーされず、symlink ならリンク自体が移る。rename(2) が `EBUSY`（マウントポイント）・`EXDEV`・`EINVAL` 等で使えない場合は旧 state を使い続けて手動の移行を案内する（毎回 ERROR で止めない）。Task 4 の S-2・S-6・E-1。
 - 2 つの端末で同時に `c3c` を起動した直後の初回移行 → 片方が移し、もう片方は同一性で成功扱い。承認記録は失われない。Task 4 の S-4。
 - 旧 state だけがある機械で `c3c --check`（引数なし）→ 旧台帳の全プロジェクトを診断し、何も書かない・移さない。Task 4 の S-8。
 
@@ -49,7 +49,7 @@
 
 - [ ] **Step 1: 失敗するテストを書く**
 
-`test-build.sh` の `run_env_file_launcher_tests()` の E3 を新キーの期待へ書き換え、E3 の直後に次のブロックを足す（`$envf`・`run_launcher`・`check` は同関数の既存のもの）。
+`test-build.sh` の `run_env_file_launcher_tests()` の E3 を新キーの期待へ書き換え、**E3b の check と `printf '%s\n' "$out" >> "$LOG_FILE"` の後**（E4 の直前）に次のブロックを足す（`$envf`・`run_launcher`・`check` は同関数の既存のもの）。E3 と E3b の間に入れると、E3b が E-R 側の `compose-env` を読んで壊れる。
 
 ```bash
   # E-R1〜R6: 旧製品名の env キー（CLAUDE_CONTAINER_*）の解決（改名 第 1 段）。
@@ -65,6 +65,7 @@
   run_launcher
   check "E-R2: 新キーだけは改名の WARNING なし（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && ! printf '%s' \"\$0\" | grep -q 'CLAUDE_CONTAINER_NO_FIREWALL' && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'" "$out"
+  # （NO_FIREWALL=1 の警告文は、ファイルに実際に書かれたキー名だけを出す — Step 3。旧名を常に併記すると上の否定が成り立たない）
   check "E-R2: 新キーでも NO_FIREWALL=1 の WARNING が出る" \
     bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*C3C_NO_FIREWALL=1.*無効化'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -89,12 +90,13 @@
   check "E-R5: シェル環境の旧キーも新キーへ写る（rc=$rc）" \
     bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'"
   # E-R6: --check は旧キーを [WARN]、併存を [FAIL] に集計する（env ファイルなし・シェル環境でも）
+  # （fixture に packages.txt 等が無く、check_one_project は常に WARN を立てるので、「結果: WARN」ではなく改名の警告行で判定する）
   run_launcher_check CLAUDE_CONTAINER_IPV6=0
-  check "E-R6: --check は旧キーを WARN（rc=$rc）" \
-    bash -c "printf '%s' \"\$0\" | grep -q 'CLAUDE_CONTAINER_IPV6' && printf '%s' \"\$0\" | grep -q '結果: WARN'" "$out"
+  check "E-R6: --check は旧キーを改名の WARNING で示す（rc=$rc）" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING: CLAUDE_CONTAINER_IPV6 は旧名です。C3C_IPV6'" "$out"
   run_launcher_check CLAUDE_CONTAINER_IPV6=0 C3C_IPV6=0
   check "E-R6: --check は併存を FAIL（rc=$rc）" \
-    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR: CLAUDE_CONTAINER_IPV6 と C3C_IPV6 が両方' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 ```
 
@@ -112,7 +114,7 @@ D1 の `.env` に書く値（`CLAUDE_CONTAINER_NO_FIREWALL=1`）は `.env` が�
 
 - [ ] **Step 2: 失敗を確認する**
 
-Run: `./test-build.sh --launcher-only; grep -E '\[FAIL\].*E-R|E3' .claude/test-results/*.log | tail -20`
+Run: `./test-build.sh --launcher-only; grep -E '(E-R|E3).*\[FAIL\]' .claude/test-results/*.log | tail -20`（ログは説明の後ろに `[FAIL]` を出す）
 Expected: E-R1〜E-R6 と書き換えた E3 が FAIL（`guard_env_key_renames` が無く、`C3C_*` は許可リスト外）。
 
 - [ ] **Step 3: launcher を実装する**
@@ -160,15 +162,18 @@ guard_env_key_renames() {
 
 `guard_ipv6()` の `CLAUDE_CONTAINER_IPV6` 4 か所を `C3C_IPV6` に変える（エラー文も新キー名）。label の読み取りは Task 5 で変える。
 
-`guard_env_boundary_keys()` の NO_FIREWALL 検査を新旧両方の名前にする:
+`guard_env_boundary_keys()` の NO_FIREWALL 検査を新旧両方の名前にし、警告文にはファイルに実際に書かれたキー名を出す:
 
 ```bash
-  if grep -qE '^(C3C|CLAUDE_CONTAINER)_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null; then
-    guard_warn "WARNING: $ENV_FILE で C3C_NO_FIREWALL=1（旧名 CLAUDE_CONTAINER_NO_FIREWALL を含む）が設定されています。エグレスファイアウォールは無効化されます。"
+  local nf_key
+  # 実際に書かれたキー名を出す（新旧を常に併記すると、新キーだけの利用者にも旧名が表示される）。
+  # -m 1 で最初の 1 行だけ（head へのパイプは SIGPIPE で偽になりうる）。不一致は rc 1 で if の偽。
+  if nf_key=$(grep -m 1 -oE '^(C3C|CLAUDE_CONTAINER)_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null); then
+    guard_warn "WARNING: $ENV_FILE で ${nf_key%%=*}=1 が設定されています。エグレスファイアウォールは無効化されます。"
   fi
 ```
 
-E-R2 の期待（`C3C_NO_FIREWALL=1.*無効化`）はこの文言に合う。`c3c` 内のコメント（690・704 行目、2023 行目の説明）の旧キー名も新キー名に直す。
+E-R2 の期待（`C3C_NO_FIREWALL=1.*無効化` があり、`CLAUDE_CONTAINER_NO_FIREWALL` が無い）はこの文言に合う。`c3c` 内のコメント（690・704 行目、2023 行目の説明）の旧キー名も新キー名に直す。
 
 - [ ] **Step 4: compose と lint を変える**
 
@@ -200,6 +205,28 @@ E-R2 の期待（`C3C_NO_FIREWALL=1.*無効化`）はこの文言に合う。`c3
 ```
 
 `compose.ipv6.yml` は境界アセット（`ASSET_HASH_TARGETS`）なので、既存イメージではドリフトの `WARNING` が出る（spec どおり）。
+
+`lint.sh` の compose 検証（`podman compose -f compose.yml config` の行の直後）に、補間元の回帰検査 C-1 を足す（fake podman の環境は補間前なので、コンテナへ渡る値はここでしか自動検査できない）:
+
+```bash
+  # 改名 第 1 段（C-1）: コンテナ側の新旧両方の名前が、ホスト側の新キー C3C_NO_FIREWALL だけから補間されること。
+  # 旧名側の補間元を旧キーに戻すと、.c3c/env を新キーへ書き換えた利用者の旧イメージで無効化が黙って効かなくなる。
+  q="['\"]?"
+  if nf_on=$(env -u CLAUDE_CONTAINER_NO_FIREWALL C3C_NO_FIREWALL=1 podman compose -f compose.yml config) \
+      && nf_off=$(env -u C3C_NO_FIREWALL CLAUDE_CONTAINER_NO_FIREWALL=1 podman compose -f compose.yml config); then
+    for key in C3C_NO_FIREWALL CLAUDE_CONTAINER_NO_FIREWALL; do
+      grep -qE -- "^[[:space:]]*${key}: ${q}1${q}[[:space:]]*\$" <<<"$nf_on" \
+        || { echo "ERROR: C3C_NO_FIREWALL=1 のとき compose のコンテナ側 $key が 1 になりません" >&2; status=1; }
+      if grep -qE -- "^[[:space:]]*${key}: ${q}1${q}[[:space:]]*\$" <<<"$nf_off"; then
+        echo "ERROR: compose のコンテナ側 $key がホスト側の旧キー CLAUDE_CONTAINER_NO_FIREWALL から補間されています" >&2; status=1
+      fi
+    done
+  else
+    status=1
+  fi
+```
+
+（`q` は後段の IPv6 の needle でも同じ定義で使っている。重複定義で shellcheck が警告するなら、前段の定義をこのブロックの前へ移して 1 か所にする。）
 
 - [ ] **Step 5: README の表を合わせる（E7）**
 
@@ -244,13 +271,21 @@ git commit -m "feat: env キー CLAUDE_CONTAINER_* を C3C_* へ解決する（�
 
 ```python
     def run_first_half(self, env_extra):
+        # 起動前半（BOUNDARY まで）だけを実行する。後半（秘密の export・ゲート・exec claude）へは進ませない
+        # （test_refresh_loop_preserves_mode と同じ抽出。NO_FIREWALL=1 では sudo を通らないため、全体を実行すると
+        # 後半の helper・/workspace・/dev/tty に触れうる）。
+        full = (ROOT / 'entrypoint.sh').read_text()
+        self.assertIn(BOUNDARY, full)
+        source = full.split(BOUNDARY)[0]
+        self.assertNotIn('\nexec claude', source)
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td)
             fake = tmp / 'sudo'
             fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD"\nexit 1\n')
             fake.chmod(0o755)
             env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), **env_extra}
-            response = subprocess.run(['bash', str(ROOT / 'entrypoint.sh')], env=env, text=True, capture_output=True)
+            response = subprocess.run(['bash', '-c', source], env=env, text=True, capture_output=True,
+                                      stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)
             record = (tmp / 'record').read_text().splitlines() if (tmp / 'record').exists() else None
             return response, record
 
@@ -282,11 +317,12 @@ git commit -m "feat: env キー CLAUDE_CONTAINER_* を C3C_* へ解決する（�
                           {'C3C_NO_FIREWALL': '1', 'CLAUDE_CONTAINER_NO_FIREWALL': '1'}):
             with self.subTest(env=env_extra):
                 response, record = self.run_first_half(env_extra)
+                self.assertEqual(response.returncode, 0, response.stderr)
                 self.assertIsNone(record)
                 self.assertIn('エグレスファイアウォールは無効です', response.stderr)
 ```
 
-`test_no_firewall_new_and_old_keys` は firewall を呼ばないので entrypoint は後半へ進み、別の理由で失敗しうる。終了コードは見ず、sudo が呼ばれないことと WARNING だけを見る。
+前半だけを実行するので、NO_FIREWALL=1 では sudo を呼ばずに BOUNDARY まで進み rc 0 で終わる（終了コードも検査できる）。
 
 - [ ] **Step 2: 失敗を確認する**
 
@@ -295,7 +331,7 @@ Expected: 新キーのケースと不一致のケースが FAIL。
 
 - [ ] **Step 3: 実装する**
 
-`entrypoint.sh` の該当部分を置き換える:
+`entrypoint.sh` の 58-72 行（「# エグレス制限」のコメントから、`init-firewall.sh` 失敗時の `exit 1` を閉じる内側の `fi` まで）を次で置き換える。73 行目以降（監視ヘルパー `firewall-refresh.py` の起動と外側の `fi`）はそのまま残す:
 
 ```bash
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
@@ -363,7 +399,7 @@ Expected: `EntryResolutionTests` が `KeyError`/不一致で FAIL。
 
 - [ ] **Step 3: 実装する**
 
-`c3c` の 4 か所の `CLAUDE_CONTAINER_DIR="$RUN_DIR"` を `C3C_DIR="$RUN_DIR"` に、`compose.yml` の `dockerfile: ${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` を `dockerfile: ${C3C_DIR}/Dockerfile.claude` に、`.github/workflows/ci.yml` の `CLAUDE_CONTAINER_DIR: ${{ github.workspace }}` を `C3C_DIR: ${{ github.workspace }}` にする。`grep -rn CLAUDE_CONTAINER_DIR -- . ':!docs/superpowers'` が空になること（README・`docs/runtime-ci.md` の言及も直す）。
+`c3c` の 4 か所の `CLAUDE_CONTAINER_DIR="$RUN_DIR"` を `C3C_DIR="$RUN_DIR"` に、`compose.yml` の `dockerfile: ${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` を `dockerfile: ${C3C_DIR}/Dockerfile.claude` に、`.github/workflows/ci.yml` の `CLAUDE_CONTAINER_DIR: ${{ github.workspace }}` を `C3C_DIR: ${{ github.workspace }}` にする。`git grep -n CLAUDE_CONTAINER_DIR -- . ':!docs/superpowers'` が空になること（pathspec の除外は `git grep` で効く）（README・`docs/runtime-ci.md` の言及も直す）。
 
 - [ ] **Step 4: テストを通す**
 
@@ -388,7 +424,7 @@ git commit -m "refactor: compose の内部変数 CLAUDE_CONTAINER_DIR を C3C_DI
 
 **Interfaces:**
 - Produces（`c3c` のトップレベル、関数定義は `CC_STATE_DIR` の直前に置く）:
-  - `rename_noreplace <src> <dst>`: rc 0=移動した、1=失敗（既存の移動先を含む）、3=この環境では上書きしない rename が使えない（python3 なし・`renameat2` なし・FS 非対応）。
+  - `rename_noreplace <src> <dst>`: rc 0=移動した、1=失敗（移動先が既にある `EEXIST` と、その他の想定外の errno）、3=この環境では上書きしない rename が使えない（python3 なし・`renameat2` なし・`EINVAL`/`ENOSYS`/`EOPNOTSUPP`（FS 非対応）・`EBUSY`（移動元がマウントポイント）・`EXDEV`）。rc 3 では旧 state を使い続ける。
   - `resolve_state_dir`: `CC_STATE_DIR`（実効の読み書き先）・`CC_LEGACY_STATE_DIR`・`CC_STATE_NOTICE`（`--check` で `[WARN]` に出す文。空なら出さない）を設定する。通常起動（`CHECK=0` かつ `CLEAN=0`）でだけ移行する。同一性の不一致では `exit 1`。
   - `CC_STATE_DIR`・`CC_LEGACY_STATE_DIR`・`CC_LEDGER_FILE` は `resolve_state_dir` の直後に readonly（`load_env_file()` より前。#39）。
 
@@ -403,11 +439,15 @@ git commit -m "refactor: compose の内部変数 CLAUDE_CONTAINER_DIR を C3C_DI
 c3c から rename_noreplace() と resolve_state_dir() を抽出し、隔離 HOME で実行する。
 rename の競合・失敗は rename_noreplace を差し替えて再現する。
 """
+import ctypes
+import errno
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -440,6 +480,12 @@ class StateMigrationTests(unittest.TestCase):
     def fields(self, result):
         return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
 
+    def skip_if_unsupported(self, result):
+        # 実物の rename_noreplace が rc 3（RENAME_NOREPLACE 非対応の FS 等）なら旧 state を使い続ける。
+        # その経路は S-6 が検査するので、実 rename を前提にするケースは skip にする。
+        if self.fields(result).get('DIR') == str(self.old) and '安全に移行できない' in result.stderr:
+            self.skipTest('この環境では RENAME_NOREPLACE が使えない')
+
     def make_old(self):
         (self.old / 'mcp-approvals').mkdir(parents=True)
         (self.old / 'projects').write_text('/p\n')
@@ -457,6 +503,7 @@ class StateMigrationTests(unittest.TestCase):
         st = self.make_old()
         r = self.run_resolve()
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.skip_if_unsupported(r)
         self.assertFalse(os.path.lexists(self.old))
         self.assertEqual((os.lstat(self.new).st_dev, os.lstat(self.new).st_ino), (st.st_dev, st.st_ino))
         self.assertEqual((self.new / 'projects').read_text(), '/p\n')
@@ -470,6 +517,7 @@ class StateMigrationTests(unittest.TestCase):
         self.old.symlink_to(real)
         r = self.run_resolve()
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.skip_if_unsupported(r)
         self.assertTrue(self.new.is_symlink())
         self.assertEqual(os.readlink(self.new), str(real))
         self.assertFalse(os.path.lexists(self.old))
@@ -550,16 +598,44 @@ class StateMigrationTests(unittest.TestCase):
                     self.assertEqual(r.stderr, '')
                     self.assertIn('次の通常起動で', self.fields(r)['NOTICE'])
 
-    # 実物の rename_noreplace: 移動先があれば失敗し、何も上書きしない
-    def test_real_rename_noreplace_never_overwrites(self):
-        self.make_old()
+    # 実物の rename_noreplace: 移動先が空ディレクトリでも上書きしない（通常の rename(2) は空ディレクトリを
+    # 置き換えるので、NOREPLACE を外すとここで赤になる）。双方の inode が保たれること。
+    def test_real_rename_noreplace_never_overwrites_empty_directory(self):
+        old_st = self.make_old()
         self.new.mkdir()
-        (self.new / 'keep').write_text('k')
+        new_st = os.lstat(self.new)
         script = extract('rename_noreplace') + f'\nrename_noreplace "{self.old}" "{self.new}"'
         r = subprocess.run(['bash', '-c', script], env={'PATH': os.environ['PATH']}, capture_output=True, text=True)
-        self.assertIn(r.returncode, (1, 3))
-        self.assertEqual((self.new / 'keep').read_text(), 'k')
-        self.assertTrue(self.old.is_dir())
+        if r.returncode == 3:
+            self.skipTest('この環境では RENAME_NOREPLACE が使えない')
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(os.lstat(self.old).st_ino, old_st.st_ino)
+        self.assertEqual(os.lstat(self.new).st_ino, new_st.st_ino)
+        self.assertEqual(list(self.new.iterdir()), [])
+
+    # errno の対応（E-1）: rename_noreplace の heredoc の Python を、renameat2 を偽物にして実行する。
+    def run_helper_with_errno(self, err):
+        text = extract('rename_noreplace')
+        code = text.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+
+        class FakeLibc:
+            def renameat2(self, *args):
+                ctypes.set_errno(err)
+                return -1
+
+        with mock.patch.object(ctypes, 'CDLL', lambda *a, **k: FakeLibc()), \
+                mock.patch.object(sys, 'argv', ['-', 'src', 'dst']):
+            with self.assertRaises(SystemExit) as caught:
+                exec(compile(code, 'rename_noreplace', 'exec'), {'__name__': '__main__'})
+        return caught.exception.code
+
+    def test_errno_mapping(self):
+        for err in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.EBUSY, errno.EXDEV):
+            with self.subTest(errno=errno.errorcode[err]):
+                self.assertEqual(self.run_helper_with_errno(err), 3)
+        for err in (errno.EEXIST, errno.ENOTEMPTY, errno.EACCES, errno.ENOENT):
+            with self.subTest(errno=errno.errorcode[err]):
+                self.assertEqual(self.run_helper_with_errno(err), 1)
 
     def test_real_rename_noreplace_moves(self):
         st = self.make_old()
@@ -588,7 +664,8 @@ Expected: `extract` が `ValueError`（関数が無い）で全 FAIL/ERROR。
 # 上書きしない rename（renameat2 の RENAME_NOREPLACE）。state directory の移行専用。
 # GNU mv は別 FS（EXDEV）でコピーと削除へ切り替わり、事前の存在確認は確認と rename の間に現れた移動先を
 # 上書きしうるので、どちらも使わない。rc 0=移動、1=失敗（移動先あり等）、3=この環境では使えない
-# （python3 なし・renameat2 なし・FS 非対応）。symlink はリンク自体を移す（rename(2) の意味どおり）。
+# （python3 なし・renameat2 なし・FS 非対応・移動元がマウントポイント〈EBUSY〉・EXDEV）。rc 3 は旧 state を
+# 使い続ける扱いなので、毎回の起動を止めない。symlink はリンク自体を移す（rename(2) の意味どおり）。
 rename_noreplace() {
   command -v python3 >/dev/null 2>&1 || return 3
   python3 -I - "$1" "$2" <<'PY'
@@ -602,7 +679,7 @@ AT_FDCWD, RENAME_NOREPLACE = -100, 1
 src, dst = (os.fsencode(arg) for arg in sys.argv[1:3])
 if renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0:
     sys.exit(0)
-sys.exit(3 if ctypes.get_errno() in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP) else 1)
+sys.exit(3 if ctypes.get_errno() in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.EBUSY, errno.EXDEV) else 1)
 PY
 }
 
@@ -629,13 +706,16 @@ resolve_state_dir() {
     CC_STATE_DIR="$old"
     CC_STATE_NOTICE="旧 state $old を読みます。次の通常起動で $new へ移行します。"
   else
-    before=$(stat -c '%d:%i' -- "$old") || return 1
+    if ! before=$(stat -c '%d:%i' -- "$old"); then
+      echo "ERROR: 旧 state $old の状態を確認できません。起動を中止します。" >&2
+      exit 1
+    fi
     rename_noreplace "$old" "$new" || rc=$?
     if [[ $rc -eq 0 ]]; then
       CC_STATE_NOTICE="state を $old から $new へ移行しました（承認記録・起動台帳・CLI の記憶を引き継いでいます）。"
     elif [[ $rc -eq 3 ]]; then
       CC_STATE_DIR="$old"
-      CC_STATE_NOTICE="この環境では state を安全に移行できないため（python3 か、上書きしない rename の対応が必要）、旧 state $old を使います。c3c のセッションがすべて終わってから mv '$old' '$new' で移してください。"
+      CC_STATE_NOTICE="この環境では state を安全に移行できないため（python3 と上書きしない rename の対応が必要。$old がマウントポイントの場合も移せません）、旧 state $old を使います。c3c のセッションがすべて終わってから mv '$old' '$new' で移してください。"
     else
       after=$(stat -c '%d:%i' -- "$new" 2>/dev/null || true)
       if [[ "$after" != "$before" ]]; then
@@ -667,9 +747,10 @@ readonly CC_STATE_DIR CC_LEGACY_STATE_DIR CC_STATE_NOTICE CC_LEDGER_FILE
   rm -rf "$approval_store" && echo "削除しました。" || echo "見つからないのでスキップします。"
   echo "起動台帳を削除します: $CC_LEDGER_FILE"
   rm -f "$CC_LEDGER_FILE" && echo "削除しました。" || echo "見つからないのでスキップします。"
-  # 旧 state（改名 第 1 段）が実効の state と別に残っていれば、承認記録と台帳だけを消す。
-  # symlink は辿らない（リンク先の別の中身を消さない）。
-  if [[ "$CC_LEGACY_STATE_DIR" != "$CC_STATE_DIR" && -d "$CC_LEGACY_STATE_DIR" && ! -L "$CC_LEGACY_STATE_DIR" ]]; then
+  # 旧 state（改名 第 1 段）が実効の state と別に残っていれば、承認記録と台帳だけを消す（選択記憶は消さない）。
+  # 旧がディレクトリへの symlink でも対象にする（spec が引き継ぎ対象にしている配置。消すのはその中の
+  # mcp-approvals と projects だけで、rm -rf は末尾の要素が symlink ならリンク自体を消し、その先を辿らない）。
+  if [[ "$CC_LEGACY_STATE_DIR" != "$CC_STATE_DIR" && -d "$CC_LEGACY_STATE_DIR" ]]; then
     echo "旧 state の MCP 承認記録と起動台帳を削除します: $CC_LEGACY_STATE_DIR"
     rm -rf "$legacy_store" "$CC_LEGACY_STATE_DIR/projects"
   fi
@@ -682,6 +763,8 @@ readonly CC_STATE_DIR CC_LEGACY_STATE_DIR CC_STATE_NOTICE CC_LEDGER_FILE
     echo "[WARN] $CC_STATE_NOTICE"
   fi
 ```
+
+この `[WARN]` はプロジェクト単位の集計（サマリの WARN 数）と終了コードには入れない。state はプロジェクトに属さず、既存の集計はプロジェクトごとの結果だけを数えるため（spec の「`[WARN]` で出す」の範囲）。
 
 - `c3c` に残る `.local/state/claude-container` を `grep -n 'local/state/claude-container' c3c` で確認し、`resolve_state_dir` 以外に無いこと。`agent-preference.py` は `$CC_STATE_DIR` を受け取るので変更しない。
 
@@ -735,7 +818,33 @@ class StateMigrationLaunchTests(LaunchCase):
         self.assertTrue(legacy.is_dir())
         self.assertFalse(os.path.lexists(self.state_dir))
         self.assertNotIn(str(self.proj) + '\n', (legacy / 'projects').read_text())
+
+    def test_clean_all_removes_approvals_and_ledger_of_legacy_symlink_state(self):
+        # 新旧が併存し、旧がディレクトリへの symlink の配置でも、旧の承認記録と台帳を消す（選択記憶は残す）。
+        real = self.root / 'legacy-real'
+        real.mkdir()
+        (real / 'mcp-approvals').mkdir()
+        (real / 'mcp-approvals' / 'x').write_text('a')
+        (real / 'projects').write_text(str(self.proj) + '\n')
+        (real / 'agent-preferences').mkdir()
+        (self.home / '.local/state').mkdir(parents=True, exist_ok=True)
+        (self.home / '.local/state/claude-container').symlink_to(real)
+        self.state_dir.mkdir(parents=True)
+        result = self.run_c3c('--clean')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((real / 'mcp-approvals').exists())
+        self.assertFalse((real / 'projects').exists())
+        self.assertTrue((real / 'agent-preferences').is_dir())
+        self.assertTrue((self.home / '.local/state/claude-container').is_symlink())
 ```
+
+`test-build.sh` の `run_launcher_tests()` に新 suite を登録する（`test_project_images.py` の check の直後）。登録しないと `--launcher-only` と CI で走らない:
+
+```bash
+  check "state directory の移行（遷移表・RENAME_NOREPLACE・errno の対応・同一性・check/clean の無移行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_state_migration.py"
+```
+
+README「変更後の確認」節の `--launcher-only` の説明に、`test_state_migration.py`（単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_state_migration.py -v`）を 1 文で足す。
 
 `test_normal_launch_migrates_and_keeps_remembered_cli` は `approve_codex_in` を旧 state に置き、移行後の Codex 経路で確認プロンプトが出ずに本起動へ進む（承認記録が引き継がれた）ことも兼ねる。fixture の既定 `self.state`（`preflight` が `protocol()`）と `HASH_A` が一致していることを前提にしている。
 
@@ -747,7 +856,7 @@ Expected: 全 PASS（`test_real_rename_noreplace_moves` は RENAME_NOREPLACE 非
 - [ ] **Step 7: コミット**
 
 ```bash
-git add c3c tests/test_state_migration.py tests/test_c3c_launch.py tests/test_project_images.py test-build.sh tests/
+git add c3c tests/test_state_migration.py tests/test_c3c_launch.py tests/test_project_images.py test-build.sh tests/ README.md
 git commit -m "feat: state directory を ~/.local/state/c3c へ通常起動で移行する"
 ```
 
@@ -764,7 +873,7 @@ git commit -m "feat: state directory を ~/.local/state/c3c へ通常起動で�
 
 **Interfaces:**
 - Produces: `image_label <suffix>`（`c3c`）。`$IMAGE_NAME` の `io.c3c.<suffix>` を出力し、空なら `claude-container.<suffix>` を出力する。単独のキー（`asset-hash`・`base-image`・`ipv6-support`）専用。由来 label には使わない。
-- Produces: `project-images.py` の `provenance_values(labels)` → `(metadata, path, name)` を新の組か旧の組のどちらか一方から返す。
+- Produces: `project-images.py` の `provenance_values(labels)` → `(values, partial)`。`values` は `[metadata, path, name]` を新の組か旧の組のどちらか一方から取ったもの、`partial` は新の組のキーが一部だけある（不完全な新の組）とき True。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -782,10 +891,22 @@ git commit -m "feat: state directory を ~/.local/state/c3c へ通常起動で�
 
 ```python
     def test_new_namespace_labels_are_cleaned(self):
+        # 台帳から対象を外し、新 label だけが由来の根拠になる形にする（台帳に残すと、新 label を読まない
+        # 旧実装でも名前と台帳の legacy 照合で清掃され、実装前から緑になる）。
+        self.ledger.write_text(self.live + '\n')
+        self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
         self.state['images'] = [self.item(self.missing, namespace=NEW_LABEL)]
         result = self.run_helper(clean=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state['images'], [])
+
+    def test_partial_new_group_with_empty_value_is_invalid(self):
+        # 新の組のキーが一部だけ（値は空）で旧の組が完全 → 新の組を選び、不完全なので invalid（旧で補わず、
+        # 値が全部空だからといって台帳の legacy 照合へも落とさない）。
+        image = self.item(self.missing)
+        image['Labels'][NEW_LABEL + 'metadata'] = ''
+        self.state['images'] = [image]
+        self.assert_kept(self.run_helper(clean=True))
 
     def test_incomplete_new_group_does_not_borrow_from_complete_old_group(self):
         image = self.item(self.missing)                       # 旧の組は完全
@@ -797,18 +918,23 @@ git commit -m "feat: state directory を ~/.local/state/c3c へ通常起動で�
         image = self.item(self.live)                           # 旧の組は存在するパス
         image['Labels'].update({NEW_LABEL + 'metadata': '1', NEW_LABEL + 'path': self.missing,
                                 NEW_LABEL + 'name': reference_key(self.missing)})
+        image['Names'] = [f'localhost/{reference_key(self.missing)}_claude-auth-workspace:latest']
         self.state['images'] = [image]
         result = self.run_helper(clean=True)                   # 新の組（欠落パス）で判定され、清掃される
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state['images'], [])
 ```
 
-`test_new_group_wins_over_old_group_pointing_elsewhere` は、`image_name(self.missing)` が `Names` と一致しないと `labeled` にならない。`item(self.live)` は `Names` を live の key で作るので、`image['Names'] = [f'localhost/{reference_key(self.missing)}_claude-auth-workspace:latest']` も上書きする。
+`test_new_group_wins_over_old_group_pointing_elsewhere` は、`image_name(self.missing)` が `Names` と一致しないと `labeled` にならないので `Names` を上書きしている。旧実装では旧の組（live）と台帳の名前一致（missing）で候補が 2 つになり invalid で残るので、実装前は赤。
 
 `test-build.sh` の fake podman（`launcher_sandbox_init`）の `image inspect` 分岐に新 label の応答を足す:
 
 ```bash
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_NEW_SUPPORT-}"; fi
+    if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_NEW-}"; fi
+    if [[ "\$*" == *claude-container.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_OLD-}"; fi
+    if [[ "\$*" == *io.c3c.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_NEW-}"; fi
+    if [[ "\$*" == *claude-container.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE_OLD-}"; fi
 ```
 
 IPv6 の launcher テストの近くに、新 label だけ `1`（旧 label は空）で IPv6 が通るケースと、新 label が空で旧 label が `1` のとき通るケース（既存）を並べる:
@@ -821,12 +947,37 @@ IPv6 の launcher テストの近くに、新 label だけ `1`（旧 label は�
   check "L-2: 新旧どちらの label も無ければ IPv6 を拒否する（rc=$rc）" bash -c "[ $rc -ne 0 ]"
 ```
 
-（`run_launcher` は引数を env として渡すので、fake podman の `TEST_IPV6_*` に届く。既存テストが使う変数名と `.claude-container.d` の fixture に合わせる。）
+（`run_launcher` は引数を env として渡すので、fake podman の `TEST_*` に届く。既存テストが使う変数名と `.claude-container.d` の fixture に合わせる。）
+
+単独キーの新優先を、新旧に**異なる値**を与えて検査する（L-3〜L-6）。正しい値は、1 回起動して compose へ渡った `ASSET_HASH`・`BASE_IMAGE` から取る:
+
+```bash
+  rm -f "$proj/.claude-container.d/env"
+  run_launcher
+  local real_hash real_base
+  real_hash=$(sed -n 's/^ASSET_HASH=//p' "$root/compose-env")
+  real_base=$(sed -n 's/^BASE_IMAGE=//p' "$root/compose-env")
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_ASSET_HASH_OLD=bogus
+  check "L-3: asset-hash は新 label を優先する（旧が違っても drift なし）" \
+    bash -c "! printf '%s' \"\$0\" | grep -q '境界アセット.*変更されています'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW=bogus TEST_ASSET_HASH_OLD="$real_hash"
+  check "L-4: asset-hash の新 label が違えば、旧が一致していても drift を出す" \
+    bash -c "printf '%s' \"\$0\" | grep -q '境界アセット.*変更されています'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW= TEST_ASSET_HASH_OLD="$real_hash"
+  check "L-5: 新 label が空なら旧 label へ fallback（drift なし）" \
+    bash -c "! printf '%s' \"\$0\" | grep -qE '境界アセット.*変更されています|ハッシュラベルがありません'" "$out"
+  run_launcher TEST_ASSET_HASH_NEW="$real_hash" TEST_BASE_IMAGE_NEW=bogus TEST_BASE_IMAGE_OLD="$real_base"
+  check "L-6: base-image も新 label を優先する" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'ベースイメージの設定.*異なります'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+```
+
+（`guard_asset_drift()` の WARNING 文言は `c3c` の現行のもの。`ASSET_HASH`・`BASE_IMAGE` が compose-env に出ることは既存の E 系テストの前提と同じ。）単独キーの「無い」は、キーの欠落と空値の両方を指す（`podman image inspect` の `index` は欠落キーにも空文字を返し、両者を区別できないため）。spec の「label」節の該当行も「空か欠落なら旧を読む」に直す。
 
 - [ ] **Step 2: 失敗を確認する**
 
-Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_project_images.py -v 2>&1 | tail -15; ./test-build.sh --launcher-only; grep -E '\[FAIL\].*L-' .claude/test-results/*.log`
-Expected: 新 label の 3 テストと L-1 が FAIL。
+Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_project_images.py -v 2>&1 | tail -15; ./test-build.sh --launcher-only; grep -E 'L-[0-9].*\[FAIL\]' .claude/test-results/*.log`
+Expected: 新 label の 4 テスト（`test_new_namespace_labels_are_cleaned`・`test_partial_new_group_with_empty_value_is_invalid`・`test_incomplete_new_group_does_not_borrow_from_complete_old_group`・`test_new_group_wins_over_old_group_pointing_elsewhere`）と L-1・L-3・L-6 が FAIL（L-4 は旧実装では旧 label＝一致で drift なし → FAIL。L-2・L-5 は実装前から緑の対照）。
 
 - [ ] **Step 3: 実装する**
 
@@ -886,12 +1037,27 @@ LEGACY_LABELS = tuple(LEGACY_PREFIX + suffix for suffix in SUFFIXES)
 
 def provenance_values(labels):
     """由来 label を組単位で選ぶ（改名 第 1 段）。新の組のキーが 1 つでもあれば新の組だけを使い、
-    旧の組で補わない（不完全な新の組は不完全なまま判定する）。新の組が 1 つも無いときだけ旧の組。"""
-    group = NEW_LABELS if any(key in labels for key in NEW_LABELS) else LEGACY_LABELS
-    return [labels.get(key, '') for key in group]
+    旧の組で補わない。新の組のキーが一部だけなら partial=True（値が空でも、台帳の legacy 照合へ落とさず
+    invalid にする）。三つとも揃って空なのは直接ビルドの既存契約で、従来どおり扱う。
+    新の組が 1 つも無いときだけ旧の組（旧の組の扱いは従来と同じ）。"""
+    present = [key in labels for key in NEW_LABELS]
+    if any(present):
+        return [labels.get(key, '') for key in NEW_LABELS], not all(present)
+    return [labels.get(key, '') for key in LEGACY_LABELS], False
 ```
 
-`provenance()` の `values = [item['labels'].get(key, '') for key in LABELS]` を `values = provenance_values(item['labels'])` に、`relevant` の `any(item['labels'].get(k) for k in LABELS)` を `any(provenance_values(item['labels']))` にする。名前なしイメージの判定は従来の `claude-container.` 前方一致を残し、新の由来 label のキーも加える:
+`provenance()` の先頭を次にする:
+
+```python
+    values, partial = provenance_values(item['labels'])
+    matches = {path for path in ledger if image_name(path) in item['names']}
+    if partial:
+        return matches, 'invalid'
+    if not any(values):
+        return matches, 'legacy' if len(matches) == 1 else 'unknown'
+```
+
+`relevant` の `any(item['labels'].get(k) for k in LABELS)` は `any(provenance_values(item['labels'])[0])` にする。名前なしイメージの判定は従来の `claude-container.` 前方一致を残し、新の由来 label のキーも加える:
 
 ```python
             relevant = (any(k.startswith('claude-container.') for k in item['labels'])
@@ -975,6 +1141,7 @@ git commit -m "feat: SECRETS_DIR を新パス ~/.config/c3c/secrets にも :ro �
 - state のパス（168・437・445・544 行付近）を `~/.local/state/c3c/...` にする。
 - label 名（156・503 行付近）を `io.c3c.*` にし、第 1 段では旧名も併記されることを書く。
 - 新しい節「旧名 claude-container の識別子からの移行（v15.1 系）」を「旧 `.claude-container.d/` からの移行」の後に置く。内容: 対応表（env キー・state・label・秘密のパス）、旧名は `WARNING` 付きで動くこと、env キーの新旧併存は `ERROR`、state は通常起動で自動移行（`--check`・`--clean` は移さない。上書きしない rename が使えない環境は旧を使い続けて手動 `mv` を案内）、旧版へ戻したとき（env キーの `C3C_*` は無視されて安全側、state は空から作り直され承認の確認がもう一度出る、新版へ戻すと「両方ある」の WARNING）、`-b` 推奨（ドリフト WARNING）、次のメジャー版の予告と、その前に `c3c --check --clean-missing` を実行しておくこと。
+- README 132 行目付近（旧入口からの移行の「設定・認証・承認記録…は維持」）と 529 行目付近（c3c 入口の説明）で、内部の保存先の名前を述べている箇所があれば、第 1 段の state の移行と矛盾しないよう直す。
 - 旧入口 `claude-container` の移行表、upstream の帰属、過去の Issue URL は変えない。
 
 - [ ] **Step 2: `docs/development-invariants.md`**
@@ -984,6 +1151,7 @@ git commit -m "feat: SECRETS_DIR を新パス ~/.config/c3c/secrets にも :ro �
 - label: 単独キーの `image_label()`、由来 label の組単位（`provenance_values()`）、新旧 6 つを最後の単一 LABEL に。
 - 秘密の二重マウントの `:ro`（`lint.sh` が検査）。
 - `CLAUDE_CONTAINER_DIR` → `C3C_DIR`、旧 label 名・旧 state パスの記述を新名に（`grep -n -E 'claude-container|CLAUDE_CONTAINER' docs/development-invariants.md`。`.claude-container.d` と `/etc/claude-container` は第 1 段では残る）。
+- コードのコメントに残る旧キー名も新キーにする: `init-firewall.sh:17`（`CLAUDE_CONTAINER_NO_FIREWALL=1 で無効化可`）、`entrypoint.sh:118`（Task 2 で直していなければ）。`git grep -n -E 'CLAUDE_CONTAINER_(NO_FIREWALL|IPV6)' -- . ':!docs/superpowers'` の残りが、互換のための実装・テスト・README の旧キーの行だけであること。
 
 - [ ] **Step 3: `examples/c3c/env.example`**
 
@@ -995,7 +1163,7 @@ Run: `./lint.sh && ./test-build.sh --launcher-only`
 Expected: `lint OK`、FAIL 0（E7 の表の一致を含む）。
 
 ```bash
-git add README.md docs/development-invariants.md examples/c3c/env.example
+git add README.md docs/development-invariants.md examples/c3c/env.example init-firewall.sh entrypoint.sh
 git commit -m "docs: 旧名 claude-container の識別子からの移行（第 1 段）を README と不変条件に書く"
 ```
 
@@ -1010,10 +1178,14 @@ git commit -m "docs: 旧名 claude-container の識別子からの移行（第 1
 Run: `./lint.sh && ./test-build.sh --launcher-only && ./test-build.sh --validator-only && bash examples/hooks/tests/test-block-pr-approve.sh`
 Expected: すべて成功。結果をそのまま記録する。
 
+`init-firewall.sh` はコメントだけの変更なので、その回帰テスト（`--launcher-only` に含む）で足りる。
+
 - [ ] **Step 2: 実イメージのビルドと label（ホスト、実 Podman）**
 
 Run: `./test-build.sh --build-only`、続けて `podman image inspect --format '{{json .Labels}}' localhost/claude-test | jq 'with_entries(select(.key|test("c3c|claude-container")))'`
 Expected: `io.c3c.asset-hash`・`io.c3c.base-image`・`io.c3c.ipv6-support`・`io.c3c.project-*` と旧名の 6 つが並ぶ（直接ビルドなので project-* は空）。
+
+続けて `./test-build.sh --config-ro-only`（Task 6 で `compose.yml` のマウントを変えたため。README「変更後の確認」節）と、`tests/test-runtime.sh` を使う実コンテナ検証（Task 3 で `C3C_DIR` に変えたため。実行方法は `docs/runtime-ci.md`。ホストで回せなければ runtime workflow の手動実行で代える）を行う。
 
 - [ ] **Step 3: 新旧の組み合わせ（ホスト、実 Podman。持ち主と実施）**
 
@@ -1035,3 +1207,7 @@ Expected: `io.c3c.asset-hash`・`io.c3c.base-image`・`io.c3c.ipv6-support`・`i
 
 区分: 境界 — ファイアウォールを無効化する env キー、承認記録（state）と秘密のマウント先、`docs/development-invariants.md` の不変条件に触れるため。計画・実装完了時（PR 前）・PR 後の 3 段階で Codex と Claude の二重レビューを行う。
 推奨実装: Opus — 秘密を読む経路（`SECRETS_DIR` のマウント先）と、承認記録を失いうる state の移行という境界の変更を含む（判定基準の 2）。Sonnet を推さないのは、Task 4 の遷移表・同一性確認と Task 5 の組単位の選択で、不変条件と突き合わせる判断が実装中に残るため。Codex を推さないのは、Task 8 の実機確認がホストの実 Podman と持ち主の実 state を要し、`~/.local/state` の移行を伴うため。
+
+## 計画レビューの記録
+
+- 1 巡目（対象 e793b00）: Codex（gpt-6-astra、`codex exec --sandbox read-only`。依頼文の「コマンド実行はしない」で読めず未実施になったため、読み取り専用コマンドを許可して再実行）は「修正後に渡せる」、Critical 0・Important 7・Minor 3。Claude（claude-opus-5-5、headless 読み取り専用）は「修正後に渡せる」、Critical 0・Important 4・Minor 12。共通の Important は E-R2 の期待の不成立、compose 補間の未検証、Task 2 のテストが entrypoint 後半まで走る点、実装前から緑のテスト。Codex 固有は空値の部分的な新由来 label、symlink の旧 state の清掃漏れ、新 suite の未登録、単独 label の新優先の未検証。Claude 固有は旧 state がマウントポイントのときの `EBUSY`。いずれも反映した。spec の変更（`relevant` 判定と単独 label の「空か欠落」）は Task 5 で行う。

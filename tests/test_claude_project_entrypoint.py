@@ -132,6 +132,7 @@ class RunTests(ClaudeProjectEntrypointCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('TTY', result.stderr)
         self.assertFalse(self.launched())
+        self.assertNotIn('/dev/tty:', result.stderr)
 
     def test_run_prompt_yes_launches_and_no_blocks(self):
         self.put('.claude/settings.json', HOOKS)

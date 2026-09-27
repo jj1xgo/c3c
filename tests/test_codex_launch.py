@@ -157,7 +157,7 @@ class LaunchCase(unittest.TestCase):
         self.state = {'image_exists': True, 'label': '2', 'preflight': {'stdout': protocol()}}
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
                     'TMPDIR': str(self.tmpdir), 'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
-        self.store = self.home / '.local/state/claude-container/mcp-approvals'
+        self.store = self.home / '.local/state/c3c/mcp-approvals'
 
     def project_name(self):
         """既存 Bash のキー算出を独立した期待値として使う（tests/test_project_images.py と同じ流儀）。"""

@@ -295,11 +295,77 @@ readonly AGENT_PREFERENCE_HELPER
 
 # 起動台帳（内部運用issue参照）。通常起動のたびにホスト絶対パスを記録し、
 # --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
-# MCP_APPROVAL_STORE と同じ流儀で $HOME から直接算出し、readonly でプロジェクト側 env
-# からの上書きを封じる（#39。呼び出し順序だけでは env の直接代入を防げない）。
-CC_STATE_DIR="$HOME/.local/state/claude-container"
+# 上書きしない rename（renameat2 の RENAME_NOREPLACE）。state directory の移行専用。
+# GNU mv は別 FS（EXDEV）でコピーと削除へ切り替わり、事前の存在確認は確認と rename の間に現れた移動先を
+# 上書きしうるので、どちらも使わない。rc 0=移動、1=失敗（移動先あり等）、3=この環境では使えない
+# （python3 なし・renameat2 なし・FS 非対応・移動元がマウントポイント〈EBUSY〉・EXDEV）。rc 3 は旧 state を
+# 使い続ける扱いなので、毎回の起動を止めない。symlink はリンク自体を移す（rename(2) の意味どおり）。
+rename_noreplace() {
+  command -v python3 >/dev/null 2>&1 || return 3
+  python3 -I - "$1" "$2" <<'PY'
+import ctypes, errno, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+try:
+    renameat2 = libc.renameat2
+except AttributeError:
+    sys.exit(3)
+AT_FDCWD, RENAME_NOREPLACE = -100, 1
+src, dst = (os.fsencode(arg) for arg in sys.argv[1:3])
+if renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0:
+    sys.exit(0)
+sys.exit(3 if ctypes.get_errno() in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.EBUSY, errno.EXDEV) else 1)
+PY
+}
+
+# state directory（起動台帳・MCP/Codex/project 設定の承認記録・CLI 選択の記憶）を旧名
+# ~/.local/state/claude-container から ~/.local/state/c3c へ移す（改名 第 1 段。spec の遷移表）。
+# 判定は lstat（symlink を辿らない）。移行は通常起動でだけ行う — --check は書かず、--clean は選択記憶を
+# 「読まない・書かない・消さない」不変条件を持つため state 全体を動かさない。両モードとも新が無ければ旧を読む。
+# $HOME から直接算出して readonly にし、プロジェクト側 env からの上書きを封じる（#39）。
+# ここは関数定義セクションより前なので guard_warn は使えない（stderr へ直接出す）。
+resolve_state_dir() {
+  local new="$HOME/.local/state/c3c" old="$HOME/.local/state/claude-container" before after rc=0
+  CC_LEGACY_STATE_DIR="$old"
+  CC_STATE_DIR="$new"
+  CC_STATE_NOTICE=""
+  local notice_both="旧 state $old が残っています（$new を使います）。旧版の c3c のセッションがすべて終わってから、中身を確認して削除してください。"
+  if [[ ! -e "$old" && ! -L "$old" ]]; then
+    return 0
+  fi
+  if [[ -e "$new" || -L "$new" ]]; then
+    CC_STATE_NOTICE="$notice_both"
+  elif [[ ! -d "$old" ]]; then
+    CC_STATE_NOTICE="旧 state $old はディレクトリではないため移行しません（$new を使います）。不要なら削除してください。"
+  elif [[ $CHECK -eq 1 || $CLEAN -eq 1 ]]; then
+    CC_STATE_DIR="$old"
+    CC_STATE_NOTICE="旧 state $old を読みます。次の通常起動で $new へ移行します。"
+  else
+    if ! before=$(stat -c '%d:%i' -- "$old"); then
+      echo "ERROR: 旧 state $old の状態を確認できません。起動を中止します。" >&2
+      exit 1
+    fi
+    rename_noreplace "$old" "$new" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+      CC_STATE_NOTICE="state を $old から $new へ移行しました（承認記録・起動台帳・CLI の記憶を引き継いでいます）。"
+    elif [[ $rc -eq 3 ]]; then
+      CC_STATE_DIR="$old"
+      CC_STATE_NOTICE="この環境では state を安全に移行できないため（python3 と上書きしない rename の対応が必要。$old がマウントポイントの場合も移せません）、旧 state $old を使います。c3c のセッションがすべて終わってから mv '$old' '$new' で移してください。"
+    else
+      after=$(stat -c '%d:%i' -- "$new" 2>/dev/null || true)
+      if [[ "$after" != "$before" ]]; then
+        echo "ERROR: state を $old から $new へ移行できませんでした。承認記録を失わないよう起動を中止します。$new の中身を確認し、手で移してから再実行してください。" >&2
+        exit 1
+      fi
+    fi
+  fi
+  if [[ -n "$CC_STATE_NOTICE" && $CHECK -ne 1 ]]; then
+    echo "WARNING: $CC_STATE_NOTICE" >&2
+  fi
+  return 0
+}
+resolve_state_dir
 CC_LEDGER_FILE="$CC_STATE_DIR/projects"
-readonly CC_STATE_DIR CC_LEDGER_FILE
+readonly CC_STATE_DIR CC_LEGACY_STATE_DIR CC_STATE_NOTICE CC_LEDGER_FILE
 
 # ============================================================
 # 関数定義セクション（--check の dispatch がこれらより後にあるよう、
@@ -325,11 +391,18 @@ clean_all() {
   [[ $found -eq 1 ]] || echo "c3c のイメージが見つからないため、イメージ・ネットワークの削除をスキップします。"
   echo "ステージング済みビルドコンテキストを削除します: $RUN_DIR/.build-context"
   rm -rf "$RUN_DIR/.build-context" && echo "削除しました。" || echo "見つからないのでスキップします。"
-  local approval_store="$HOME/.local/state/claude-container/mcp-approvals"
+  local approval_store="$CC_STATE_DIR/mcp-approvals" legacy_store="$CC_LEGACY_STATE_DIR/mcp-approvals"
   echo "MCP 承認記録を削除します: $approval_store"
   rm -rf "$approval_store" && echo "削除しました。" || echo "見つからないのでスキップします。"
   echo "起動台帳を削除します: $CC_LEDGER_FILE"
   rm -f "$CC_LEDGER_FILE" && echo "削除しました。" || echo "見つからないのでスキップします。"
+  # 旧 state（改名 第 1 段）が実効の state と別に残っていれば、承認記録と台帳だけを消す（選択記憶は消さない）。
+  # 旧がディレクトリへの symlink でも対象にする（spec が引き継ぎ対象にしている配置。消すのはその中の
+  # mcp-approvals と projects だけで、rm -rf は末尾の要素が symlink ならリンク自体を消し、その先を辿らない）。
+  if [[ "$CC_LEGACY_STATE_DIR" != "$CC_STATE_DIR" && -d "$CC_LEGACY_STATE_DIR" ]]; then
+    echo "旧 state の MCP 承認記録と起動台帳を削除します: $CC_LEGACY_STATE_DIR"
+    rm -rf "$legacy_store" "$CC_LEGACY_STATE_DIR/projects"
+  fi
   echo "dangling イメージを整理しています..."
   podman image prune -f
 }
@@ -461,7 +534,7 @@ compute_project_name() {
 # 依らず既存対象を消せるよう、select_project_conf_dir() で cleanup 分岐より後に解決する。
 freeze_project_paths() {
   # MCP監査ゲートのTOFU承認記録の格納パス（#28）。
-  MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
+  MCP_APPROVAL_STORE="$CC_STATE_DIR/mcp-approvals"
   MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
   # Codex の起動時 MCP 審査の承認記録（#150 の protocol 2）。既存の Claude 記録とは別に、agent 固定の
   # subdirectory へ hash を保存する。版は含めない（旧 <版>.json は読まない）。同じく env 読込前に freeze する。
@@ -2730,6 +2803,11 @@ check_one_project() {
 run_check_mode() (
   # 一時ファイルと後始末の trap をこの診断プロセスだけに閉じる。
   umask 077
+  # state directory の通知（resolve_state_dir）。state はプロジェクトに属さないので、プロジェクト単位の
+  # 集計（サマリの WARN 数）と終了コードには入れない。
+  if [[ -n "$CC_STATE_NOTICE" ]]; then
+    echo "[WARN] $CC_STATE_NOTICE"
+  fi
   local -a targets=()
   local -a from_ledger_flags=()
   if [[ $# -gt 0 ]]; then

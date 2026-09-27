@@ -827,6 +827,7 @@ run_launcher_tests() {
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
+  check "state directory の移行（遷移表・RENAME_NOREPLACE・errno の対応・同一性・check/clean の無移行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_state_migration.py"
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
   check "Claude project 設定ゲート helper（全体 hash・停止条件・判定不能・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_audit.py"
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"
@@ -859,7 +860,7 @@ run_launcher_tests() {
 run_clean_ledger_launcher_tests() {
   local root bin home proj out rc before_ctx
   launcher_sandbox_init
-  local ledger="$home/.local/state/claude-container/projects" mask
+  local ledger="$home/.local/state/c3c/projects" mask
   run_launcher
   check "起動時に対象を台帳へ記録する（rc=$rc）" \
     bash -c '[ "$1" -eq 0 ] && grep -qxF -- "$2" "$3" && [ "$(stat -c %a "$3")" = 600 ]' _ "$rc" "$proj" "$ledger"
@@ -902,7 +903,7 @@ run_clean_ledger_launcher_tests() {
   ln -s "$(command -v grep)" "$bin/real-grep"
   cat > "$bin/grep" <<'SHIM'
 #!/bin/bash
-if [[ "${!#}" == "$HOME/.local/state/claude-container/projects" ]]; then
+if [[ "${!#}" == "$HOME/.local/state/c3c/projects" ]]; then
   stat -Lc %a "/proc/$$/fd/1" > "$HOME/ledger-write-mode"
   case "${LEDGER_TEST_FAILURE:-}" in
     empty) exit 2 ;;
@@ -980,7 +981,7 @@ run_missing_directory_launcher_tests() {
   local root bin home proj out rc before_ctx missing input kind launched_name ledger original_proj
   launcher_sandbox_init
   original_proj="$proj"
-  ledger="$home/.local/state/claude-container/projects"
+  ledger="$home/.local/state/c3c/projects"
   log "## 存在しない作業ディレクトリと削除後の清掃（#54）"
   # 削除コマンドの対象を記録する。既存のダミーは compose 側の配線を引き続き検査する。
   mv "$bin/podman" "$bin/base-podman"
@@ -1026,9 +1027,9 @@ SHIM
     check "$kind: 起動時の識別と台帳を記録する" \
       bash -c '[ "$1" = 0 ] && [ -n "$2" ] && grep -qxF -- "$3" "$4"' _ "$rc" "$launched_name" "$proj" "$ledger"
     printf '%s\n' "$root/other-project" >> "$ledger"
-    mkdir -p "$home/.local/state/claude-container/mcp-approvals"
-    printf '承認記録\n' > "$home/.local/state/claude-container/mcp-approvals/$launched_name"
-    printf '保護する別プロジェクト\n' > "$home/.local/state/claude-container/mcp-approvals/other"
+    mkdir -p "$home/.local/state/c3c/mcp-approvals"
+    printf '承認記録\n' > "$home/.local/state/c3c/mcp-approvals/$launched_name"
+    printf '保護する別プロジェクト\n' > "$home/.local/state/c3c/mcp-approvals/other"
     printf 'ビルドの残骸\n' > "${SCRIPT_DIR}/.build-context/$launched_name/seed"
     rmdir "$root/parent/$kind project"
     [[ "$kind" != absolute && "$kind" != symlink ]] || rmdir "$root/parent"
@@ -1055,7 +1056,7 @@ SHIM
     check "$kind: 削除後も起動時と同じイメージ・ネットワークを清掃する" \
       bash -c '[ "$1" = 0 ] && grep -qxF "localhost/${2}_claude-auth-workspace" "$3/podman-args" && grep -qxF "${2}_default" "$3/podman-args"' _ "$rc" "$launched_name" "$home"
     check "$kind: 対象の台帳・ビルド・承認だけを除去する" \
-      bash -c '! grep -qxF -- "$1" "$2" && grep -qxF -- "$3/other-project" "$2" && [ "$(stat -c %a "$2")" = 600 ] && [ ! -e "$4/.build-context/$5" ] && [ ! -e "$6/.local/state/claude-container/mcp-approvals/$5" ] && [ -f "$6/.local/state/claude-container/mcp-approvals/other" ]' _ "$proj" "$ledger" "$root" "$SCRIPT_DIR" "$launched_name" "$home"
+      bash -c '! grep -qxF -- "$1" "$2" && grep -qxF -- "$3/other-project" "$2" && [ "$(stat -c %a "$2")" = 600 ] && [ ! -e "$4/.build-context/$5" ] && [ ! -e "$6/.local/state/c3c/mcp-approvals/$5" ] && [ -f "$6/.local/state/c3c/mcp-approvals/other" ]' _ "$proj" "$ledger" "$root" "$SCRIPT_DIR" "$launched_name" "$home"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
   # cwd の末尾改行をコマンド置換が落とすと、台帳の改行なしの別エントリに一致して誤対象を清掃する（#108）。
@@ -1793,10 +1794,10 @@ run_config_ro_launcher_tests() {
   # C: 既存の内容・台帳・承認記録・ステージングも --check で変更しない（#55）。
   # A の通常起動が作った台帳と .build-context に加えて、上書き検出用の内容を置く。
   rm -rf "$home/.claude/skills"
-  check "C: 前提の起動台帳がある" test -s "$home/.local/state/claude-container/projects"
+  check "C: 前提の起動台帳がある" test -s "$home/.local/state/c3c/projects"
   printf 'staging sentinel\n' > "$ctx/existing file"
-  mkdir -p "$home/.local/state/claude-container/mcp-approvals"
-  printf 'approval sentinel\n' > "$home/.local/state/claude-container/mcp-approvals/${ctx##*/}"
+  mkdir -p "$home/.local/state/c3c/mcp-approvals"
+  printf 'approval sentinel\n' > "$home/.local/state/c3c/mcp-approvals/${ctx##*/}"
   printf 'project sentinel\n' > "$proj/existing file"
   snapshot_ok=1
   snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
@@ -1811,7 +1812,7 @@ run_config_ro_launcher_tests() {
   mkdir -p "$home/.claude/skills"
 
   # C2: 台帳の実体不在を報告する失敗経路でも、台帳を修復・削除しない。
-  printf '%s\n' "$root/deleted-project" >> "$home/.local/state/claude-container/projects"
+  printf '%s\n' "$root/deleted-project" >> "$home/.local/state/c3c/projects"
   snapshot_ok=1
   snapshot_check_targets > "$root/check-before" 2>> "$LOG_FILE" || snapshot_ok=0
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" --check 2>&1) && rc=0 || rc=$?
@@ -2594,7 +2595,7 @@ else
 fi
 
 # 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（#59）
-check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/claude-container/projects"
+check "起動台帳の記録が隔離 HOME に閉じる" grep -qxF -- "$ENV_PROJECT_DIR" "$ENV_TESTROOT/.local/state/c3c/projects"
 
 rm -rf "$ENV_TESTROOT"
 log ""

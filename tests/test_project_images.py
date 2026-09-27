@@ -94,7 +94,7 @@ class ImageTests(unittest.TestCase):
         self.home.mkdir()
         # 基点の .claude.json（#159 のガードが --check でも検査する）
         (self.home / '.claude.json').write_text('{}\n')
-        self.ledger = self.home / '.local/state/claude-container/projects'
+        self.ledger = self.home / '.local/state/c3c/projects'
         self.ledger.parent.mkdir(parents=True)
         self.missing = str(self.root / '旧 project')
         self.live = str(self.root / 'new project')

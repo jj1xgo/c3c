@@ -1223,3 +1223,14 @@ Expected: `io.c3c.asset-hash`・`io.c3c.base-image`・`io.c3c.ipv6-support`・`i
 - 1 巡目（対象 e793b00）: Codex（gpt-6-astra、`codex exec --sandbox read-only`。依頼文の「コマンド実行はしない」で読めず未実施になったため、読み取り専用コマンドを許可して再実行）は「修正後に渡せる」、Critical 0・Important 7・Minor 3。Claude（claude-opus-5-5、headless 読み取り専用）は「修正後に渡せる」、Critical 0・Important 4・Minor 12。共通の Important は E-R2 の期待の不成立、compose 補間の未検証、Task 2 のテストが entrypoint 後半まで走る点、実装前から緑のテスト。Codex 固有は空値の部分的な新由来 label、symlink の旧 state の清掃漏れ、新 suite の未登録、単独 label の新優先の未検証。Claude 固有は旧 state がマウントポイントのときの `EBUSY`。いずれも反映した。spec の変更（`relevant` 判定と単独 label の「空か欠落」）は Task 5 で行う。
 - 確認限定巡（対象 c06b00a）: Claude は前回 16 件すべて「直った」、新たに L 系テストの挿入位置の曖昧さを指摘。Codex は Important 6 が「一部」（IPv6 の新旧異値の優先と base-image の旧 fallback の検査）、Minor 2 が「一部」（launcher の移行テストの非対応時 skip）。いずれも反映した（L-7・L-8、挿入位置の明記、skip）。
 - 確認限定巡 2 回目（対象 41747fa）: Codex・Claude とも前回の残りが「直った」、判定「実装に渡せる」。計画レビューは収束。
+
+## 実機確認の記録（Task 8 Step 3、2026-09-27、ホスト、findsummits、実装 aa83d97）
+
+- 退避: `~/.local/state/claude-container` を `cp -a` で退避してから実施。
+- 新 launcher × `-b` していない旧イメージ: 初回の通常起動で state 移行の `WARNING` が 1 回出て、`~/.local/state/c3c` へ rename で移った（更新日時が元のまま）。project 設定ゲートは「承認済み（ハッシュ一致）」で確認は出ず、ドリフトの `WARNING` が出た。
+- 同 × `.c3c/env` に `C3C_NO_FIREWALL=1`: 旧イメージの entrypoint が「エグレスファイアウォールは無効です（CLAUDE_CONTAINER_NO_FIREWALL=1）」と表示（compose が新キーの値をコンテナ側の旧名へ渡した）。
+- 同 × 旧キー `CLAUDE_CONTAINER_NO_FIREWALL=1`: 改名を勧める `WARNING` が出て、コンテナ内の `curl -sI https://example.com` が `HTTP/2 200`。
+- 秘密: コンテナ内で `~/.config/c3c/secrets` と `~/.config/claude-container/secrets` に同じファイル名が見えた。
+- `-b` 後の新イメージ × 旧 launcher（v15.0.0 の worktree）× 旧キー: 旧 state を空から作り直して project 設定ゲートの確認が出た（spec どおり）。ドリフトの `WARNING`。新イメージの entrypoint が「エグレスファイアウォールは無効です（C3C_NO_FIREWALL=1）」と表示し、コンテナ内の curl が `HTTP/2 200`。
+- 片付け: `.c3c/env` の一時行を削除、作り直された旧 state を削除、worktree を削除。新 launcher の `c3c --check ~/Projects/findsummits` が PASS 1・WARN 0・FAIL 0（ドリフトと旧 state の警告なし、台帳は `~/.local/state/c3c/projects`）。
+- not run: `C3C_IPV6=1` の実機確認（findsummits は IPv6 を使っていない。IPv6 は launcher テストと entrypoint テストで確認）。

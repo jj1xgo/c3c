@@ -79,7 +79,7 @@
 - project 設定の `hooks`（Codex 自身の信頼確認に委ねる）、`js_repl_node_path`、`shell_environment_policy`、helper の無い HTTP エントリの `env_http_headers`・`bearer_token_env_var` の扱いは現行（protocol 1）と同じく対象外。必要なら別 Issue で扱う。
 - Claude 経路でリポジトリ同梱の設定から plugin を有効化できるか（`.claude/settings.json` の `enabledPlugins`・`extraKnownMarketplaces` 等）は未確認。一次情報で確認したうえで別 Issue の候補として記録する。
 - hooks・sandbox 設定など MCP 以外の project 設定の扱いは現行のまま。
-- 同梱 default を `latest` にすることはしない。
+- 同梱 default を `latest` にすることはしない（2026-09-29 に変更。上記「判断変更」参照）。
 
 ## 検証の方針
 

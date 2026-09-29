@@ -22,7 +22,7 @@ class EntrypointTests(unittest.TestCase):
                 fake = tmp / 'sudo'
                 fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD"\nexit 1\n')
                 fake.chmod(0o755)
-                env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), 'CLAUDE_CONTAINER_IPV6': value}
+                env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), 'C3C_IPV6': value}
                 response = subprocess.run(['bash', str(ROOT / 'entrypoint.sh')], env=env, text=True, capture_output=True)
                 self.assertEqual(response.returncode, 1)
                 self.assertIn('起動を中止', response.stderr)
@@ -51,7 +51,7 @@ class EntrypointTests(unittest.TestCase):
                     fake.chmod(0o755)
                 record = tmp / 'record'
                 env = {'PATH': td + ':' + os.defpath, 'RECORD': str(record),
-                       'CLAUDE_CONTAINER_IPV6': value, 'REFRESH_HELPER': str(tmp / 'helper')}
+                       'C3C_IPV6': value, 'REFRESH_HELPER': str(tmp / 'helper')}
                 proc = subprocess.Popen(['bash', '-c', source + '\nwait'], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
                 try:
@@ -77,7 +77,7 @@ class EntrypointTests(unittest.TestCase):
             record = pathlib.Path(td) / 'record'
             response = subprocess.run(['bash', str(ROOT / 'entrypoint.sh')],
                                       env={'PATH': td + ':' + os.defpath, 'RECORD': str(record),
-                                           'CLAUDE_CONTAINER_IPV6': 'true'}, text=True, capture_output=True)
+                                           'C3C_IPV6': 'true'}, text=True, capture_output=True)
             self.assertEqual(response.returncode, 1)
             self.assertIn('C3C_IPV6', response.stderr)
             self.assertFalse(record.exists())
@@ -101,37 +101,26 @@ class EntrypointTests(unittest.TestCase):
             record = (tmp / 'record').read_text().splitlines() if (tmp / 'record').exists() else None
             return response, record
 
-    def test_new_key_preferred_and_old_key_fallback(self):
-        cases = [
-            ({'C3C_IPV6': '1'}, ['--ipv6']),
-            ({'CLAUDE_CONTAINER_IPV6': '1'}, ['--ipv6']),
-            ({'C3C_IPV6': '1', 'CLAUDE_CONTAINER_IPV6': '1'}, ['--ipv6']),
-            ({'C3C_IPV6': '', 'CLAUDE_CONTAINER_IPV6': '1'}, ['--ipv6']),
-            ({'C3C_IPV6': '0', 'CLAUDE_CONTAINER_IPV6': '0'}, []),
-        ]
-        for env_extra, expected in cases:
+    def test_new_key_selects_ipv6(self):
+        for env_extra, expected in (({'C3C_IPV6': '1'}, ['--ipv6']), ({'C3C_IPV6': '0'}, []), ({'C3C_IPV6': ''}, [])):
             with self.subTest(env=env_extra):
                 response, record = self.run_first_half(env_extra)
                 self.assertEqual(response.returncode, 1)
                 self.assertEqual(record, ['/usr/local/bin/init-firewall.sh', *expected])
 
-    def test_conflicting_new_and_old_values_stop_before_firewall(self):
-        for env_extra in ({'C3C_IPV6': '1', 'CLAUDE_CONTAINER_IPV6': '0'},
-                          {'C3C_NO_FIREWALL': '1', 'CLAUDE_CONTAINER_NO_FIREWALL': '0'}):
+    def test_legacy_keys_are_ignored_on_the_safe_side(self):
+        # 改名 第 2 段: 旧キーだけが渡っても IPv6 にも無効化にもしない（ファイアウォール有効・IPv4 のまま）。
+        for env_extra in ({'CLAUDE_CONTAINER_IPV6': '1'}, {'CLAUDE_CONTAINER_NO_FIREWALL': '1'}):
             with self.subTest(env=env_extra):
                 response, record = self.run_first_half(env_extra)
-                self.assertEqual(response.returncode, 1)
-                self.assertIsNone(record)
-                self.assertIn('ERROR', response.stderr)
+                self.assertEqual(record, ['/usr/local/bin/init-firewall.sh'])
+                self.assertNotIn('エグレスファイアウォールは無効です', response.stderr)
 
-    def test_no_firewall_new_and_old_keys(self):
-        for env_extra in ({'C3C_NO_FIREWALL': '1'}, {'CLAUDE_CONTAINER_NO_FIREWALL': '1'},
-                          {'C3C_NO_FIREWALL': '1', 'CLAUDE_CONTAINER_NO_FIREWALL': '1'}):
-            with self.subTest(env=env_extra):
-                response, record = self.run_first_half(env_extra)
-                self.assertEqual(response.returncode, 0, response.stderr)
-                self.assertIsNone(record)
-                self.assertIn('エグレスファイアウォールは無効です', response.stderr)
+    def test_no_firewall_new_key(self):
+        response, record = self.run_first_half({'C3C_NO_FIREWALL': '1'})
+        self.assertEqual(response.returncode, 0, response.stderr)
+        self.assertIsNone(record)
+        self.assertIn('エグレスファイアウォールは無効です', response.stderr)
 
 
 if __name__ == '__main__':

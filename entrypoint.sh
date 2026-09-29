@@ -57,19 +57,10 @@ readonly CODEX_START_MODE CODEX_READ_ONLY
 
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
 # 無効化する場合は利用側プロジェクトの .c3c/env に C3C_NO_FIREWALL=1 を書く。
-# 改名 第 1 段: 新キー（C3C_*）を優先し、未設定・空なら旧キー（CLAUDE_CONTAINER_*）を読む。旧 launcher の
-# compose（旧キーだけを渡す）でこのイメージを起動したときも従来どおり効かせるため。新 compose は同じ値を
-# 両方の名前で渡すので、値が食い違うのは想定外の経路 — firewall より前に止める。
-c3c_resolve_mode_key() {
-  local new_value="$1" old_value="$2" name="$3"
-  if [ -n "$new_value" ] && [ -n "$old_value" ] && [ "$new_value" != "$old_value" ]; then
-    echo "ERROR: $name と旧名の値が一致しません（$new_value / $old_value）。起動を中止します" >&2
-    exit 1
-  fi
-  if [ -n "$new_value" ]; then printf '%s' "$new_value"; else printf '%s' "$old_value"; fi
-}
-C3C_IPV6_MODE=$(c3c_resolve_mode_key "${C3C_IPV6:-}" "${CLAUDE_CONTAINER_IPV6:-}" C3C_IPV6) || exit 1
-C3C_NO_FIREWALL_MODE=$(c3c_resolve_mode_key "${C3C_NO_FIREWALL:-}" "${CLAUDE_CONTAINER_NO_FIREWALL:-}" C3C_NO_FIREWALL) || exit 1
+# 改名 第 2 段（v16）で旧名の env キーの読み取りを削除した（launcher が旧キーを拒否し、compose は新キーだけを
+# 渡す）。旧キーだけが渡っても無効化・IPv6 にはしない（ファイアウォール有効・IPv4 のまま＝安全側）。
+C3C_IPV6_MODE=${C3C_IPV6:-}
+C3C_NO_FIREWALL_MODE=${C3C_NO_FIREWALL:-}
 firewall_args=()
 case "${C3C_IPV6_MODE:-0}" in
   ''|0) ;;

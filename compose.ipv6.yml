@@ -8,4 +8,3 @@ services:
       net.ipv6.conf.default.disable_ipv6: 0
     environment:
       C3C_IPV6: "1"
-      CLAUDE_CONTAINER_IPV6: "1"

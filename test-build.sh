@@ -1521,51 +1521,36 @@ DUMMY
     grep -qxF "C3C_GITCONFIG_SOURCE=$e_gitcfg" "$root/compose-env"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # E-R1〜R6: 旧製品名の env キー（CLAUDE_CONTAINER_*）の解決（改名 第 1 段）。
-  # E-R1: 旧キーだけ → WARNING で改名を勧め、compose には新キーの値だけが渡る（旧キーは unset）
+  # E-L1〜L5: 旧製品名の env キー（CLAUDE_CONTAINER_*）は v16 で廃止（改名 第 2 段）。
+  # E-L1: .c3c/env の旧キー → ERROR で新キー名を案内し、compose へ進まない
   printf 'CLAUDE_CONTAINER_NO_FIREWALL=1\n' > "$envf"
   run_launcher
-  check "E-R1: 旧キーだけは WARNING 付きで有効（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && printf '%s' \"\$0\" | grep -q 'WARNING:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' \
-      && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'" "$out"
-  printf '%s\n' "$out" >> "$LOG_FILE"
-  # E-R2: 新キーだけ → WARNING なし、compose に新キー
-  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
-  run_launcher
-  check "E-R2: 新キーだけは改名の WARNING なし（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && ! printf '%s' \"\$0\" | grep -q 'CLAUDE_CONTAINER_NO_FIREWALL' && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'" "$out"
-  # （NO_FIREWALL=1 の警告文は、ファイルに実際に書かれたキー名だけを出す — Step 3。旧名を常に併記すると上の否定が成り立たない）
-  check "E-R2: 新キーでも NO_FIREWALL=1 の WARNING が出る" \
-    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*C3C_NO_FIREWALL=1.*無効化'" "$out"
-  printf '%s\n' "$out" >> "$LOG_FILE"
-  # E-R3: 新旧の両方（値が同じでも、ファイルとシェルに分かれていても）→ ERROR で compose へ進まない
-  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
-  run_launcher CLAUDE_CONTAINER_NO_FIREWALL=1
-  check "E-R3: ファイルの新キーとシェルの旧キーの併存は ERROR（rc=$rc）" \
+  check "E-L1: env ファイルの旧キーは ERROR（rc=$rc）" \
     bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' && [ ! -e '$root/compose-env' ]" "$out"
-  printf 'CLAUDE_CONTAINER_IPV6=1\nC3C_IPV6=1\n' > "$envf"
-  run_launcher
-  check "E-R3: 同じファイルの新旧併存も ERROR（rc=$rc）" \
-    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_IPV6.*C3C_IPV6' && [ ! -e '$root/compose-env' ]" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
-  # E-R4: 空文字は未設定扱い（空の旧キーと新キーは併存にならない）
-  printf 'CLAUDE_CONTAINER_NO_FIREWALL=\nC3C_NO_FIREWALL=1\n' > "$envf"
-  run_launcher
-  check "E-R4: 空の旧キーは未設定扱い（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'"
-  # E-R5: env ファイルなしで、シェル環境の旧キーも解決される
+  # E-L2: シェル環境だけの旧キーも ERROR（許可リスト外なので env ファイルの汎用 WARNING には頼れない）
   rm -f "$envf"
   run_launcher CLAUDE_CONTAINER_NO_FIREWALL=1
-  check "E-R5: シェル環境の旧キーも新キーへ写る（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! grep -q '^CLAUDE_CONTAINER_NO_FIREWALL=' '$root/compose-env'"
-  # E-R6: --check は旧キーを [WARN]、併存を [FAIL] に集計する（env ファイルなし・シェル環境でも）
-  # （fixture に packages.txt 等が無く、check_one_project は常に WARN を立てるので、「結果: WARN」ではなく改名の警告行で判定する）
+  check "E-L2: シェル環境の旧キーも ERROR（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR:.*CLAUDE_CONTAINER_NO_FIREWALL.*C3C_NO_FIREWALL' && [ ! -e '$root/compose-env' ]" "$out"
+  # E-L3: 新キーだけ → 起動し、compose に新キーだけが渡る。NO_FIREWALL=1 の WARNING は新キー名で出る
+  printf 'C3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-L3: 新キーだけは起動する（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env' && ! printf '%s' \"\$0\" | grep -q 'CLAUDE_CONTAINER_'" "$out"
+  check "E-L3: 新キーの NO_FIREWALL=1 は WARNING を出す" \
+    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING:.*C3C_NO_FIREWALL=1.*無効化'" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # E-L4: 空の旧キーは未設定扱い（ERROR にしない。許可リスト外の汎用 WARNING は出る）
+  printf 'CLAUDE_CONTAINER_NO_FIREWALL=\nC3C_NO_FIREWALL=1\n' > "$envf"
+  run_launcher
+  check "E-L4: 空の旧キーは ERROR にしない（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'C3C_NO_FIREWALL=1' '$root/compose-env'"
+  # E-L5: --check は旧キー（シェル環境）を FAIL に集計する
+  rm -f "$envf"
   run_launcher_check CLAUDE_CONTAINER_IPV6=0
-  check "E-R6: --check は旧キーを改名の WARNING で示す（rc=$rc）" \
-    bash -c "printf '%s' \"\$0\" | grep -q 'WARNING: CLAUDE_CONTAINER_IPV6 は旧名です。C3C_IPV6'" "$out"
-  run_launcher_check CLAUDE_CONTAINER_IPV6=0 C3C_IPV6=0
-  check "E-R6: --check は併存を FAIL（rc=$rc）" \
-    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR: CLAUDE_CONTAINER_IPV6 と C3C_IPV6 が両方' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
+  check "E-L5: --check は旧キーを FAIL（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR: CLAUDE_CONTAINER_IPV6' && printf '%s' \"\$0\" | grep -q '結果: FAIL'" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # E4: 廃止変数を env ファイルに書いた場合の移行案内（ERROR）は許可リスト化後も維持される

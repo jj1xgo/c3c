@@ -40,14 +40,10 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       DISABLE_AUTOUPDATER: "1"
-      # エグレス制限の無効化。ホスト側は新キー C3C_NO_FIREWALL だけから補間する（launcher が旧キーを
-      # 新キーへ解決済み）。コンテナへは新旧両方の名前で同じ値を渡す — 改名 第 1 段では -b していない
-      # 旧イメージの entrypoint.sh が旧名しか読まないため（第 2 段で旧名を外す）。
+      # エグレス制限の無効化。ホスト側の C3C_NO_FIREWALL（.c3c/env かシェル環境）から補間する。
       C3C_NO_FIREWALL: ${C3C_NO_FIREWALL:-}
-      CLAUDE_CONTAINER_NO_FIREWALL: ${C3C_NO_FIREWALL:-}
-      # mode と sysctls/network の不一致を避ける。IPv6用overrideが固定値1へ変える（新旧両方の名前）。
+      # mode と sysctls/network の不一致を避ける。IPv6用overrideが固定値1へ変える。
       C3C_IPV6: "0"
-      CLAUDE_CONTAINER_IPV6: "0"
       # 起動する CLI（c3c 第1段階）。launcher が CLI 引数から導出して明示 export する値だけを渡す
       # （.c3c/env の許可リスト外）。entrypoint.sh が enum を再検証する。
       # CC_CODEX_START_MODE の既定は run（検査用は compose.codex-preflight.yml を選んだ launcher が

@@ -181,19 +181,15 @@ if [ "${LINT_SKIP_COMPOSE:-}" = "1" ]; then
   echo "WARNING: LINT_SKIP_COMPOSE=1 のため compose config 検証をスキップしました。" >&2
 elif command -v podman >/dev/null 2>&1; then
   podman compose -f compose.yml config >/dev/null || status=1
-  # 改名 第 1 段（C-1）: コンテナ側の新旧両方の名前が、ホスト側の新キー C3C_NO_FIREWALL だけから補間されること。
-  # 旧名側の補間元を旧キーに戻すと、.c3c/env を新キーへ書き換えた利用者の旧イメージで無効化が黙って効かなくなる。
-  # 値の引用符は provider 依存（podman-compose は '1'、docker compose は "1"）なので両方を許す。
+  # 改名 第 2 段（C-1）: コンテナ側の C3C_NO_FIREWALL がホスト側の C3C_NO_FIREWALL から補間され、旧名
+  # CLAUDE_CONTAINER_* がコンテナへ渡らないこと。値の引用符は provider 依存なので両方を許す。
   q="['\"]?"
-  if nf_on=$(env -u CLAUDE_CONTAINER_NO_FIREWALL C3C_NO_FIREWALL=1 podman compose -f compose.yml config) \
-      && nf_off=$(env -u C3C_NO_FIREWALL CLAUDE_CONTAINER_NO_FIREWALL=1 podman compose -f compose.yml config); then
-    for key in C3C_NO_FIREWALL CLAUDE_CONTAINER_NO_FIREWALL; do
-      grep -qE -- "^[[:space:]]*${key}: ${q}1${q}[[:space:]]*\$" <<<"$nf_on" \
-        || { echo "ERROR: C3C_NO_FIREWALL=1 のとき compose のコンテナ側 $key が 1 になりません" >&2; status=1; }
-      if grep -qE -- "^[[:space:]]*${key}: ${q}1${q}[[:space:]]*\$" <<<"$nf_off"; then
-        echo "ERROR: compose のコンテナ側 $key がホスト側の旧キー CLAUDE_CONTAINER_NO_FIREWALL から補間されています" >&2; status=1
-      fi
-    done
+  if nf_on=$(C3C_NO_FIREWALL=1 podman compose -f compose.yml config); then
+    grep -qE -- "^[[:space:]]*C3C_NO_FIREWALL: ${q}1${q}[[:space:]]*\$" <<<"$nf_on" \
+      || { echo "ERROR: C3C_NO_FIREWALL=1 のとき compose のコンテナ側 C3C_NO_FIREWALL が 1 になりません" >&2; status=1; }
+    if grep -q 'CLAUDE_CONTAINER_' <<<"$nf_on"; then
+      echo "ERROR: compose.yml に旧名の env キー CLAUDE_CONTAINER_* が残っています" >&2; status=1
+    fi
   else
     status=1
   fi
@@ -207,7 +203,7 @@ elif command -v podman >/dev/null 2>&1; then
       podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml config); then
     # q は上の C-1 で定義済み（値の引用符の provider 差を許す）。
     for needle in '/tmp/lint-plugins-alias' 'fe80::1' \
-        "net\.ipv6\.conf\.all\.disable_ipv6: ${q}0${q}" "C3C_IPV6: ${q}1${q}" "CLAUDE_CONTAINER_IPV6: ${q}1${q}"; do
+        "net\.ipv6\.conf\.all\.disable_ipv6: ${q}0${q}" "C3C_IPV6: ${q}1${q}"; do
       grep -qE -- "$needle" <<<"$merged" \
         || { echo "ERROR: compose の 3 ファイル同時 config に '$needle' がありません（override のマージで消えています）" >&2; status=1; }
     done

@@ -13,7 +13,7 @@ CONTAINER_SIDE = ('Dockerfile.claude', 'compose.yml', 'compose.ipv6.yml', 'compo
                   'compose.agents.yml', 'compose.codex-plugins.yml', 'entrypoint.sh', 'init-firewall.sh',
                   'ipv6-firewall.py', 'firewall-refresh.py', 'git-askpass.sh', 'codex-launcher.sh',
                   'codex-mcp-audit.py', 'claude-project-audit.py')
-LEGACY = re.compile(r'/etc/claude-container|\.config/claude-container')
+LEGACY = re.compile(r'/etc/claude-container|\.config/claude-container|CLAUDE_CONTAINER_')
 
 
 class ContainerPathTests(unittest.TestCase):

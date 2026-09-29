@@ -185,8 +185,6 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 | `TZ` | ホストから自動検出 | コンテナ内のタイムゾーン |
 | `C3C_IPV6` | `0` | `1` で IPv4/IPv6 を併用し両方に許可リストを適用する。未指定・空・0は既存IPv4モード、その他は起動と `--check` で拒否。初回は対応イメージの `-b` が必要（後述） |
 | `C3C_NO_FIREWALL` | (unset) | `1` でエグレス制限（後述）を無効化 |
-| `CLAUDE_CONTAINER_IPV6` | — | `C3C_IPV6` の旧名。`WARNING` 付きで同じ意味に読む（次のメジャー版で廃止）。新名と同時に設定すると起動と `--check` で拒否 |
-| `CLAUDE_CONTAINER_NO_FIREWALL` | — | `C3C_NO_FIREWALL` の旧名。扱いは上と同じ |
 | `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス。未設定なら c3c 同梱の空ファイルを read-only マウントする（後述） |
 | `SECRETS_DIR` | (unset) | GitHub トークン等のシークレットをコンテナへ持ち込む唯一の機構のホスト側パス（後述「GitHub トークンの配線」節） |
 | `CODEX_DIR` | (unset) | Codex CLI の認証情報ディレクトリ（`auth.json` 等）をコンテナへ rw マウントするホスト側パス。専用ディレクトリを推奨（後述「Codex CLI をセカンドオピニオンとして使う」節）。絶対パスか `~/` 始まりで指定する（相対パスは起動を中止する）。実ホストの `~/.codex` と同じ実体を指す指定（表記ゆれ・シンボリックリンクを含む）は起動を中止する |

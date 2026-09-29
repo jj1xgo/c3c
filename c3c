@@ -792,7 +792,7 @@ run_main_compose() {
 #
 # 許可リスト（#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
 # 影響しないものと、コンテナのモードに使うキー（TZ・C3C_NO_FIREWALL・C3C_IPV6。旧名 CLAUDE_CONTAINER_* は
-# guard_env_key_renames() が新キーへ解決する）。一方 PATH・HOME・
+# v16 で廃止し、guard_legacy_env_keys() が拒否する）。一方 PATH・HOME・
 # LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
 # ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
 # ことを実測）。拒否リストは列挙が閉じないので、許可リストで受け付けるキーを固定し、それ以外は
@@ -818,8 +818,6 @@ ENV_FILE_ALLOWED_KEYS=(
   TZ
   C3C_NO_FIREWALL
   C3C_IPV6
-  CLAUDE_CONTAINER_NO_FIREWALL
-  CLAUDE_CONTAINER_IPV6
   GITCONFIG_FILE
   SECRETS_DIR
   CODEX_DIR
@@ -921,29 +919,22 @@ guard_legacy_vars() {
   fi
 }
 
-# 旧製品名の env キー（CLAUDE_CONTAINER_*）を新キー（C3C_*）へ解決する（改名 第 1 段。spec
-# docs/superpowers/specs/2026-09-27-rename-legacy-identifiers-design.md）。旧キーは WARNING 付きで有効。
-# 空文字は未設定と同じ扱い。新旧の両方が空でなければ、値が同じでも混ぜずに止める（.c3c/env と
-# シェル環境のどちらから来たかは問わない）。解決後は旧キーを unset し、以降の launcher と compose の
-# 補間は新キーだけを見る。compose は新キーの値をコンテナへ新旧両方の名前で渡すので、旧イメージの
-# entrypoint.sh も従来どおり動く。C3C_* は readonly にしない（load_env_file の無条件 export と衝突する）。
-guard_env_key_renames() {
-  local _ekr_pair _ekr_old _ekr_new _ekr_rc=0
-  for _ekr_pair in CLAUDE_CONTAINER_NO_FIREWALL:C3C_NO_FIREWALL CLAUDE_CONTAINER_IPV6:C3C_IPV6; do
-    _ekr_old="${_ekr_pair%%:*}"
-    _ekr_new="${_ekr_pair##*:}"
-    if [[ -n "${!_ekr_old:-}" && -n "${!_ekr_new:-}" ]]; then
-      guard_fail "ERROR: $_ekr_old と $_ekr_new が両方設定されています（値が同じでも混ぜません）。" \
-        "旧キー $_ekr_old を .c3c/env とシェル環境から削除し、$_ekr_new だけを使ってください。" || _ekr_rc=1
-      continue
+# 旧製品名の env キー（CLAUDE_CONTAINER_*）は v16 で廃止した（改名 第 2 段。spec
+# docs/superpowers/specs/2026-09-27-rename-legacy-identifiers-design.md）。許可リスト外のキーは load_env_file() で
+# export されず汎用の「解釈しない」WARNING になるだけなので、guard_legacy_vars() と同じく .c3c/env の行と
+# シェル環境の両方を見て、空でない値があれば止めて新キー名を案内する（黙ってファイアウォール有効・IPv4 で
+# 起動し、「無効にならない」と迷わせないため）。空文字は未設定と同じ扱い。
+guard_legacy_env_keys() {
+  local _lek_pair _lek_old _lek_new _lek_rc=0
+  for _lek_pair in CLAUDE_CONTAINER_NO_FIREWALL:C3C_NO_FIREWALL CLAUDE_CONTAINER_IPV6:C3C_IPV6; do
+    _lek_old="${_lek_pair%%:*}"
+    _lek_new="${_lek_pair##*:}"
+    if [[ -n "${!_lek_old:-}" ]] || { [[ -n "$ENV_FILE" ]] && grep -qE "^${_lek_old}=.+" "$ENV_FILE" 2>/dev/null; }; then
+      guard_fail "ERROR: $_lek_old は v16 で廃止しました（旧製品名の env キー）。$_lek_new に書き換えてください。" \
+        "  .c3c/env とシェルの起動ファイル（export $_lek_old=...）の両方を確認してください（README「旧名 claude-container からの移行（v16）」節）。起動を中止します。" || _lek_rc=1
     fi
-    if [[ -n "${!_ekr_old:-}" ]]; then
-      guard_warn "WARNING: $_ekr_old は旧名です。$_ekr_new に書き換えてください（旧名は次のメジャー版で使えなくなります。README「環境変数」節）。"
-      export "$_ekr_new=${!_ekr_old}"
-    fi
-    unset "$_ekr_old"
   done
-  return "$_ekr_rc"
+  return "$_lek_rc"
 }
 
 # ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）と、~/.gitconfig の bind 元の決定（#149）。
@@ -2176,9 +2167,8 @@ prepare_codex_host_plugins() {
 guard_env_boundary_keys() {
   [[ -n "$ENV_FILE" ]] || return 0
   local key nf_key
-  # 実際に書かれたキー名を出す（新旧を常に併記すると、新キーだけの利用者にも旧名が表示される）。
   # -m 1 で最初の 1 行だけ（head へのパイプは SIGPIPE で偽になりうる）。不一致は rc 1 で if の偽。
-  if nf_key=$(grep -m 1 -oE '^(C3C|CLAUDE_CONTAINER)_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null); then
+  if nf_key=$(grep -m 1 -oE '^C3C_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null); then
     guard_warn "WARNING: $ENV_FILE で ${nf_key%%=*}=1 が設定されています。エグレスファイアウォールは無効化されます。"
   fi
   local -a boundary_keys_found=()
@@ -2670,7 +2660,7 @@ check_one_project() {
 
   guard_env_gh_token || true
   guard_legacy_vars || true
-  guard_env_key_renames || true
+  guard_legacy_env_keys || true
   guard_gitconfig_file || true
   guard_secrets_dir || true
   guard_codex_dir || true
@@ -3059,7 +3049,7 @@ readonly CHECK_MODE
 
 guard_env_gh_token
 guard_legacy_vars
-guard_env_key_renames
+guard_legacy_env_keys
 guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir

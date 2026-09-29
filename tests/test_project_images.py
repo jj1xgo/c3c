@@ -5,6 +5,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,7 +16,7 @@ from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / 'project-images.py'
-LABEL = 'claude-container.project-'
+LEGACY_LABEL = 'claude-container.project-'
 NEW_LABEL = 'io.c3c.project-'
 IMAGE_A = 'a' * 64
 IMAGE_B = 'b' * 64
@@ -112,7 +114,7 @@ class ImageTests(unittest.TestCase):
                     'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
         self.state = {'images': [self.item(self.missing)], 'containers': []}
 
-    def item(self, path, image_id=IMAGE_A, labels=True, namespace=LABEL):
+    def item(self, path, image_id=IMAGE_A, labels=True, namespace=NEW_LABEL):
         key = reference_key(path)
         metadata = {namespace + 'metadata': '1', namespace + 'path': path,
                     namespace + 'name': key} if labels else {'claude-container.asset-hash': 'old'}
@@ -205,21 +207,21 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(self.state['images'], [])
 
     def test_partial_new_group_with_empty_value_is_invalid(self):
-        # 新の組のキーが一部だけ（値は空）で旧の組が完全 → 新の組を選び、不完全なので invalid（旧で補わず、
-        # 値が全部空だからといって台帳の legacy 照合へも落とさない）。
-        image = self.item(self.missing)
+        # 新の組のキーが一部だけ（値は空）で、名前と台帳は一致 → 不完全なので invalid（値が全部空だからと
+        # いって台帳の legacy 照合へ落とさない）。
+        image = self.item(self.missing, labels=False)
         image['Labels'][NEW_LABEL + 'metadata'] = ''
         self.state['images'] = [image]
         self.assert_kept(self.run_helper(clean=True))
 
     def test_incomplete_new_group_does_not_borrow_from_complete_old_group(self):
-        image = self.item(self.missing)                       # 旧の組は完全
+        image = self.item(self.missing, namespace=LEGACY_LABEL)  # 旧の組は完全
         image['Labels'][NEW_LABEL + 'metadata'] = '1'          # 新の組は不完全（path・name なし）
         self.state['images'] = [image]
         self.assert_kept(self.run_helper(clean=True))
 
     def test_new_group_wins_over_old_group_pointing_elsewhere(self):
-        image = self.item(self.live)                           # 旧の組は存在するパス
+        image = self.item(self.live, namespace=LEGACY_LABEL)     # 旧の組は存在するパス
         image['Labels'].update({NEW_LABEL + 'metadata': '1', NEW_LABEL + 'path': self.missing,
                                 NEW_LABEL + 'name': reference_key(self.missing)})
         image['Names'] = [f'localhost/{reference_key(self.missing)}_claude-auth-workspace:latest']
@@ -234,12 +236,121 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state['images'], [])
 
-    def test_rewritten_ledger_still_finds_old_labeled_image(self):
+    def test_rewritten_ledger_still_finds_labeled_image(self):
         self.ledger.write_text(self.live + '\n')
         self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
         result = self.run_helper(clean=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state['images'], [])
+
+    def v15_image(self, path):
+        """v15.1 のイメージ: 新旧両方の由来 label を同じ値で持つ。"""
+        image = self.item(path)
+        image['Labels'].update({LEGACY_LABEL + k: v for k, v in (
+            ('metadata', '1'), ('path', path), ('name', reference_key(path)))})
+        return image
+
+    def legacy_only_image(self, path, image_id=IMAGE_A):
+        """v15.0 以前のプロジェクトイメージ: 由来 label を旧名でだけ持つ。"""
+        image = self.item(path, image_id=image_id, namespace=LEGACY_LABEL)
+        image['Labels']['claude-container.asset-hash'] = 'old'
+        return image
+
+    def clean_hint(self, stdout):
+        line = next(l for l in stdout.splitlines() if 'c3c --clean' in l)
+        return re.search(r'(c3c --clean .+?)（最後に dangling', line).group(1)
+
+    # P2-1: 旧 label だけのイメージは、元パスが欠落して台帳にあっても削除しない。ID とクォート済みの --clean の案内を WARN で出す。
+    def test_legacy_only_image_is_not_cleaned_and_is_reported(self):
+        self.state['images'] = [self.legacy_only_image(self.missing)]
+        result = self.run_helper(clean=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.state['images']), 1)
+        self.assertIn('[WARN]', result.stdout)
+        self.assertIn(IMAGE_A, result.stdout)
+        # 個別の削除は親を残す rmi で案内し、全体 prune を伴う --clean は副作用を添えた別操作として示す（PR #186）。
+        self.assertIn(f'不要なら podman rmi --no-prune {IMAGE_A} で削除', result.stdout)
+        self.assertIn(f'c3c --clean {shlex.quote(self.missing)}', result.stdout)
+        self.assertIn('dangling イメージ全体を prune', result.stdout)
+        # 案内をシェルで分割すると、パスが 1 つの引数に戻る（self.missing は空白を含む）。
+        self.assertEqual(shlex.split(self.clean_hint(result.stdout)), ['c3c', '--clean', self.missing])
+
+    # P2-1b: 引用符・シェルの特殊文字を含むパスでも、案内は 1 つの引数へ戻る（貼り付けても別コマンドにならない）。
+    def test_legacy_clean_hint_quotes_shell_metacharacters(self):
+        tricky = str(Path(self.missing).parent / "it's $(touch x); p")
+        self.ledger.write_text(tricky + '\n')
+        self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
+        self.state['images'] = [self.legacy_only_image(tricky)]
+        result = self.run_helper()
+        self.assertEqual(shlex.split(self.clean_hint(result.stdout)), ['c3c', '--clean', tricky])
+
+    # P2-2: 台帳に無い旧 label だけのイメージは podman rmi --no-prune の案内だけになる（--clean は示さない）。
+    def test_legacy_only_image_outside_ledger_suggests_rmi(self):
+        self.ledger.write_text(self.live + '\n')
+        self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
+        self.state['images'] = [self.legacy_only_image(self.missing)]
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'podman rmi --no-prune {IMAGE_A}', result.stdout)
+        self.assertNotIn('c3c --clean', result.stdout)
+
+    # P2-3: v15.1 のイメージ（新旧両方の label）は新の組で従来どおり清掃できる。
+    def test_v15_image_is_cleaned_by_new_labels(self):
+        self.ledger.write_text(self.live + '\n')
+        self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
+        self.state['images'] = [self.v15_image(self.missing)]
+        result = self.run_helper(clean=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state['images'], [])
+
+    # P2-4: 名前なしの旧版プロジェクトイメージ（-b で置き換えられたもの）は件数に埋もれさせず WARN で示す。
+    def test_unnamed_legacy_only_image_is_reported(self):
+        image = self.legacy_only_image(self.missing)
+        image['Names'] = []
+        self.state['images'] = [image]
+        result = self.run_helper()
+        self.assertIn('[WARN]', result.stdout)
+        self.assertIn(f'podman rmi --no-prune {IMAGE_A}', result.stdout)
+
+    # P2-5: 対象を指定した診断では、台帳に無くても名前がその対象のイメージなら示す。
+    def test_targeted_check_reports_legacy_image_outside_ledger(self):
+        self.ledger.write_text(self.live + '\n')
+        self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
+        self.state['images'] = [self.legacy_only_image(self.missing)]
+        result = self.run_helper(paths=[self.missing])
+        self.assertIn('[WARN]', result.stdout)
+        self.assertIn(IMAGE_A, result.stdout)
+
+    # P2-5b: 対象を指定した診断でも、名前なしの旧版イメージは示す（どの対象のものかは値を読まずに決められないので、対象を問わず示す）。
+    def test_targeted_check_reports_unnamed_legacy_image(self):
+        image = self.legacy_only_image(self.missing)
+        image['Names'] = []
+        self.state['images'] = [image]
+        result = self.run_helper(paths=[self.live])
+        self.assertIn('[WARN]', result.stdout)
+        self.assertIn(f'podman rmi --no-prune {IMAGE_A}', result.stdout)
+
+    # P2-7: 名前がプロジェクトイメージの形で、旧の由来 label が 3 つとも空の v15.0 以前のイメージも削除しない
+    # （空の旧 label を「label なし」とみなして名前と台帳の照合で清掃しない。PR 前レビューの指摘）。
+    def test_named_legacy_image_with_empty_old_labels_is_kept(self):
+        image = self.item(self.missing, labels=False)
+        image['Labels'].update({LEGACY_LABEL + k: '' for k in ('metadata', 'path', 'name')})
+        self.state['images'] = [image]
+        result = self.run_helper(clean=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.state['images']), 1)
+        self.assertIn('[WARN]', result.stdout)
+        self.assertIn(IMAGE_A, result.stdout)
+
+    # P2-6: 中間イメージ（新旧の単独 label だけ、由来 label なし、名前なし）は ID を出さずに件数に入れる。
+    def test_v15_intermediate_images_are_counted_without_id_noise(self):
+        image = self.item(self.live, labels=False)
+        image['Labels']['io.c3c.asset-hash'] = 'x'
+        image['Names'] = []
+        self.state['images'] = [image]
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(IMAGE_A, result.stdout)
 
     def test_legacy_orphan_is_report_only(self):
         self.state['images'] = [self.item(self.missing, labels=False)]
@@ -310,7 +421,7 @@ class ImageTests(unittest.TestCase):
         for field, value in (('metadata', '2'), ('path', '../relative'), ('name', 'wrong')):
             with self.subTest(field=field):
                 self.state['images'] = [self.item(self.missing)]
-                self.state['images'][0]['Labels'][LABEL + field] = value
+                self.state['images'][0]['Labels'][NEW_LABEL + field] = value
                 self.assert_kept(self.run_helper(clean=True))
 
     def test_colliding_legacy_keys_do_not_choose_one_ledger_path(self):
@@ -461,7 +572,7 @@ class ImageTests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'rmi' for c in self.calls))
 
     def test_label_metadata_reaches_run_and_build_without_env_override(self):
-        conf = Path(self.live) / '.claude-container.d'
+        conf = Path(self.live) / '.c3c'
         conf.mkdir()
         (conf / 'env').write_text('CC_PROJECT_METADATA=2\nCC_PROJECT_PATH=/wrong\nCC_PROJECT_NAME=wrong\n')
         self.state['images'] = [self.item(self.live)]
@@ -523,7 +634,7 @@ exit 2
 
     def test_legacy_no_metadata_and_three_empty_metadata_labels_are_equivalent(self):
         self.state['images'] = [self.item(self.missing, labels=False)]
-        self.state['images'][0]['Labels'].update({LABEL + k: '' for k in ('metadata', 'path', 'name')})
+        self.state['images'][0]['Labels'].update({NEW_LABEL + k: '' for k in ('metadata', 'path', 'name')})
         result = self.run_helper(clean=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state['images'], [])
@@ -531,7 +642,7 @@ exit 2
     def test_direct_build_with_empty_provenance_is_not_an_orphan_warning(self):
         self.state['images'] = [self.item(self.live, labels=False)]
         self.state['images'][0]['Names'] = ['localhost/claude-test:latest']
-        self.state['images'][0]['Labels'].update({LABEL + k: '' for k in ('metadata', 'path', 'name')})
+        self.state['images'][0]['Labels'].update({NEW_LABEL + k: '' for k in ('metadata', 'path', 'name')})
         result = self.run_helper()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn(IMAGE_A, result.stdout)

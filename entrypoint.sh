@@ -57,19 +57,10 @@ readonly CODEX_START_MODE CODEX_READ_ONLY
 
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
 # 無効化する場合は利用側プロジェクトの .c3c/env に C3C_NO_FIREWALL=1 を書く。
-# 改名 第 1 段: 新キー（C3C_*）を優先し、未設定・空なら旧キー（CLAUDE_CONTAINER_*）を読む。旧 launcher の
-# compose（旧キーだけを渡す）でこのイメージを起動したときも従来どおり効かせるため。新 compose は同じ値を
-# 両方の名前で渡すので、値が食い違うのは想定外の経路 — firewall より前に止める。
-c3c_resolve_mode_key() {
-  local new_value="$1" old_value="$2" name="$3"
-  if [ -n "$new_value" ] && [ -n "$old_value" ] && [ "$new_value" != "$old_value" ]; then
-    echo "ERROR: $name と旧名の値が一致しません（$new_value / $old_value）。起動を中止します" >&2
-    exit 1
-  fi
-  if [ -n "$new_value" ]; then printf '%s' "$new_value"; else printf '%s' "$old_value"; fi
-}
-C3C_IPV6_MODE=$(c3c_resolve_mode_key "${C3C_IPV6:-}" "${CLAUDE_CONTAINER_IPV6:-}" C3C_IPV6) || exit 1
-C3C_NO_FIREWALL_MODE=$(c3c_resolve_mode_key "${C3C_NO_FIREWALL:-}" "${CLAUDE_CONTAINER_NO_FIREWALL:-}" C3C_NO_FIREWALL) || exit 1
+# 改名 第 2 段（v16）で旧名の env キーの読み取りを削除した（launcher が旧キーを拒否し、compose は新キーだけを
+# 渡す）。旧キーだけが渡っても無効化・IPv6 にはしない（ファイアウォール有効・IPv4 のまま＝安全側）。
+C3C_IPV6_MODE=${C3C_IPV6:-}
+C3C_NO_FIREWALL_MODE=${C3C_NO_FIREWALL:-}
 firewall_args=()
 case "${C3C_IPV6_MODE:-0}" in
   ''|0) ;;
@@ -104,7 +95,7 @@ fi
 # 本起動（run）では .mcp.json ゲートの後・秘密の export より前に、host が :ro で渡した承認記録と照合する。
 # opt-out は設けない（.mcp.json ゲートと同じ理由、#29）。
 CLAUDE_PROJECT_AUDIT=/usr/local/bin/claude-project-audit.py
-CLAUDE_PROJECT_APPROVED=/etc/claude-container/claude-project-approved.json
+CLAUDE_PROJECT_APPROVED=/etc/c3c/claude-project-approved.json
 CLAUDE_PROJECT_ROOT=/workspace
 if [ "$CC_AGENT" = claude ] && [ "$CLAUDE_START_MODE" = preflight ]; then
   if ! python3 -I "$CLAUDE_PROJECT_AUDIT" --root "$CLAUDE_PROJECT_ROOT" snapshot >&3; then
@@ -144,9 +135,9 @@ if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
   if [ -n "$stdio_servers" ]; then
     # TOFU承認記録との照合（#28）。ホスト側 c3c が
     # 事前に対話承認済みなら、その正規化ハッシュが :ro マウントされている
-    # （/etc/claude-container/mcp-approved-hash、compose.yml参照）。正規化jqフィルタは
+    # （/etc/c3c/mcp-approved-hash、compose.yml参照）。正規化jqフィルタは
     # ホスト側 check_mcp_approval() と同一でなければならない（変更時は両ファイルを同期）。
-    approved_hash_file=/etc/claude-container/mcp-approved-hash
+    approved_hash_file=/etc/c3c/mcp-approved-hash
     current_hash=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$MCP_CONFIG" 2>/dev/null | sha256sum | cut -c1-64)
     recorded_hash=""
     if [ -f "$approved_hash_file" ]; then
@@ -220,7 +211,7 @@ fi
 # v3 以前とは直下/export の意味が逆転している（旧: 直下=export、noexport/=非export）。
 # 後方互換エイリアスは持たない（c3c 側の fail-closed ガードが旧レイアウト
 # 残存を検出する）。GH_TOKEN の ambient export は撤廃済み — gh は既定で未認証になる。
-SECRETS_MOUNT=/home/node/.config/claude-container/secrets
+SECRETS_MOUNT=/home/node/.config/c3c/secrets
 
 # Codex の固定 home と CLI 実体（c3c 第1段階）。firewall と capability 剥奪の後、秘密の export より前に
 # 確定する。下の export ループは「既に設定済みの名前」をスキップするため、secrets/export/CODEX_HOME・
@@ -305,7 +296,7 @@ fi
 #   run:       host が :ro で渡した承認記録と、同じファイルから再計算した hash が一致した場合だけ Codex を exec する。
 # 未導入・審査不能・不一致は停止し、Claude へ fallback しない。
 CODEX_AUDIT=/usr/local/bin/codex-mcp-audit.py
-CODEX_APPROVED=/etc/claude-container/codex-mcp-approved.json
+CODEX_APPROVED=/etc/c3c/codex-mcp-approved.json
 # 審査対象はリポジトリ同梱の project 設定だけ（#150）。Codex の CLI 実体や版には依存しない。
 CODEX_PROJECT_CONFIG=/workspace/.codex/config.toml
 if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then

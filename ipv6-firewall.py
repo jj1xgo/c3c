@@ -212,7 +212,7 @@ def main():
     try:
         firewall = IPv6Firewall(args.ports)
         if args.mode == 'prepare':
-            meta = json.loads(pathlib.Path('/etc/claude-container/github-meta.json').read_text())
+            meta = json.loads(pathlib.Path('/etc/c3c/github-meta.json').read_text())
             networks = sorted({value for key in ('web', 'api', 'git') for value in meta[key] if ':' in value})
             firewall.prepare()
             for network in networks:

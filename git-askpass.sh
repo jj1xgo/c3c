@@ -24,7 +24,7 @@ fi
 shift
 
 prompt="$1"
-token_file=/home/node/.config/claude-container/secrets/GITHUB_MAIN_PAT
+token_file=/home/node/.config/c3c/secrets/GITHUB_MAIN_PAT
 github_host_re="^https://(x-access-token@)?github\.com(/.*)?\$"
 
 case "$prompt" in

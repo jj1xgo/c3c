@@ -61,7 +61,9 @@ elif head == 'image inspect':
     if not state.get('image_exists'):
         sys.exit(125)
     fmt = args[args.index('--format') + 1] if '--format' in args else ''
-    if 'io.c3c.claude-project-audit-protocol' in fmt:
+    if 'io.c3c.image-layout' in fmt:
+        print(state.get('layout', '2'))
+    elif 'io.c3c.claude-project-audit-protocol' in fmt:
         print(state.get('claude_label', ''))
     elif 'io.c3c.codex-audit-protocol' in fmt:
         print(state.get('label', ''))
@@ -76,6 +78,7 @@ elif args[:1] == ['compose']:
     if verb == 'build':
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
+        state['layout'] = state.get('build_layout', '2')
         state['claude_label'] = state.get('build_claude_label', '1')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
@@ -131,7 +134,7 @@ class LaunchCase(unittest.TestCase):
         self.codex_dir = self.root / 'codex-home'
         self.codex_dir.mkdir(mode=0o700)
         self.proj = self.root / 'proj'
-        self.conf = self.proj / '.claude-container.d'
+        self.conf = self.proj / '.c3c'
         self.conf.mkdir(parents=True)
         (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\n')
         (self.conf / 'codex-version.txt').write_text(SUPPORTED + '\n')

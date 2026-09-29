@@ -6,16 +6,18 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 
 NEW_PREFIX = 'io.c3c.project-'
+# 旧名の由来 label（v15.0 以前のプロジェクトイメージ）。由来判定・削除判定には使わず、検出して案内するだけ
+# （改名 第 2 段）。
 LEGACY_PREFIX = 'claude-container.project-'
 SUFFIXES = ('metadata', 'path', 'name')
 NEW_LABELS = tuple(NEW_PREFIX + suffix for suffix in SUFFIXES)
-LEGACY_LABELS = tuple(LEGACY_PREFIX + suffix for suffix in SUFFIXES)
 IMAGE_NAME = re.compile(r'^localhost/.+_claude-auth-workspace:latest$')
 
 
@@ -161,14 +163,26 @@ def read_inventory():
 
 
 def provenance_values(labels):
-    """由来 label を組単位で選ぶ（改名 第 1 段）。新の組のキーが 1 つでもあれば新の組だけを使い、
-    旧の組で補わない。新の組のキーが一部だけなら partial=True（値が空でも、台帳の legacy 照合へ落とさず
-    invalid にする）。三つとも揃って空なのは直接ビルドの既存契約で、従来どおり扱う。
-    新の組が 1 つも無いときだけ旧の組（旧の組の扱いは従来と同じ）。"""
+    """由来 label（io.c3c.project-*）の組を返す。組のキーが一部だけなら partial=True（値が空でも、台帳の
+    legacy 照合へ落とさず invalid にする）。三つとも揃って空なのは直接ビルドの既存契約で、従来どおり扱う。"""
     present = [key in labels for key in NEW_LABELS]
-    if any(present):
-        return [labels.get(key, '') for key in NEW_LABELS], not all(present)
-    return [labels.get(key, '') for key in LEGACY_LABELS], False
+    return [labels.get(key, '') for key in NEW_LABELS], any(present) and not all(present)
+
+
+def legacy_only(item):
+    """由来 label を旧名でだけ持つプロジェクトイメージ（c3c v15.0 以前）。旧の値はイメージの種類の判定
+    （名前なしで空か否か）にだけ使い、パスや由来の根拠にはしない。当たらないもの: 新の由来 label を持つ
+    v15.1 のイメージ、由来 label の無い中間イメージ・#118 より前のイメージ、プロジェクト名でない名前の
+    イメージ（直接ビルド等）、値が空の名前なしのイメージ。"""
+    labels = item['labels']
+    legacy = [k for k in labels if k.startswith(LEGACY_PREFIX)]
+    if not legacy or any(k in labels for k in NEW_LABELS):
+        return False
+    # 名前ありはプロジェクトイメージの名前で決める（値が空でも、名前と台帳の照合で清掃させない）。
+    # 名前なしは値のどれかが空でないものだけ（値が空の名前なしは、直接ビルドの残りと区別できない）。
+    if item['names']:
+        return any(IMAGE_NAME.fullmatch(n) for n in item['names'])
+    return any(labels[k] for k in legacy)
 
 
 def provenance(item, ledger):
@@ -248,6 +262,22 @@ def diagnose(args):
     candidates = []
     unnamed = 0
     for item, paths, origin in classified:
+        if legacy_only(item):
+            # 旧 label の値は読まない。名前が台帳・指定対象のパスの image_name() と一致すれば、そのパスを案内に使う。
+            named = sorted(p for p in set(ledger) | set(args.project) if image_name(p) in item['names'])
+            if args.project and item['names'] and not set(named) & selected:
+                continue                                   # 名前なしは、どの対象のものか値を読まずに決められないので常に示す
+            path = named[0] if len(named) == 1 else None
+            # 個別の削除は --no-prune の rmi で案内する。c3c --clean は最後に dangling イメージ全体を prune し、ここで
+            # 「保持します」と示した他の名前なしイメージも消すので、別操作として副作用を添える（PR #186 の Codex 指摘）。
+            project_hint = ''
+            if path and (path in ledger or path_state(path) == 'directory'):
+                project_hint = (f' プロジェクトの台帳・承認記録もまとめて片付けるなら c3c --clean {shlex.quote(path)}'
+                                '（最後に dangling イメージ全体を prune するので、名前なしの他のイメージも消えます）。')
+            report('WARN', f'旧 label だけのイメージ（c3c v15.0 以前）を保持します: {item["id"]} '
+                           f'名前={item["names"]!r}。不要なら podman rmi --no-prune {item["id"]} で削除してください'
+                           f'（中身は podman image inspect {item["id"]}）。{project_hint}')
+            continue
         if args.project and not paths.intersection(selected):
             continue
         if item['names']:
@@ -255,10 +285,9 @@ def diagnose(args):
             relevant = (any(provenance_values(item['labels'])[0])
                         or any(IMAGE_NAME.fullmatch(n) for n in item['names']))
         else:
-            # 旧 label の前方一致は残す（第 1 段より前の名前なしイメージの判定を狭めない）。io.c3c. の
-            # 前方一致にはしない（io.c3c.codex-audit-protocol 等は既存の全イメージに付く）。
-            relevant = (any(k.startswith('claude-container.') for k in item['labels'])
-                        or any(k in item['labels'] for k in NEW_LABELS)
+            # io.c3c. の前方一致にはしない（io.c3c.codex-audit-protocol 等は既存の全イメージに付く）。旧 label の
+            # 前方一致は改名 第 2 段で外した（旧版のプロジェクトイメージは上の legacy_only() で示す）。
+            relevant = (any(k in item['labels'] for k in NEW_LABELS)
                         or any(IMAGE_NAME.fullmatch(n) for n in item['history']))
         if not relevant:
             continue

@@ -6,7 +6,7 @@
 #   - DNS のエグレスは /etc/resolv.conf のリゾルバに限定し、53番ポート全般ではない。
 #   - 既定では IPv6 のエグレスを全面遮断する。--ipv6 のときだけ専用helperで
 #     AAAA と IPv6 CIDR の許可リストを作り、IPv4 側の制限迂回を防ぐ。
-#   - 追加の許可ドメインは /etc/claude-container/allowed-domains.txt から読み、
+#   - 追加の許可ドメインは /etc/c3c/allowed-domains.txt から読み、
 #     ビルド時にイメージへ焼き込む（root 所有で node からは書き込めない）。
 #   - ドメイン由来の CIDR ルールには世代タグを付ける（下の add_cidr_tagged を参照）。
 #     これにより `--refresh-domains` モードが、短い TTL で IP が入れ替わる CDN に
@@ -20,8 +20,8 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-ALLOWED_DOMAINS_FILE=/etc/claude-container/allowed-domains.txt
-ALLOWED_PORTS_FILE=/etc/claude-container/allowed-ports.txt
+ALLOWED_DOMAINS_FILE=/etc/c3c/allowed-domains.txt
+ALLOWED_PORTS_FILE=/etc/c3c/allowed-ports.txt
 CHAIN=CLAUDE_EGRESS
 readonly IPV6_HELPER=/usr/local/bin/ipv6-firewall.py
 # 観測された最短の CDN TTL は 13 秒。それよりやや遅く更新することで、1 回の取りこぼしを
@@ -432,7 +432,7 @@ full_init() {
   # stage_build_context() が一度取得しビルド時にイメージへ焼き込んだ
   # スナップショットを読む — この範囲はめったに変わらないため、古いコピーでも
   # 使い続けられる。
-  local gh_meta_snapshot=/etc/claude-container/github-meta.json
+  local gh_meta_snapshot=/etc/c3c/github-meta.json
   echo "ビルド時スナップショットから GitHub の IP 範囲を読み込んでいます..."
   local gh_ranges
   gh_ranges=$(cat "$gh_meta_snapshot" 2>/dev/null || true)

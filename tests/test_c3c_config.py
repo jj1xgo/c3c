@@ -11,9 +11,8 @@ tests/test_c3c_launch.py の隔離 HOME・fixture project・fake podman/compose 
 |---|---|---|
 | なし | なし | `.c3c` を参照元として既存 fallback。directory は作らない |
 | directory | なし | `.c3c` を採用 |
-| なし | directory | 旧名を採用し移行推奨 WARNING。check は既存 WARN 集計へ |
-| 存在 | 存在 | 内容が同じ・同じ実体でも ERROR、混ぜない |
-| file / dangling link 等 | なし（または逆） | ERROR、ビルドや env 読込より前に停止 |
+| 任意 | 存在（型を問わない） | ERROR（改名 第 2 段、v16 で旧名の読み取りを廃止。`mv -T` を案内） |
+| file / dangling link 等 | なし | ERROR、ビルドや env 読込より前に停止 |
 
 directory へ解決できる symlink は許容し、二重配置は `-e` だけでなく `-L` でも検出する。`--check` は対象ごとに診断を続け
 何も書かず、選択に失敗した対象では env・resolver・hash を呼ばない。clean 系は設定の状態に関わらず既存対象を清掃する。
@@ -52,14 +51,18 @@ class ConfigCase(LaunchCase):
     # --- layout helpers ---------------------------------------------------
 
     def use_new_layout(self):
-        self.legacy.rename(self.new)
-        self.conf = self.new
         return self.new
 
+    def use_legacy_layout(self):
+        """旧名だけの配置（第 2 段では ERROR になる配置）。"""
+        self.new.rename(self.legacy)
+        self.conf = self.legacy
+        return self.legacy
+
     def use_no_layout(self):
-        for item in self.legacy.iterdir():
+        for item in self.new.iterdir():
             item.unlink()
-        self.legacy.rmdir()
+        self.new.rmdir()
 
     def remove_entry(self, path):
         """symlink・file・directory のどれでも、`path` という名前を消す（リンク先は消さない）。"""
@@ -143,29 +146,35 @@ class SelectionTableTests(ConfigCase):
                 self.assertNotIn('旧名', result.stdout)
                 self.assertNotIn(LEGACY, result.stdout + result.stderr)
 
-    def test_legacy_layout_is_adopted_with_migration_warning(self):
-        self.approve_codex()
-        for label, runner, args in (('c3c', self.run_c3c, ['codex', str(self.proj)]),
-                                    ('legacy', self.run_legacy, ['--agent', 'codex', str(self.proj)])):
-            with self.subTest(entry=label):
+    def test_legacy_layout_is_rejected_before_env_and_build(self):
+        # 改名 第 2 段: 旧名 .claude-container.d は、.c3c の有無に関わらず存在するだけで ERROR。env を読まず、
+        # ビルドへも進まない。案内は mv -T（.c3c が既にあっても中へ入れない）。
+        self.make_env(self.use_legacy_layout(), f'{ENV_PROBE}=/x\n')
+        # agent を明示する（未指定・非 TTY だと select_c3c_agent が設定ディレクトリの選択より前に止まる）。
+        for entry, runner, args in (('c3c', self.run_c3c, ['claude', str(self.proj)]),
+                                    ('legacy', self.run_legacy, ['claude', str(self.proj)])):
+            with self.subTest(entry=entry):
                 result = runner(*args)
-                run = self.assert_single_run(result, 'codex')
-                self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir))
-                self.assertRegex(result.stderr, r'WARNING:.*' + LEGACY.replace('.', r'\.') + r'.*旧名')
-                self.assertIn(NEW, result.stderr, '移行先を案内する')
-                self.assertFalse(self.new.exists(), '勝手に移動・作成しない')
-                self.assertTrue((self.legacy / 'env').is_file())
-        for entry in ('c3c', 'legacy'):
-            with self.subTest(check=entry):
-                result = self.run_check(entry, self.proj)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(f'{LEGACY}/env あり', result.stdout)
-                self.assertRegex(result.stdout, r'\[WARN\].*旧名')
-                self.assertIn('→ 結果: WARN', result.stdout)
-                self.assertFalse(self.new.exists())
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(LEGACY, result.stderr)
+                self.assertIn('mv -T', result.stderr)
+                self.assert_env_not_read(result.stdout + result.stderr)
+                self.assertEqual(self.compose_calls(), [])
+        result = self.run_check('c3c', self.proj)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('[FAIL]', result.stdout)
+        self.assert_env_not_read(result.stdout + result.stderr)
+
+    def test_legacy_directory_is_rejected_even_next_to_new(self):
+        self.make_env(self.new)
+        self.legacy.mkdir()
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(LEGACY, result.stderr)
 
     def test_both_directories_are_rejected_before_env_is_read_even_with_identical_content(self):
         self.make_env(self.new, f'{ENV_PROBE}=x\n')
+        self.legacy.mkdir()
         (self.legacy / 'env').write_text((self.new / 'env').read_text())
         before = self.snapshot(self.proj)
         for label, runner, args in (('c3c', self.run_c3c, ['claude', str(self.proj)]),
@@ -223,7 +232,7 @@ class SelectionTableTests(ConfigCase):
                 self.assertIn('→ 結果: FAIL', result.stdout)
                 self.assertTrue(real.is_dir(), 'リンク先を消していない')
 
-    def test_symlink_to_a_directory_is_accepted_for_either_name(self):
+    def test_symlink_to_a_directory_is_accepted_only_for_the_new_name(self):
         real = self.root / 'conf-real'
         self.make_env(real)
         (real / 'codex-version.txt').write_text(SUPPORTED + '\n')
@@ -239,11 +248,12 @@ class SelectionTableTests(ConfigCase):
             self.assertNotIn('旧名', result.stdout)
             self.new.unlink()
         with self.subTest(name=LEGACY):
+            # 旧名は directory への symlink でも ERROR（改名 第 2 段）。リンクは動かさない。
             self.legacy.symlink_to(Path('..') / 'conf-real')
             result = self.run_c3c('codex', str(self.proj))
-            run = self.assert_single_run(result, 'codex')
-            self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir))
-            self.assertIn('旧名', result.stderr)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(LEGACY, result.stderr)
+            self.assertEqual(self.compose_calls(), [])
             self.assertTrue(self.legacy.is_symlink(), 'symlink のまま（移動しない）')
 
     def test_file_or_dangling_link_is_an_error_before_env_and_build(self):
@@ -283,7 +293,9 @@ class SelectionTableTests(ConfigCase):
                     result = runner(*args)
                     self.assertEqual(result.returncode, 1, f'{label}/{entry}: ' + result.stdout + result.stderr)
                     self.assertIn('ERROR', result.stderr)
-                    self.assertIn(str(target), result.stderr, '不正なパスを名指しする')
+                    # 旧名があれば旧名を、無ければ不正な .c3c を名指しする（旧名の検出が先）。
+                    named = self.legacy if os.path.lexists(self.legacy) else target
+                    self.assertIn(str(named), result.stderr, '不正なパスを名指しする')
                     self.assert_env_not_read(result.stderr)
                     self.assertEqual(self.calls, [], 'build・run へ進まない')
                     self.assertIsNone(self.staged_files())
@@ -302,6 +314,7 @@ class CheckAndCleanContractTests(ConfigCase):
     def test_check_reports_fail_for_one_target_and_continues_with_the_next_without_writing(self):
         # proj: 二重配置（env に probe）。other: 新配置で正常。
         self.make_env(self.new, f'{ENV_PROBE}=x\n')
+        self.legacy.mkdir()
         other = self.root / 'other'
         self.make_env(other / NEW)
         for name in ('packages.txt', 'requirements.txt', 'allowed-domains.txt'):
@@ -346,7 +359,7 @@ class CheckAndCleanContractTests(ConfigCase):
         self.assertIn(str(self.proj), (self.state_dir / 'projects').read_text())
         record = self.store / 'codex' / name
         self.assertTrue(record.is_dir())
-        for label, arrange in (('double placement', lambda: self.make_env(self.new)),
+        for label, arrange in (('double placement', lambda: (self.make_env(self.new), self.legacy.mkdir(exist_ok=True))),
                                ('.c3c is a file', lambda: self.new.write_text('x'))):
             with self.subTest(case=label):
                 self.remove_entry(self.new)
@@ -393,7 +406,7 @@ class CheckAndCleanContractTests(ConfigCase):
 
 
 class ResolverConsistencyTests(ConfigCase):
-    """同じ入力の新旧配置で staged file と asset hash が同一、env は build context に混入しない、.env は遮断。"""
+    """入力のステージングと asset hash、env は build context に混入しない、.env は遮断。"""
 
     def fill_inputs(self, directory):
         (directory / 'packages.txt').write_text('htop\n')
@@ -409,32 +422,25 @@ class ResolverConsistencyTests(ConfigCase):
         self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir), '採用した配置の env を読んでいる')
         return run, self.staged_files()
 
-    def test_same_inputs_stage_identically_and_hash_matches_between_layouts(self):
-        self.fill_inputs(self.legacy)
+    def test_inputs_are_staged_and_env_file_is_not_interpolated(self):
+        self.fill_inputs(self.new)
         (self.proj / '.env').write_text('CODEX_DIR=/evil\nC3C_NO_FIREWALL=1\n')
-        legacy_run, legacy_staged = self.run_and_capture('claude', str(self.proj))
-        self.assertIsNotNone(legacy_staged)
-        self.assertEqual(legacy_staged and hashlib.sha256(b'htop\n').hexdigest(), legacy_staged['packages.txt'])
-        self.assertNotIn('env', legacy_staged, 'ランタイム設定を焼き込まない')
-        self.assertEqual(legacy_run['env']['BASE_IMAGE'], 'debian:testing')
-        self.use_new_layout()
-        new_run, new_staged = self.run_and_capture('claude', str(self.proj))
-        self.assertEqual(new_staged, legacy_staged)
-        self.assertNotIn('env', new_staged)
-        self.assertRegex(new_run['env']['ASSET_HASH'], r'^[0-9a-f]{64}$')
-        self.assertEqual(new_run['env']['ASSET_HASH'], legacy_run['env']['ASSET_HASH'])
-        self.assertEqual(new_run['env']['BASE_IMAGE'], 'debian:testing')
-        # .env はどちらの配置でも補間に使わせない（--env-file /dev/null）。
-        for run in (legacy_run, new_run):
-            args = run['args']
-            self.assertIn('--env-file', args)
-            self.assertEqual(args[args.index('--env-file') + 1], '/dev/null')
-            self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir))
-        # 入力を変えれば hash は変わる（同一の比較が空の一致でないことの確認）。
+        run, staged = self.run_and_capture('claude', str(self.proj))
+        self.assertIsNotNone(staged)
+        self.assertEqual(staged and hashlib.sha256(b'htop\n').hexdigest(), staged['packages.txt'])
+        self.assertNotIn('env', staged, 'ランタイム設定を焼き込まない')
+        self.assertRegex(run['env']['ASSET_HASH'], r'^[0-9a-f]{64}$')
+        self.assertEqual(run['env']['BASE_IMAGE'], 'debian:testing')
+        # .env は補間に使わせない（--env-file /dev/null）。
+        args = run['args']
+        self.assertIn('--env-file', args)
+        self.assertEqual(args[args.index('--env-file') + 1], '/dev/null')
+        self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir))
+        # 入力を変えれば hash は変わる（比較が空の一致でないことの確認）。
         (self.new / 'packages.txt').write_text('htop\nvim\n')
         changed_run, changed_staged = self.run_and_capture('claude', str(self.proj))
-        self.assertNotEqual(changed_run['env']['ASSET_HASH'], new_run['env']['ASSET_HASH'])
-        self.assertNotEqual(changed_staged['packages.txt'], new_staged['packages.txt'])
+        self.assertNotEqual(changed_run['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
+        self.assertNotEqual(changed_staged['packages.txt'], staged['packages.txt'])
 
     def test_fixed_boundary_assets_cannot_be_overridden_from_the_new_layout(self):
         self.use_new_layout()
@@ -451,14 +457,10 @@ class ResolverConsistencyTests(ConfigCase):
 
 
 class GuidanceTests(ConfigCase):
-    """エラー・警告の案内先は採用パスを使う（旧配置は旧名、新配置は .c3c、無しは .c3c）。"""
+    """エラー・警告の案内先は採用パス（.c3c）を使う。"""
 
     def test_codex_guard_names_the_adopted_env_path(self):
-        (self.legacy / 'env').write_text('')
-        result = self.run_c3c('codex', str(self.proj))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(f'{self.proj}/{LEGACY}/env', result.stderr)
-        self.use_new_layout()
+        (self.new / 'env').write_text('')
         result = self.run_c3c('codex', str(self.proj))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'{self.proj}/{NEW}/env', result.stderr)
@@ -497,9 +499,7 @@ class BuildInputDefaultTests(ConfigCase):
     PIN_NODE = '22.14.0'
 
     def layouts(self):
-        """legacy → new の順に、同じ入力を持つ設定ディレクトリを返す（fixture は旧名で始まる）。"""
-        yield 'legacy', self.legacy
-        self.use_new_layout()
+        """設定ディレクトリ（.c3c）を返す（改名 第 2 段で旧名の配置は ERROR になったので 1 通り）。"""
         yield 'new', self.new
 
     def launch_claude(self, *extra):
@@ -534,7 +534,6 @@ class BuildInputDefaultTests(ConfigCase):
                     self.assertRegex(check.stdout, r'\[INFO\] Node\.js 版: ' + re.escape(DEFAULT_NODE) + r'（採用元: 同梱 default）')
                     self.assertRegex(check.stdout, r'\[INFO\] Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: 同梱 default）')
                     self.assertNotIn('npm', check.stdout, 'Node default＋Codex default では npm の WARNING を出さない')
-        self.assertEqual(hashes['legacy'], hashes['new'])
 
     def test_missing_config_dir_uses_bundled_defaults_without_creating_it(self):
         self.use_no_layout()
@@ -567,15 +566,15 @@ class BuildInputDefaultTests(ConfigCase):
                 self.assertNotIn('npm', check.stdout)
 
     def test_pin_equal_to_default_yields_the_same_hash_as_absent(self):
-        (self.legacy / 'node-version.txt').write_text(DEFAULT_NODE + '\n')
-        (self.legacy / 'codex-version.txt').write_text(DEFAULT_CODEX + '\n')
+        (self.new / 'node-version.txt').write_text(DEFAULT_NODE + '\n')
+        (self.new / 'codex-version.txt').write_text(DEFAULT_CODEX + '\n')
         _, pinned, pinned_staged = self.launch_claude()
-        (self.legacy / 'node-version.txt').unlink()
-        (self.legacy / 'codex-version.txt').unlink()
+        (self.new / 'node-version.txt').unlink()
+        (self.new / 'codex-version.txt').unlink()
         _, absent, absent_staged = self.launch_claude()
         self.assertEqual(pinned_staged, absent_staged)
         self.assertEqual(pinned['env']['ASSET_HASH'], absent['env']['ASSET_HASH'], '内容だけをハッシュする（採用元は含めない）')
-        (self.legacy / 'node-version.txt').write_text('')
+        (self.new / 'node-version.txt').write_text('')
         _, empty, empty_staged = self.launch_claude()
         self.assertNotEqual(empty['env']['ASSET_HASH'], absent['env']['ASSET_HASH'], '空 opt-out は default と別の image になる')
         self.assertEqual(empty_staged['node-version.txt'], EMPTY_SHA256)
@@ -646,8 +645,8 @@ class BuildInputDefaultTests(ConfigCase):
                     (conf / 'node-version.txt').unlink()
 
     def test_node_pinned_with_codex_enabled_does_not_warn(self):
-        (self.legacy / 'node-version.txt').write_text(self.PIN_NODE + '\n')
-        (self.legacy / 'codex-version.txt').unlink()
+        (self.new / 'node-version.txt').write_text(self.PIN_NODE + '\n')
+        (self.new / 'codex-version.txt').unlink()
         result, _, _ = self.launch_claude()
         self.assertNotIn('npm', result.stderr)
         self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project ')

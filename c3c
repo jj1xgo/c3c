@@ -29,6 +29,10 @@ readonly CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
 CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION=1
 CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL=io.c3c.claude-project-audit-protocol
 readonly CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL
+# コンテナ内の配置の版（改名 第 2 段）。Dockerfile.claude の LABEL io.c3c.image-layout と一致させる。
+IMAGE_LAYOUT_LABEL=io.c3c.image-layout
+IMAGE_LAYOUT_VERSION=2
+readonly IMAGE_LAYOUT_LABEL IMAGE_LAYOUT_VERSION
 
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
@@ -295,83 +299,37 @@ readonly AGENT_PREFERENCE_HELPER
 
 # 起動台帳（内部運用issue参照）。通常起動のたびにホスト絶対パスを記録し、
 # --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
-# 上書きしない rename（renameat2 の RENAME_NOREPLACE）。state directory の移行専用。
-# GNU mv は別 FS（EXDEV）でコピーと削除へ切り替わり、事前の存在確認は確認と rename の間に現れた移動先を
-# 上書きしうるので、どちらも使わない。rc 0=移動、1=失敗（移動先あり等）、3=この環境では使えない
-# （python3 なし・renameat2 なし・FS 非対応・移動元がマウントポイント〈EBUSY〉・EXDEV）。rc 3 は旧 state を
-# 使い続ける扱いなので、毎回の起動を止めない。symlink はリンク自体を移す（rename(2) の意味どおり）。
-rename_noreplace() {
-  command -v python3 >/dev/null 2>&1 || return 3
-  python3 -I - "$1" "$2" <<'PY'
-import ctypes, errno, os, sys
-libc = ctypes.CDLL(None, use_errno=True)
-try:
-    renameat2 = libc.renameat2
-except AttributeError:
-    sys.exit(3)
-AT_FDCWD, RENAME_NOREPLACE = -100, 1
-src, dst = (os.fsencode(arg) for arg in sys.argv[1:3])
-if renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0:
-    sys.exit(0)
-sys.exit(3 if ctypes.get_errno() in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.EBUSY, errno.EXDEV) else 1)
-PY
-}
-
-# state directory（起動台帳・MCP/Codex/project 設定の承認記録・CLI 選択の記憶）を旧名
-# ~/.local/state/claude-container から ~/.local/state/c3c へ移す（改名 第 1 段。spec の遷移表）。
-# 判定は lstat（symlink を辿らない）。移行は通常起動でだけ行う — --check は書かず、--clean は選択記憶を
-# 「読まない・書かない・消さない」不変条件を持つため state 全体を動かさない。両モードとも新が無ければ旧を読む。
+# state directory（起動台帳・MCP/Codex/project 設定の承認記録・CLI 選択の記憶）は ~/.local/state/c3c。
+# 旧名 ~/.local/state/claude-container は v16 で自動移行と読み取りを廃止した（改名 第 2 段）。旧が残っていれば
+# 検出して案内するだけで、中身は読まない・移さない・消さない（移さずに進めると承認の確認がもう一度出る＝
+# 確認の側に倒れる）。案内の mv は -T 付き（新が既にあるとき旧を新の中へ入れ子にしない）で、パスは %q で
+# クォートする（$HOME に ' や空白を含んでもそのまま打てる）。判定は lstat（symlink を辿らない）。
 # $HOME から直接算出して readonly にし、プロジェクト側 env からの上書きを封じる（#39）。
 # ここは関数定義セクションより前なので guard_warn は使えない（stderr へ直接出す）。
 resolve_state_dir() {
-  local new="$HOME/.local/state/c3c" old="$HOME/.local/state/claude-container" before after rc attempt
+  local new="$HOME/.local/state/c3c" old="$HOME/.local/state/claude-container" q_old q_new
+  CC_STATE_DIR="$new"
   CC_LEGACY_STATE_DIR="$old"
-  local notice_both="旧 state $old が残っています（$new を使います）。旧版の c3c のセッションがすべて終わってから、中身を確認して削除してください。"
-  # 判定は最大 2 回。1 回目の途中で旧が消え、かつ新が現れた（並行起動が先に移し終えた）ときだけ、遷移表を
-  # やり直す（同一性を取る前に旧が消える順序では、rename 後の同一性確認に届かないため）。旧が見えなくなっても
-  # 新が現れていなければ（親の権限の喪失・削除など）並行移行とは扱わず、従来どおり止める。
-  for attempt in 1 2; do
-    CC_STATE_DIR="$new"
-    CC_STATE_NOTICE=""
-    rc=0
-    if [[ ! -e "$old" && ! -L "$old" ]]; then
-      return 0
-    fi
-    if [[ -e "$new" || -L "$new" ]]; then
-      CC_STATE_NOTICE="$notice_both"
-    elif [[ ! -d "$old" ]]; then
-      if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" && ( -e "$new" || -L "$new" ) ]]; then
-        continue
-      fi
-      CC_STATE_NOTICE="旧 state $old はディレクトリではないため移行しません（$new を使います）。不要なら削除してください。"
-    elif [[ $CHECK -eq 1 || $CLEAN -eq 1 ]]; then
-      CC_STATE_DIR="$old"
-      CC_STATE_NOTICE="旧 state $old を読みます。次の通常起動で $new へ移行します。"
-    else
-      if ! before=$(stat -c '%d:%i' -- "$old" 2>/dev/null); then
-        if [[ $attempt -eq 1 && ! -e "$old" && ! -L "$old" && ( -e "$new" || -L "$new" ) ]]; then
-          continue
-        fi
-        echo "ERROR: 旧 state $old の状態を確認できません。起動を中止します。" >&2
-        exit 1
-      fi
-      rename_noreplace "$old" "$new" || rc=$?
-      if [[ $rc -eq 0 ]]; then
-        CC_STATE_NOTICE="state を $old から $new へ移行しました（承認記録・起動台帳・CLI の記憶を引き継いでいます）。"
-      elif [[ $rc -eq 3 ]]; then
-        CC_STATE_DIR="$old"
-        CC_STATE_NOTICE="この環境では state を安全に移行できないため（python3 と上書きしない rename の対応が必要。$old がマウントポイントの場合も移せません）、旧 state $old を使います。c3c のセッションがすべて終わってから mv '$old' '$new' で移してください。"
-      else
-        after=$(stat -c '%d:%i' -- "$new" 2>/dev/null || true)
-        if [[ "$after" != "$before" ]]; then
-          echo "ERROR: state を $old から $new へ移行できませんでした。承認記録を失わないよう起動を中止します。$new の中身を確認し、手で移してから再実行してください。" >&2
-          exit 1
-        fi
-      fi
-    fi
-    break
-  done
-  if [[ -n "$CC_STATE_NOTICE" && $CHECK -ne 1 ]]; then
+  CC_STATE_NOTICE=""
+  [[ -e "$old" || -L "$old" ]] || return 0
+  printf -v q_old '%q' "$old"
+  printf -v q_new '%q' "$new"
+  if [[ ! -d "$old" ]]; then
+    # ファイル・壊れた symlink 等は state として使えない。移すと新 state が使えない型になるので案内しない。
+    CC_STATE_NOTICE="旧 state $old はディレクトリではない（ファイル・壊れた symlink 等）ため、c3c v16 は使いません。中身を確かめて取り除いてください。"
+  elif [[ ! -e "$new" && ! -L "$new" && $CHECK -eq 1 ]]; then
+    # --check は何も書かないので、新が無いまま。そのまま移せる。
+    CC_STATE_NOTICE="旧 state $old が残っています（c3c v16 は読みません）。引き継ぐ場合は、c3c のセッションがすべて終わってから mv -T -- $q_old $q_new で移してください。移さずに起動すると、MCP 等の承認の確認がもう一度出て、起動台帳と CLI の記憶は空から始まります（README「旧名 claude-container からの移行（v16）」節）。"
+  elif [[ ! -e "$new" && ! -L "$new" ]]; then
+    # 通常起動は、この後の起動台帳の記録（record_project_in_ledger）で新を作る。案内は「新を退避してから移す」順にする
+    # （新が空でないと mv -T は失敗する。入れ子にはならない）。
+    CC_STATE_NOTICE="旧 state $old が残っています（c3c v16 は読まず、この起動で $new を新しく作ります）。旧の承認記録・起動台帳・CLI の記憶を引き継ぐ場合は、c3c のセッションがすべて終わってから mv -T -- $q_new $q_new.v16-new で新を退避し、mv -T -- $q_old $q_new で移してください（README「旧名 claude-container からの移行（v16）」節）。"
+  elif [[ ! -d "$new" ]]; then
+    CC_STATE_NOTICE="旧 state $old が残っています（c3c v16 は読みません）。新 state $new はディレクトリではない（壊れた symlink 等）ため使えません。$new を直すか取り除いてから、旧を引き継ぐ場合は mv -T -- $q_old $q_new で移してください。"
+  else
+    CC_STATE_NOTICE="旧 state $old が残っています（c3c v16 は読まず、$new を使います）。旧の承認記録・起動台帳・CLI の記憶が不要なら、中身を確かめて削除してください。引き継ぐ場合は、c3c のセッションがすべて終わってから mv -T -- $q_new $q_new.v16-new で新を退避し、mv -T -- $q_old $q_new で移してください。"
+  fi
+  if [[ $CHECK -ne 1 ]]; then
     echo "WARNING: $CC_STATE_NOTICE" >&2
   fi
   return 0
@@ -387,8 +345,7 @@ readonly CC_STATE_DIR CC_LEGACY_STATE_DIR CC_STATE_NOTICE CC_LEDGER_FILE
 
 # 実在するプロジェクトイメージ（localhost/<project>_claude-auth-workspace）から
 # <project> を逆算し、イメージ・ネットワーク・ビルドコンテキストをまとめて削除する。
-# レガシー共有イメージ localhost/claude-container_claude-auth-workspace もこの
-# パターンに自然にマッチするため、移行用の特別処理は不要。
+# 旧製品名の共有イメージ（localhost/<旧名>_claude-auth-workspace）も同じパターンで拾う。
 clean_all() {
   local repo project found=0
   while IFS= read -r repo; do
@@ -404,18 +361,11 @@ clean_all() {
   [[ $found -eq 1 ]] || echo "c3c のイメージが見つからないため、イメージ・ネットワークの削除をスキップします。"
   echo "ステージング済みビルドコンテキストを削除します: $RUN_DIR/.build-context"
   rm -rf "$RUN_DIR/.build-context" && echo "削除しました。" || echo "見つからないのでスキップします。"
-  local approval_store="$CC_STATE_DIR/mcp-approvals" legacy_store="$CC_LEGACY_STATE_DIR/mcp-approvals"
+  local approval_store="$CC_STATE_DIR/mcp-approvals"
   echo "MCP 承認記録を削除します: $approval_store"
   rm -rf "$approval_store" && echo "削除しました。" || echo "見つからないのでスキップします。"
   echo "起動台帳を削除します: $CC_LEDGER_FILE"
   rm -f "$CC_LEDGER_FILE" && echo "削除しました。" || echo "見つからないのでスキップします。"
-  # 旧 state（改名 第 1 段）が実効の state と別に残っていれば、承認記録と台帳だけを消す（選択記憶は消さない）。
-  # 旧がディレクトリへの symlink でも対象にする（spec が引き継ぎ対象にしている配置。消すのはその中の
-  # mcp-approvals と projects だけで、rm -rf は末尾の要素が symlink ならリンク自体を消し、その先を辿らない）。
-  if [[ "$CC_LEGACY_STATE_DIR" != "$CC_STATE_DIR" && -d "$CC_LEGACY_STATE_DIR" ]]; then
-    echo "旧 state の MCP 承認記録と起動台帳を削除します: $CC_LEGACY_STATE_DIR"
-    rm -rf "$legacy_store" "$CC_LEGACY_STATE_DIR/projects"
-  fi
   echo "dangling イメージを整理しています..."
   podman image prune -f
 }
@@ -579,57 +529,43 @@ freeze_project_paths() {
   readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
 }
 
-# プロジェクト設定ディレクトリの選択（c3c 第2b-1段階）。起動 checkout 直下の新名 .c3c と旧名
-# .claude-container.d を次の表で解決し、採用パスを PROJECT_CONF_DIR に返してから readonly にする。
-# 呼出名（旧名の外部 symlink を含む）では結果を変えない。
-#   .c3c   旧名   → なし/なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
-#                 → 片方だけ: それを採用（旧名だけなら移行推奨 WARNING、--check は WARN 集計）
-#                 → 両方: ERROR（内容や実体が同じでも混ぜない・勝手に移動しない）
-#   採用側が directory へ解決できない（file・リンク先の無い symlink・file への symlink）: ERROR
-# 存在判定は -e だけでなく -L でも行う（dangling link や同じ実体への 2 本の symlink も「配置あり」）。
-# directory への symlink は既存互換のため許容する（-d は追従する）。
-# 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後（清掃は設定の状態に
-# 依らず既存対象を消す。清掃に要るパスは freeze_project_paths() が担う）。--check では失敗時に呼び出し元が
+# プロジェクト設定ディレクトリの選択。起動 checkout 直下の .c3c を採用パスとして PROJECT_CONF_DIR に返してから
+# readonly にする。旧名 .claude-container.d は v16 で読み取りを廃止した（改名 第 2 段）。存在すれば型も .c3c の
+# 有無も問わず止めて移行を案内する（黙って .c3c 側だけを読むと、旧名に書いた設定が効かないことに気づけない）。
+#   .c3c なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
+#   .c3c が directory（または directory への symlink）: 採用
+#   .c3c が directory へ解決できない（file・リンク先の無い symlink・file への symlink）: ERROR
+# 存在判定は -e だけでなく -L でも行う（dangling link も「配置あり」）。呼出名では結果を変えない。
+# 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後。--check では失敗時に呼び出し元が
 # return 20 し、env・resolver・hash・ガードへ進まない。readonly は結果を返した後に置く（#39）。
 PROJECT_CONF_NEW_NAME=.c3c
 PROJECT_CONF_LEGACY_NAME=.claude-container.d
 readonly PROJECT_CONF_NEW_NAME PROJECT_CONF_LEGACY_NAME
 select_project_conf_dir() {
-  local new_path="$WORKING_DIR/$PROJECT_CONF_NEW_NAME" legacy_path="$WORKING_DIR/$PROJECT_CONF_LEGACY_NAME"
-  local new_present=0 legacy_present=0 chosen kind warn_prefix=""
-  [[ -e "$new_path" || -L "$new_path" ]] && new_present=1
-  [[ -e "$legacy_path" || -L "$legacy_path" ]] && legacy_present=1
-  [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
-  if [[ $new_present -eq 1 && $legacy_present -eq 1 ]]; then
-    guard_fail "ERROR: 設定ディレクトリが二重配置です: $new_path と $legacy_path の両方があります（内容や実体が同じでも混ぜません）。" \
-      "  移行済みなら旧名 $PROJECT_CONF_LEGACY_NAME を設定探索の対象外（プロジェクト外のバックアップ先等）へ移し、未移行なら $PROJECT_CONF_NEW_NAME 側を取り除いてください（README「利用側プロジェクトの設定」節）。起動を中止します。" || return 1
+  local new_path="$WORKING_DIR/$PROJECT_CONF_NEW_NAME" legacy_path="$WORKING_DIR/$PROJECT_CONF_LEGACY_NAME" kind
+  if [[ -e "$legacy_path" || -L "$legacy_path" ]]; then
+    guard_fail "ERROR: 旧名の設定ディレクトリ $legacy_path があります（c3c v16 で旧名の読み取りを廃止しました）。" \
+      "  $PROJECT_CONF_NEW_NAME が無ければ、起動していない状態でプロジェクト直下で mv -T -- $PROJECT_CONF_LEGACY_NAME $PROJECT_CONF_NEW_NAME（Git 追跡対象なら git mv）を実行し、.gitignore の $PROJECT_CONF_LEGACY_NAME/env も $PROJECT_CONF_NEW_NAME/env に書き換えてください。" \
+      "  $PROJECT_CONF_NEW_NAME が既にある場合は、中身を確かめてから旧名をプロジェクトの外へ退避してください（README「旧名 claude-container からの移行（v16）」節）。起動を中止します。" || return 1
   fi
-  if [[ $new_present -eq 1 ]]; then
-    chosen="$new_path"
-  elif [[ $legacy_present -eq 1 ]]; then
-    chosen="$legacy_path"
-  else
+  if [[ ! -e "$new_path" && ! -L "$new_path" ]]; then
     PROJECT_CONF_DIR="$new_path"
     readonly PROJECT_CONF_DIR
     [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] 設定ディレクトリ: なし（$PROJECT_CONF_NEW_NAME を参照元にし、同梱の既定値を使います）"
     return 0
   fi
-  if [[ ! -d "$chosen" ]]; then
+  if [[ ! -d "$new_path" ]]; then
     kind="ディレクトリではありません"
-    if [[ -L "$chosen" && ! -e "$chosen" ]]; then
+    if [[ -L "$new_path" && ! -e "$new_path" ]]; then
       kind="リンク先の無い symlink です"
-    elif [[ -L "$chosen" ]]; then
+    elif [[ -L "$new_path" ]]; then
       kind="ディレクトリ以外を指す symlink です"
     fi
-    guard_fail "ERROR: 設定ディレクトリ $chosen は$kind。ディレクトリ（またはディレクトリへの symlink）に直すか取り除いてください。起動を中止します。" || return 1
+    guard_fail "ERROR: 設定ディレクトリ $new_path は$kind。ディレクトリ（またはディレクトリへの symlink）に直すか取り除いてください。起動を中止します。" || return 1
   fi
-  PROJECT_CONF_DIR="$chosen"
+  PROJECT_CONF_DIR="$new_path"
   readonly PROJECT_CONF_DIR
-  if [[ "$chosen" == "$legacy_path" ]]; then
-    guard_warn "${warn_prefix}WARNING: $legacy_path は旧名です。起動していない状態で $PROJECT_CONF_NEW_NAME へ改名してください（mv $PROJECT_CONF_LEGACY_NAME $PROJECT_CONF_NEW_NAME。追跡対象なら git mv、ローカル設定の .gitignore も更新。両方を並べて置くと起動を拒否します。README「利用側プロジェクトの設定」節）。"
-  elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
-    echo "[OK]   設定ディレクトリ: $PROJECT_CONF_DIR"
-  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   設定ディレクトリ: $PROJECT_CONF_DIR"
   return 0
 }
 
@@ -774,7 +710,7 @@ write_agent_preference() {
 # --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
 # カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（#60）。
 # リポジトリ同梱の .env が CODEX_DIR・EXTRA_MOUNT・C3C_NO_FIREWALL 等を
-# 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env、旧 .claude-container.d/env）だけにする。
+# 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env）だけにする。
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 run_main_compose() {
@@ -788,7 +724,7 @@ run_main_compose() {
 #
 # 許可リスト（#44）: compose.yml が補間するキーのうちホスト側の実行や基点に
 # 影響しないものと、コンテナのモードに使うキー（TZ・C3C_NO_FIREWALL・C3C_IPV6。旧名 CLAUDE_CONTAINER_* は
-# guard_env_key_renames() が新キーへ解決する）。一方 PATH・HOME・
+# v16 で廃止し、guard_legacy_env_keys() が拒否する）。一方 PATH・HOME・
 # LD_PRELOAD・BASH_ENV や podman・git・gh・python3 が読む各種変数は、export されるとホスト側の
 # ランチャーやその外部コマンドの挙動を変える（HOME だけで guard_codex_dir の fail-closed が沈黙する
 # ことを実測）。拒否リストは列挙が閉じないので、許可リストで受け付けるキーを固定し、それ以外は
@@ -814,8 +750,6 @@ ENV_FILE_ALLOWED_KEYS=(
   TZ
   C3C_NO_FIREWALL
   C3C_IPV6
-  CLAUDE_CONTAINER_NO_FIREWALL
-  CLAUDE_CONTAINER_IPV6
   GITCONFIG_FILE
   SECRETS_DIR
   CODEX_DIR
@@ -842,17 +776,11 @@ load_env_file() {
   fi
 }
 
-# 単独のキーの image label を新名（io.c3c.<suffix>）優先で読み、空なら旧名（claude-container.<suffix>）を読む
-# （改名 第 1 段。第 1 段より前のイメージは旧名だけを持つ）。inspect の index は欠落キーにも空文字を返すので、
-# 欠落と空値は区別しない。由来 label（project-*）は組単位で選ぶ必要があるのでここでは扱わない
-# （project-images.py）。inspect の失敗は従来どおり空として扱う。
+# 単独のキーの image label（io.c3c.<suffix>）を読む。inspect の index は欠落キーにも空文字を返すので、
+# 欠落と空値は区別しない。旧名 claude-container.* は v16 で読まない（改名 第 2 段。v15 以前のイメージは
+# guard_image_layout() が止める）。由来 label（project-*）は組単位で選ぶので project-images.py が扱う。
 image_label() {
-  local value
-  value=$(podman image inspect --format "{{index .Labels \"io.c3c.$1\"}}" "$IMAGE_NAME" 2>/dev/null || true)
-  if [[ -z "$value" ]]; then
-    value=$(podman image inspect --format "{{index .Labels \"claude-container.$1\"}}" "$IMAGE_NAME" 2>/dev/null || true)
-  fi
-  printf '%s' "$value"
+  podman image inspect --format "{{index .Labels \"io.c3c.$1\"}}" "$IMAGE_NAME" 2>/dev/null || true
 }
 
 # 設定から固定の Compose override を選ぶ。任意の podman 引数は受け付けない。
@@ -917,29 +845,22 @@ guard_legacy_vars() {
   fi
 }
 
-# 旧製品名の env キー（CLAUDE_CONTAINER_*）を新キー（C3C_*）へ解決する（改名 第 1 段。spec
-# docs/superpowers/specs/2026-09-27-rename-legacy-identifiers-design.md）。旧キーは WARNING 付きで有効。
-# 空文字は未設定と同じ扱い。新旧の両方が空でなければ、値が同じでも混ぜずに止める（.c3c/env と
-# シェル環境のどちらから来たかは問わない）。解決後は旧キーを unset し、以降の launcher と compose の
-# 補間は新キーだけを見る。compose は新キーの値をコンテナへ新旧両方の名前で渡すので、旧イメージの
-# entrypoint.sh も従来どおり動く。C3C_* は readonly にしない（load_env_file の無条件 export と衝突する）。
-guard_env_key_renames() {
-  local _ekr_pair _ekr_old _ekr_new _ekr_rc=0
-  for _ekr_pair in CLAUDE_CONTAINER_NO_FIREWALL:C3C_NO_FIREWALL CLAUDE_CONTAINER_IPV6:C3C_IPV6; do
-    _ekr_old="${_ekr_pair%%:*}"
-    _ekr_new="${_ekr_pair##*:}"
-    if [[ -n "${!_ekr_old:-}" && -n "${!_ekr_new:-}" ]]; then
-      guard_fail "ERROR: $_ekr_old と $_ekr_new が両方設定されています（値が同じでも混ぜません）。" \
-        "旧キー $_ekr_old を .c3c/env とシェル環境から削除し、$_ekr_new だけを使ってください。" || _ekr_rc=1
-      continue
+# 旧製品名の env キー（CLAUDE_CONTAINER_*）は v16 で廃止した（改名 第 2 段。spec
+# docs/superpowers/specs/2026-09-27-rename-legacy-identifiers-design.md）。許可リスト外のキーは load_env_file() で
+# export されず汎用の「解釈しない」WARNING になるだけなので、guard_legacy_vars() と同じく .c3c/env の行と
+# シェル環境の両方を見て、空でない値があれば止めて新キー名を案内する（黙ってファイアウォール有効・IPv4 で
+# 起動し、「無効にならない」と迷わせないため）。空文字は未設定と同じ扱い。
+guard_legacy_env_keys() {
+  local _lek_pair _lek_old _lek_new _lek_rc=0
+  for _lek_pair in CLAUDE_CONTAINER_NO_FIREWALL:C3C_NO_FIREWALL CLAUDE_CONTAINER_IPV6:C3C_IPV6; do
+    _lek_old="${_lek_pair%%:*}"
+    _lek_new="${_lek_pair##*:}"
+    if [[ -n "${!_lek_old:-}" ]] || { [[ -n "$ENV_FILE" ]] && grep -qE "^${_lek_old}=.+" "$ENV_FILE" 2>/dev/null; }; then
+      guard_fail "ERROR: $_lek_old は v16 で廃止しました（旧製品名の env キー）。$_lek_new に書き換えてください。" \
+        "  .c3c/env とシェルの起動ファイル（export $_lek_old=...）の両方を確認してください（README「旧名 claude-container からの移行（v16）」節）。起動を中止します。" || _lek_rc=1
     fi
-    if [[ -n "${!_ekr_old:-}" ]]; then
-      guard_warn "WARNING: $_ekr_old は旧名です。$_ekr_new に書き換えてください（旧名は次のメジャー版で使えなくなります。README「環境変数」節）。"
-      export "$_ekr_new=${!_ekr_old}"
-    fi
-    unset "$_ekr_old"
   done
-  return "$_ekr_rc"
+  return "$_lek_rc"
 }
 
 # ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）と、~/.gitconfig の bind 元の決定（#149）。
@@ -1190,6 +1111,40 @@ guard_codex_image_support() {
     guard_fail "ERROR: イメージ $IMAGE_NAME は Codex 起動時 MCP 審査（protocol $CODEX_AUDIT_PROTOCOL_VERSION）に対応していません（label $CODEX_AUDIT_PROTOCOL_LABEL=${label:-なし}）。-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
   fi
   [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 審査 protocol: $CODEX_AUDIT_PROTOCOL_LABEL=$label"
+  return 0
+}
+
+# コンテナ内の配置の確認（改名 第 2 段）。v16 の compose は承認記録を /etc/c3c/*、秘密を新パスにだけ載せ、
+# v15.1 以前のイメージの entrypoint.sh はそこを読まない。既存イメージの label が対応値でなければ -b を案内して
+# 止める（guard_codex_image_support() と同じ型）。未ビルドなら何もしない（compose の暗黙ビルドが label 付きで
+# 作る）。通常起動の -b は、この後の明示ビルドで作り直すので見ない（guard_ipv6() と同じ）。通常起動ではガード列で
+# 呼び、ホストの MCP 承認の対話・検査用コンテナ・本起動より前に止める。--check では既存イメージの静的診断。
+# 未ビルドと扱うのは podman image exists の rc 1（不在）だけ。ストレージの検査失敗（rc 125 等）で素通りすると、
+# 後で復旧したときに配置を確かめていないイメージで起動するので止める。
+guard_image_layout() {
+  [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]] && return 0
+  command -v podman >/dev/null 2>&1 || return 0
+  local exists_rc=0
+  podman image exists "$IMAGE_NAME" 2>/dev/null || exists_rc=$?
+  check_image_layout "$exists_rc"
+}
+
+# 取得済みの podman image exists の rc（$1）から配置を判定する。--check の check_one_project() は自分で取った rc を
+# 渡し、有無を検査し直さない（再検査で rc が 125 から 1・0 に変わると、最初の検査失敗が診断から消えるため）。
+check_image_layout() {
+  local exists_rc=$1 layout
+  case "$exists_rc" in
+    0) ;;
+    1) return 0 ;;
+    *)
+      guard_fail "ERROR: イメージ $IMAGE_NAME の有無を確認できません（podman image exists の終了コード $exists_rc）。Podman のストレージを確認してから再実行してください。起動を中止します。" || return 1
+      ;;
+  esac
+  layout=$(podman image inspect --format "{{index .Labels \"$IMAGE_LAYOUT_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null || true)
+  if [[ "$layout" != "$IMAGE_LAYOUT_VERSION" ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は c3c v16 のコンテナ内の配置に対応していません（label $IMAGE_LAYOUT_LABEL=${layout:-なし}、必要な値 $IMAGE_LAYOUT_VERSION）。v15 以前にビルドしたイメージは承認記録と秘密を旧パスで読むため、-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   イメージの配置: $IMAGE_LAYOUT_LABEL=$layout"
   return 0
 }
 
@@ -2147,16 +2102,15 @@ prepare_codex_host_plugins() {
   return 0
 }
 
-# プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`#29`）。
+# プロジェクト設定の env（.c3c/env）は運用者が書く信頼入力として扱う（`#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
 # （ホスト固有パスを含みうる）は出力せず、キー名のみ列挙する。
 guard_env_boundary_keys() {
   [[ -n "$ENV_FILE" ]] || return 0
   local key nf_key
-  # 実際に書かれたキー名を出す（新旧を常に併記すると、新キーだけの利用者にも旧名が表示される）。
   # -m 1 で最初の 1 行だけ（head へのパイプは SIGPIPE で偽になりうる）。不一致は rc 1 で if の偽。
-  if nf_key=$(grep -m 1 -oE '^(C3C|CLAUDE_CONTAINER)_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null); then
+  if nf_key=$(grep -m 1 -oE '^C3C_NO_FIREWALL=1[[:space:]]*$' "$ENV_FILE" 2>/dev/null); then
     guard_warn "WARNING: $ENV_FILE で ${nf_key%%=*}=1 が設定されています。エグレスファイアウォールは無効化されます。"
   fi
   local -a boundary_keys_found=()
@@ -2576,7 +2530,7 @@ guard_asset_drift() {
   fi
   # base-image.txt を変更 → -b → 元の値に戻して -b 忘れ、という順序では
   # compute_asset_hash() の内容ハッシュが一致してしまい上記の比較では検知できない。
-  # 実ビルド値を記録したラベル（Dockerfile.claude の io.c3c.base-image。旧イメージは旧名）と
+  # 実ビルド値を記録したラベル（Dockerfile.claude の io.c3c.base-image）と
   # 現在の解決結果 $BASE_IMAGE（guard_base_image() が先に設定している前提）を
   # 直接比較することで、この場合も検知する。
   if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_base_image" != "$BASE_IMAGE" ]]; then
@@ -2648,7 +2602,7 @@ check_one_project() {
 
   guard_env_gh_token || true
   guard_legacy_vars || true
-  guard_env_key_renames || true
+  guard_legacy_env_keys || true
   guard_gitconfig_file || true
   guard_secrets_dir || true
   guard_codex_dir || true
@@ -2705,12 +2659,17 @@ check_one_project() {
     esac
   done
 
+  local image_exists_rc=0
   if ! command -v podman >/dev/null 2>&1; then
     echo "[SKIP] podman が見つからないためイメージ確認をスキップ"
-  elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+  elif podman image exists "$IMAGE_NAME" 2>/dev/null || { image_exists_rc=$?; false; }; then
     echo "[OK]   イメージ既ビルド: $IMAGE_NAME"
-  else
+    check_image_layout 0 || true
+  elif [[ $image_exists_rc -eq 1 ]]; then
     echo "[INFO] イメージ未ビルド: $IMAGE_NAME（初回起動時に自動ビルドされます。破壊的変更後は -b を推奨）"
+  else
+    # 不在（rc 1）以外の検査失敗は未ビルドと報告せず、取得済みの rc のまま check_image_layout() が FAIL にする。
+    check_image_layout "$image_exists_rc" || true
   fi
 
   guard_asset_drift || true
@@ -2845,6 +2804,11 @@ run_check_mode() (
   else
     if [[ ! -s "$CC_LEDGER_FILE" ]]; then
       echo "起動台帳が空です（$CC_LEDGER_FILE）。まだ通常起動が記録されていません。--check <directory> で個別指定できます。"
+      # 第 1 段を経ずに v16 へ上げた利用者は、台帳が旧 state 側にしかない。旧は読まず、移してから再実行する
+      # 2 段の手順を案内する（改名 第 2 段。案内の mv は上の [WARN] の文にある）。
+      if [[ -s "$CC_LEGACY_STATE_DIR/projects" ]]; then
+        echo "[WARN] 旧 state に起動台帳があります（$CC_LEGACY_STATE_DIR/projects）。上の案内に従って旧 state を移してから、c3c --check を再実行してください。"
+      fi
     else
       local line
       while IFS= read -r line || [[ -n "$line" ]]; do
@@ -3020,7 +2984,7 @@ cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開�
 
 record_project_in_ledger
 
-# 設定ディレクトリ（.c3c / 旧 .claude-container.d）の選択。--clean の分岐より後・env 読込より前。
+# 設定ディレクトリ（.c3c）の選択。旧名 .claude-container.d があれば止める。--clean の分岐より後・env 読込より前。
 # 二重配置・型不正はここで fail-closed に止まる（ビルドや env 読込へ進まない）。
 select_project_conf_dir
 
@@ -3036,7 +3000,7 @@ readonly CHECK_MODE
 
 guard_env_gh_token
 guard_legacy_vars
-guard_env_key_renames
+guard_legacy_env_keys
 guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir
@@ -3051,6 +3015,7 @@ guard_base_image
 guard_ipv6
 guard_claude_json
 guard_asset_drift
+guard_image_layout
 
 # 選択した CLI 側のゲートだけを通す。Claude の .mcp.json ゲートは従来どおり、Codex は
 # 検査用コンテナの結果に対する独立承認（下の check_codex_approval）を使い、互いに代用しない。

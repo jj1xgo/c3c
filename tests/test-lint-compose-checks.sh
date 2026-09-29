@@ -19,7 +19,7 @@ esac
 TAIL
 } > "$tmp/harness"
 
-TARGET=/etc/claude-container/codex-mcp-approved.json
+TARGET=/etc/c3c/codex-mcp-approved.json
 fail=0 count=0
 run_case() {
   local label="$1" kind="$2" expected_rc="$3" input="$4" rc=0
@@ -39,8 +39,8 @@ short_ro='services:
     stdin_open: false
     volumes:
       - /home/u/.claude:/home/node/.claude
-      - /dev/null:/etc/claude-container/mcp-approved-hash:ro
-      - /home/u/.local/state/record.json:/etc/claude-container/codex-mcp-approved.json:ro
+      - /dev/null:/etc/c3c/mcp-approved-hash:ro
+      - /home/u/.local/state/record.json:/etc/c3c/codex-mcp-approved.json:ro
       - /etc/localtime:/etc/localtime:ro'
 run_case '短縮表記: :ro は合格' ro 0 "$short_ro"
 run_case '短縮表記: :ro,z も合格' ro 0 "${short_ro/codex-mcp-approved.json:ro/codex-mcp-approved.json:ro,z}"
@@ -64,13 +64,13 @@ services:
           create_host_path: true
       - type: bind
         source: /dev/null
-        target: /etc/claude-container/mcp-approved-hash
+        target: /etc/c3c/mcp-approved-hash
         read_only: true
         bind:
           create_host_path: true
       - type: bind
         source: /home/u/.local/state/record.json
-        target: /etc/claude-container/codex-mcp-approved.json
+        target: /etc/c3c/codex-mcp-approved.json
         read_only: true
         bind:
           create_host_path: true
@@ -92,7 +92,7 @@ long_neighbor='services:
     volumes:
       - type: bind
         source: /home/u/.local/state/record.json
-        target: /etc/claude-container/codex-mcp-approved.json
+        target: /etc/c3c/codex-mcp-approved.json
         bind:
           create_host_path: true
       - type: bind
@@ -103,7 +103,7 @@ run_case 'long syntax: 隣接要素の read_only を取り込まない' ro 1 "$l
 long_dash_target='services:
   claude-auth-workspace:
     volumes:
-      - target: /etc/claude-container/codex-mcp-approved.json
+      - target: /etc/c3c/codex-mcp-approved.json
         source: /dev/null
         type: bind
         read_only: true

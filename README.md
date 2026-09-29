@@ -129,7 +129,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 
 `--check` は入口移行の案内（旧入口は削除済み、外部の呼び出しは `c3c claude` / `c3c codex` へ）を表示する。外部のスクリプト・alias・PATH を自動走査する機能ではなく、案内が出ないことは利用側すべての移行完了を意味しない。
 
-切替後は `c3c --check` と各 CLI の起動を確認する。問題があれば、旧入口を残した v11 系（v11.1.0 以降）の checkout に戻す。`c3c claude` / `c3c codex` は互換版でも利用できる。設定・認証・承認記録・CLI 選択の記憶の削除や再作成は不要。旧設定 `.claude-container.d/` の互換読込や内部の保存先（env キー、state directory、イメージ名）はこのコマンド削除とは別の話で、旧名の識別子の改名は後述「[旧名 claude-container の識別子からの移行](#旧名-claude-container-の識別子からの移行)」で扱う。
+切替後は `c3c --check` と各 CLI の起動を確認する。問題があれば、旧入口を残した v11 系（v11.1.0 以降）の checkout に戻す。`c3c claude` / `c3c codex` は互換版でも利用できる。設定・認証・承認記録・CLI 選択の記憶の削除や再作成は不要。旧設定 `.claude-container.d/` の互換読込や内部の保存先（env キー、state directory、イメージ名）はこのコマンド削除とは別の話で、旧名の識別子の改名は後述「[旧名 claude-container からの移行（v16）](#旧名-claude-container-からの移行v16)」で扱う。
 
 ## 起動前チェック（`--check`）
 
@@ -153,7 +153,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 
 削除前に対象を表示し、対象ごとに名前・ラベル・パス・参照を再検査する。強制削除や全体 prune は使わず、`rmi --no-prune` で親イメージも保持する。中間イメージ・キャッシュが残るため、ディスク使用量の回収が小さい場合がある。結果には削除成功・対象なし・保留理由・失敗を分けて表示する。**台帳、ネットワーク、MCP 承認記録、ビルドコンテキストは変更しない。** 台帳を保持するので、後から従来の `--clean <path>` も使える（この旧コマンドは全体の dangling prune を伴う）。清掃後も通常の `--check` は欠落台帳パスを FAIL として報告する。清掃モードで対象イメージが既にない場合は正常終了する。由来ラベルから見つかった台帳外の実在ディレクトリも、清掃モードでは通常のプロジェクト診断に回す。
 
-新しいビルドには `io.c3c.project-metadata` / `project-path` / `project-name` ラベルを記録する（v15.1 系では旧名 `claude-container.project-*` も同じ値で併記する。読むときは新名の組を優先し、新旧を混ぜない）。**ホストの絶対パスはイメージを共有・export した場合にも含まれる。** 既存イメージへの後付けはせず、次回 `-b` または暗黙ビルドから付く。Dockerfile の変更による既存のドリフト診断は、従来どおり再ビルドを案内する。改行や先頭 `//` を含むパスは清掃用の由来情報を付けない。
+新しいビルドには `io.c3c.project-metadata` / `project-path` / `project-name` ラベルを記録する（v15.1 系は旧名 `claude-container.project-*` も併記していた。v16 は旧名を読まず、由来 label を旧名でだけ持つイメージは清掃の対象外として `[WARN]` で ID と削除の手順を示す）。**ホストの絶対パスはイメージを共有・export した場合にも含まれる。** 既存イメージへの後付けはせず、次回 `-b` または暗黙ビルドから付く。Dockerfile の変更による既存のドリフト診断は、従来どおり再ビルドを案内する。改行や先頭 `//` を含むパスは清掃用の由来情報を付けない。
 
 清掃はこのホストのローカル Podman を対象とし、`--remote=false` で接続先の切り替えを防ぐ。未マウントの媒体・切断中の共有上のプロジェクトも欠落と判定されうるため、媒体を接続した状態で実行する。検査と削除は全体として原子的ではないので、同時にビルド・タグ変更・起動・移動を行わない。読み取りの Podman 検査は30秒を上限とし、タイムアウトも失敗として報告する。削除処理には上限を設けず完了を待つ（ストレージ更新中の強制終了を避けるため）。
 
@@ -166,7 +166,7 @@ PATH 上の入口を checkout の `c3c` に向け、alias・wrapper・Makefile�
 ### 通常診断の契約
 
 - **起動台帳**: 通常起動（`--clean`/`--check` を除く）のたびに、対象ディレクトリのホスト絶対パスが `~/.local/state/c3c/projects` へ自動記録される（手動メンテ不要）。`--check` を引数なしで実行すると、この台帳に記録された全プロジェクトを一括診断する。`--clean <directory>` はそのプロジェクトを台帳からも削除し、`--clean`（引数なし）は台帳自体を削除する。シンボリックリンク経由と実体パスで起動すると別エントリとして記録される点に注意（`compute_project_name()` のプロジェクト識別基準と同じ）。
-- **検査項目**: 設定ディレクトリの選択（`.c3c/` と旧 `.claude-container.d/` の有無・型・二重配置。前述「利用側プロジェクトの設定」節）・legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・基点の `.claude.json` の有無と型（前述「前提」）・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無と配置 label（`io.c3c.image-layout`。v15 以前のイメージは `[FAIL]` で `-b` を案内。`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
+- **検査項目**: 設定ディレクトリの選択（`.c3c/` の有無・型と、旧名 `.claude-container.d/` の残存。前述「利用側プロジェクトの設定」節）・旧名の env キー（`CLAUDE_CONTAINER_*`）・旧 state の残存・legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`SHARED_MOUNT_HOME_ALIAS`/`AGENTS_DIR`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・基点の `.claude.json` の有無と型（前述「前提」）・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無と配置 label（`io.c3c.image-layout`。v15 以前のイメージは `[FAIL]` で `-b` を案内。`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
 - **非対話・対象リポジトリは不変**: `--check` は TTY 確認を一切行わない（MCP stdio 型サーバーが未承認の場合は「初回起動時に確認プロンプトが出ます」と報告するのみ）。台帳に記録があるが実体が見つからないプロジェクトも FAIL として報告するだけで、台帳を黙って書き換えない。**保証の範囲は「対象リポジトリと `.build-context/` を変更しない」こと**（内容診断は `mktemp` 経由で `/tmp` 配下に作業ファイルを必ず作るため、無限定の「書き込みゼロ」ではない）。
 - **Claude project 設定ゲート**（#163、Claude 経路だけ）: `.claude` も `.mcp.json` も無ければ `[OK]` 対象なし。あれば、イメージの `io.c3c.claude-project-audit-protocol` を照合し（未対応は `[FAIL]` と `-b` の案内、未ビルドは `[INFO]`、podman が無ければ `[SKIP]`）、ホストの python3 で `claude-project-audit.py` を参考実行する。承認済みは `[OK]`、未承認・変更ありは `[INFO]`（起動時に確認が出る）、起動時に止まる設定（plugin の有効化・判定できない状態等）とホストに python3 が無い場合は `[FAIL]`。判定はホスト上での参考で、コンテナ内の見え方（symlink 等）と違う場合は起動時の判定が優先される。検査用コンテナは起動せず、確認も記録の書き込みも行わない。Codex 経路では `[INFO]` で「使用しない」と出す。後述「リポジトリの Claude 設定の確認」節も参照。
 - **終了コード**: 診断対象のいずれかが FAIL の場合は非0、それ以外は0で終了する。`-b` は `--check` と併用しても無視される。
@@ -236,7 +236,7 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 .claude/bash_history
 ```
 
-利用側プロジェクトの c3c 向け設定は、起動 checkout 直下の `.c3c/` ディレクトリに一本化されている（c3c 第2b-1段階で旧名 `.claude-container.d/` から改名。旧名は v16 で読み取りを廃止し、存在すると起動を止める。後述「旧 `.claude-container.d/` からの移行」）。中身は「起動のたび読み込まれるランタイム設定」と「ビルド時にイメージへ焼き込まれる設定」の2種類に分かれる。
+利用側プロジェクトの c3c 向け設定は、起動 checkout 直下の `.c3c/` ディレクトリに一本化されている（c3c 第2b-1段階で旧名 `.claude-container.d/` から改名。旧名は v16 で読み取りを廃止し、存在すると起動を止める。後述「設定ディレクトリの探索」と「旧名 claude-container からの移行（v16）」）。中身は「起動のたび読み込まれるランタイム設定」と「ビルド時にイメージへ焼き込まれる設定」の2種類に分かれる。
 
 ```
 .c3c/env                  # ランタイム設定（KEY=VALUE、上記「環境変数」参照）。-b 不要、gitignore 対象
@@ -265,7 +265,7 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 
 `base-image.txt` はベースイメージをホスト環境に合わせたい場合に使う（例: `debian:testing`。内部運用issue参照）。置かなければ既定の `debian:stable` が使われる（他の3ファイルと異なり WARNING は出ない）。許容範囲は **docker.io の debian 公式イメージのみ**（タグは自由、`debian:stable@sha256:<64桁hex>` のような digest pin も可）。範囲外の値は起動を拒否する（fail-closed）。この制限は「セキュリティ境界」ではなく「サポート範囲の宣言・互換性ガード」と位置づけている — `.c3c/` を書き換えられる主体は `packages.txt` 経由で apt の maintainer script をビルド時 root で実行でき、`requirements.txt` 経由の任意 PyPI 名指定でも sdist の `setup.py` がビルド時 root で実行される経路が原理的に残る（PyPI は open publishing のため）。いずれもベースイメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、内部運用issue参照）。実際の互換性は `Dockerfile.claude` 側のビルド時アサーション（`setpriv`/`tini` の存在・`setpriv --ambient-caps`/`--inh-caps` の受理・apt sources の HTTPS 化）が担保する。ただしこのアサーションは「正直な壊れ方」しか検知できず、悪意を持って `setpriv` 等を偽装するベースイメージは検知できない。`debian:testing`/`debian:sid` のような rolling suite を指定すると、`-b` のたびに未知の apt パッケージ版へ追随するため再現性が下がる — 再現性が必要な場合は日付タグ（`debian:trixie-20260701`）か digest pin を使うこと。値の検証はホスト側の `c3c` スクリプトが行うため、`podman build` を直接実行する経路では効かない。
 
-### 旧 `.claude-container.d/` からの移行
+### 設定ディレクトリの探索
 
 どの呼出名で起動しても（旧名の symlink を含む）、起動 checkout 直下を次の表で探索する（呼出名で結果は変わらない。`--check` も同じ判定を行う）。
 
@@ -282,26 +282,32 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 
 MCP の承認記録・イメージ・起動台帳は起動パス単位、CLI 選択の記憶は Git common directory 単位（非 Git はパスの実体単位）で管理する。いずれも設定ディレクトリの名前には依存しないため移行で変わらない（設定名の変更だけで MCP を再承認済みにはしない — `.mcp.json` や Codex の MCP 定義が変わっていれば従来どおり確認プロンプトが出る）。
 
-### 旧名 claude-container の識別子からの移行
+### 旧名 claude-container からの移行（v16）
 
-v15.1 系で、旧製品名 `claude-container` を含む識別子を `c3c` の名前へ移した。旧名は `WARNING` を出したうえで従来どおり動き、利用者が何もしなくても起動できる（`-b` も強制しない）。旧名は次のメジャー版で使えなくなるので、それまでに移行する。
+v16 で、旧製品名 `claude-container` を含む識別子の互換読み取りを削除した（v15.1 系では `WARNING` 付きで読めた）。旧名が残っていると、次のとおり起動が止まるか、案内が出る。`c3c --check` で 4 種をまとめて確かめられる。
 
-| 対象 | 旧名 | 新名 | v15.1 系での扱い |
+| 対象 | 旧名 | 新名 | v16 での扱い |
 |---|---|---|---|
-| env キー（`.c3c/env`・シェル環境） | `CLAUDE_CONTAINER_NO_FIREWALL`・`CLAUDE_CONTAINER_IPV6` | `C3C_NO_FIREWALL`・`C3C_IPV6` | 旧キーは `WARNING` 付きで同じ意味に読む。新旧を同時に設定すると、値が同じでも起動と `--check` で拒否する |
-| state directory（承認記録・起動台帳・CLI の記憶） | `~/.local/state/claude-container/` | `~/.local/state/c3c/` | 通常起動で自動的に移す（下記） |
-| イメージ label | `claude-container.*` | `io.c3c.*` | 新しいビルドは両方を書く。読むときは新名を優先する |
-| コンテナ内の秘密のパス | `/home/node/.config/claude-container/secrets` | `/home/node/.config/c3c/secrets` | 両方に同じ `SECRETS_DIR` を読み取り専用でマウントする。自分のスクリプトや MCP 設定は新パスへ移す |
+| env キー（`.c3c/env`・シェル環境） | `CLAUDE_CONTAINER_NO_FIREWALL`・`CLAUDE_CONTAINER_IPV6` | `C3C_NO_FIREWALL`・`C3C_IPV6` | 空でない値があれば `ERROR`（`--check` は `[FAIL]`） |
+| 設定ディレクトリ | `.claude-container.d/` | `.c3c/` | 存在すれば `ERROR`（`.c3c/` の有無を問わない） |
+| state directory | `~/.local/state/claude-container/` | `~/.local/state/c3c/` | 読まない。残っていれば `WARNING`（`--check` は `[WARN]`） |
+| イメージ | label `claude-container.*`、コンテナ内の `/etc/claude-container/*`・`~/.config/claude-container/secrets` | label `io.c3c.*`、`/etc/c3c/*`・`~/.config/c3c/secrets` | v15 以前にビルドしたイメージは `ERROR` で `-b` を案内（`--check` は `[FAIL]`）。由来 label を旧名でだけ持つ v15.0 以前のプロジェクトイメージは `--check` で `[WARN]`（自動清掃しない） |
 
-**env キー**: `.c3c/env` とシェルの起動ファイル（`export CLAUDE_CONTAINER_...`）の両方を確認して、新キーに書き換える。片方だけ書き換えると、新旧の併存として起動が止まる。
+移行の手順（c3c のセッションをすべて終えてから行う）:
 
-**state directory**: 通常起動のとき、`~/.local/state/c3c` が無く旧 state がディレクトリ（またはディレクトリへの symlink）なら、そのエントリを同じ親の中で上書きしない rename（`renameat2` の `RENAME_NOREPLACE`）で移し、`WARNING` で一度知らせる。コピーはしない。symlink はリンク自体が移り、指す先は変わらない。`--check` と `--clean` は移さず、新が無ければ旧を読む（`--check` は `[WARN]` で次の通常起動での移行を知らせる）。ホストに python3 が無い、ファイルシステムが対応しない、旧 state がマウントポイント、といった理由で安全に移せない環境では、旧 state をそのまま使い続け、手で移す手順（c3c のセッションがすべて終わってから `mv ~/.local/state/claude-container ~/.local/state/c3c`）を案内する。新旧の両方がある場合は新を使い、旧が残っていることを `WARNING` で知らせる（自動では消さない。旧版の c3c のセッションがすべて終わってから、中身を確認して削除する）。`--clean`（全体）は新旧どちらの承認記録と起動台帳も削除する（CLI の記憶は従来どおり消さない）。
+1. **v16 へ上げる前に**（v15.1 系のうちに）`c3c --check --clean-missing` で、削除済みのプロジェクトのイメージを清掃する。v16 は旧 label を読まないので、v15.0 以前のイメージは自動清掃の対象から外れる（`--check` が ID と削除の手順を示す）。
+2. **env キー**: `.c3c/env` とシェルの起動ファイル（`export CLAUDE_CONTAINER_...`）の両方を確かめ、新キーに書き換える。
+3. **設定ディレクトリ**: プロジェクト直下で `mv -T -- .claude-container.d .c3c`（Git 追跡対象なら `git mv`）。`.gitignore` の `.claude-container.d/env` は `.c3c/env` に書き換える（ホスト固有パスを含む `env` を追跡しないため）。`.c3c/` が既にある場合は、中身を確かめてから旧名をプロジェクトの外へ退避する（直下に両方を並べると起動を拒否する）。
+4. **state directory**: v15.1 系で一度でも通常起動していれば、自動で移っている。旧が残っているときは、先に `c3c --check` を実行すると、そのまま打てる `mv -T -- <旧> <新>` が案内に出る（`--check` は何も書かないので新はまだ無い）。v16 で通常起動した後は新が作られているので、案内に従って新を退避（`mv -T -- <新> <新>.v16-new`）してから旧を移す。旧が不要なら、中身を確かめて削除する。移さずに起動すると、MCP 等の承認の確認がもう一度出て、起動台帳と CLI の記憶は空から始まる。`mv -T` は旧を新の中へ入れ子にしない（新が空でなければ失敗する）。`--clean`（全体）は旧 state を消さない。
+5. **イメージ**: 各プロジェクトを `-b` で再ビルドする（`c3c claude -b <dir>` / `c3c codex -b <dir>`）。
+6. **秘密のパス**: 自分のスクリプトや MCP 設定がコンテナ内の `~/.config/claude-container/secrets` を読んでいれば、`~/.config/c3c/secrets` に直す（v15.1 系は両方に載せていた。v16 は新パスだけ）。
+7. `c3c --check` で `[FAIL]` と旧名の `[WARN]` が無いことを確かめる。
 
-**イメージ**: 境界アセット（`Dockerfile.claude`・`compose.ipv6.yml`・`entrypoint.sh`）が変わったので、既存のイメージでは `-b` で再ビルドするまで、起動時と `--check` でドリフトの `WARNING` が出る（起動は止まらない）。再ビルドを推奨する。
+**v15.1 系へ戻したとき**:
 
-**次のメジャー版へ上げる前に**: `c3c --check --clean-missing` で、削除済みのプロジェクトのイメージを清掃しておく。次のメジャー版は旧 label を読まないため、旧 label だけを持つイメージは自動清掃の対象から外れる。
-
-**旧版へ戻したとき**: 旧版の c3c は `C3C_*` のキーを「解釈しない」`WARNING` 付きで無視するので、新キーに書き換えた後に戻すと、ファイアウォールの無効化と IPv6 は効かない（有効・IPv4 のまま＝安全側）。旧版は旧 state を空から作り直すため、MCP 等の承認の確認がもう一度出て、起動台帳は空になる。その後に新版へ戻すと、「新旧の両方がある」の `WARNING` が出続けるので、旧 state の中身を確認して削除する。新しいイメージを旧版の c3c で起動しても、イメージ側は旧キー・旧 label も読める。
+- v15.1 系は新名（`C3C_*`・`.c3c/`・`~/.local/state/c3c/`・`io.c3c.*`）を読むので、移行後の設定はそのまま使える。
+- v15.0 以前へ戻す場合: `.c3c/env` に書いた `C3C_*` は「解釈しない」`WARNING` 付きで無視され、シェル環境だけで渡した `C3C_*` は何も出さずに無視される。どちらもファイアウォールの無効化と IPv6 は効かない（有効・IPv4 のまま＝安全側）。v15.0 以前は旧 state だけを読むので、承認の確認がもう一度出て起動台帳は空になる。v16 のイメージは旧 label を持たないので、ドリフトの「ハッシュラベルがありません」`WARNING` が出て、`C3C_IPV6` 相当の IPv6 は対応確認で拒否される（戻した版で `-b` すれば解消）。
+- v16 でビルドしたイメージを v15.1 系の c3c で起動すると、承認記録が新しいパス（`/etc/c3c/*`）に載らないため、MCP と project 設定の確認がもう一度出る。Codex は起動時 MCP 審査の再照合で止まる（いずれも安全側）。戻した版で `-b` すれば解消する。
 
 ## GitHub トークンの配線
 
@@ -750,7 +756,7 @@ GitHub Actions（`.github/workflows/ci.yml`）が、PR と `main` への push �
 
 `c3c` 入口（旧名 symlink の同一契約・parser・`resolve_launcher_path()`・`select_c3c_agent()`・`prompt_c3c_agent()`・`write_agent_preference()`・`run_main_compose()` 以降の終了コード保持）と `agent-preference.py` の変更も `--launcher-only` に含む。単独では `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_agent_preference.py' -v` と `... -p 'test_c3c_launch.py' -v` を使う（後者は通常ファイルの `c3c` と外部 symlink を fake Podman・専用 PTY で起動し、初回選択・EOF・Ctrl-C・非 TTY、記憶の更新時点、`--check`/`--clean` の無書込、旧名 symlink 経由の記憶更新、symlink 解決を検証する。ハングはタイムアウトで失敗になる）。`tests/test_codex_launch.py` も `c3c` を起動し、Claude 固定が目的の通常起動では `claude` を明示する。実 Podman と実認証での対話受入は fake Podman の成功で代替しない。
 
-設定ディレクトリの選択（`select_project_conf_dir()`、`PROJECT_CONF_DIR` を使う resolver・staging・hash・案内文）の変更も `--launcher-only` に含む。単独では `... -p 'test_c3c_config.py' -v` を使う（新名・旧名・なし・二重配置・ファイル/dangling/symlink の各配置を `c3c` 直接・旧名 symlink 経由・`--check` で検証し、`--check` の継続と無書込、`--clean` の独立、新旧配置での staged file と asset hash の一致、固定アセットの上書き不可、案内先の一貫性を含む）。旧設定名 `.claude-container.d/` の fixture は互換読込の検査として残す。旧コマンド名の検査は外部 symlink から `c3c` を呼び出す形にし、通常起動・コピー・関数抽出の参照先は `c3c` に移行している。実移行（backup → 改名 → `--check` → 起動 → 戻し）は fake Podman では代替せず、実 Podman で確認する。
+設定ディレクトリの選択（`select_project_conf_dir()`、`PROJECT_CONF_DIR` を使う resolver・staging・hash・案内文）の変更も `--launcher-only` に含む。単独では `... -p 'test_c3c_config.py' -v` を使う（新名・旧名・なし・二重配置・ファイル/dangling/symlink の各配置を `c3c` 直接・旧名 symlink 経由・`--check` で検証し、`--check` の継続と無書込、`--clean` の独立、入力のステージングと asset hash、固定アセットの上書き不可、案内先の一貫性を含む）。旧設定名 `.claude-container.d/` は、存在すると起動を止める検査の fixture としてだけ使う。旧コマンド名の検査は外部 symlink から `c3c` を呼び出す形にし、通常起動・コピー・関数抽出の参照先は `c3c` に移行している。実移行（backup → 改名 → `--check` → 起動 → 戻し）は fake Podman では代替せず、実 Podman で確認する。
 
 Node/Codex の既定ビルド入力（同梱 `node-version.txt`・`codex-version.txt`、`resolve_asset_source()` の overridable 解決、`guard_build_input_defaults()`、`guard_codex_agent()` の opt-out 案内）の変更も `--launcher-only` に含む（`tests/test_c3c_config.py` の `BuildInputDefaultTests`: 新旧配置それぞれで欠落→同梱 default・project pin 優先・空ファイル opt-out、pin＝default と欠落の hash 同一、空 opt-out の Codex 起動拒否、Node 空＋Codex 有効の `WARNING` と `--check` の WARN）。実ビルドは `./test-build.sh`（全体）で行う: `--build-only` 経路がイメージ内の `node --version`・`npm --version`・`codex --version`・`claude --version` と `codex-mcp-audit.py` の起動を検査し、Node/Codex は同梱ファイルの固定値との一致を必須にする。全体実行はさらに、空の `codex-version.txt` で Codex が入らないこと、空の `node-version.txt`＋Codex 有効＋npm の無いベースでビルドが `npm が必要` のエラーで止まること、プロジェクト側の pin（Node 22.14.0）が default より優先されることを実ビルドで確認する。同梱 default を変えたときは `-b` の再ビルドと両 CLI の起動、旧イメージに対する `--check` のドリフト診断を実 Podman で確認する。
 

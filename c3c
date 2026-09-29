@@ -1124,8 +1124,15 @@ guard_codex_image_support() {
 guard_image_layout() {
   [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]] && return 0
   command -v podman >/dev/null 2>&1 || return 0
-  local exists_rc=0 layout
+  local exists_rc=0
   podman image exists "$IMAGE_NAME" 2>/dev/null || exists_rc=$?
+  check_image_layout "$exists_rc"
+}
+
+# 取得済みの podman image exists の rc（$1）から配置を判定する。--check の check_one_project() は自分で取った rc を
+# 渡し、有無を検査し直さない（再検査で rc が 125 から 1・0 に変わると、最初の検査失敗が診断から消えるため）。
+check_image_layout() {
+  local exists_rc=$1 layout
   case "$exists_rc" in
     0) ;;
     1) return 0 ;;
@@ -2657,12 +2664,12 @@ check_one_project() {
     echo "[SKIP] podman が見つからないためイメージ確認をスキップ"
   elif podman image exists "$IMAGE_NAME" 2>/dev/null || { image_exists_rc=$?; false; }; then
     echo "[OK]   イメージ既ビルド: $IMAGE_NAME"
-    guard_image_layout || true
+    check_image_layout 0 || true
   elif [[ $image_exists_rc -eq 1 ]]; then
     echo "[INFO] イメージ未ビルド: $IMAGE_NAME（初回起動時に自動ビルドされます。破壊的変更後は -b を推奨）"
   else
-    # 不在（rc 1）以外の検査失敗は未ビルドと報告せず、guard_image_layout() が FAIL にする。
-    guard_image_layout || true
+    # 不在（rc 1）以外の検査失敗は未ビルドと報告せず、取得済みの rc のまま check_image_layout() が FAIL にする。
+    check_image_layout "$image_exists_rc" || true
   fi
 
   guard_asset_drift || true

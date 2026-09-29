@@ -615,7 +615,12 @@ fi
 if [[ "\${1:-}" == --remote=false ]]; then shift; fi
 case "\$1 \$2" in
   "images --all") printf '%s\\n' '[]'; exit 0 ;;
-  "image exists") exit "\${TEST_IMAGE_EXISTS_RC-0}" ;;
+  "image exists")
+    # TEST_IMAGE_EXISTS_FIRST_RC: 最初の 1 回だけ返す rc（再検査で rc が変わる場合の LY-7）。以降は TEST_IMAGE_EXISTS_RC。
+    if [[ -n "\${TEST_IMAGE_EXISTS_FIRST_RC-}" && ! -e "$root/image-exists-called" ]]; then
+      : > "$root/image-exists-called"; exit "\$TEST_IMAGE_EXISTS_FIRST_RC"
+    fi
+    exit "\${TEST_IMAGE_EXISTS_RC-0}" ;;
   "image inspect")
     if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-2}"; fi
     if [[ "\$*" == *claude-container.* ]]; then printf '%s\n' "\$*" >> "$root/legacy-label-reads"; fi
@@ -1725,6 +1730,11 @@ CURL
   run_launcher_check TEST_IMAGE_EXISTS_RC=125
   check "LY-6: --check もイメージの有無を確認できなければ FAIL にする（rc=$rc）" \
     bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"の有無を確認できません"* ]]' _ "$rc" "$out"
+  rm -f "$root/image-exists-called"
+  run_launcher_check TEST_IMAGE_EXISTS_FIRST_RC=125 TEST_IMAGE_EXISTS_RC=1
+  check "LY-7: --check は最初の検査失敗を再検査の結果で消さない（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"の有無を確認できません"* ]]' _ "$rc" "$out"
+  rm -f "$root/image-exists-called"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # L2 系（改名 第 2 段）: 単独の label は io.c3c.* だけを読み、旧 label へ fallback しない。
   rm -f "$proj/.c3c/env" "$root/legacy-label-reads"

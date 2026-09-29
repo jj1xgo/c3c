@@ -1533,3 +1533,9 @@ MAJOR（v16.0.0）。根拠: `.c3c/` 以外の設定ディレクトリ名・env 
 区分: 境界（ファイアウォールを無効化する env キー、MCP・Codex・project 設定の承認記録のマウント先、秘密のマウント先と askpass の読み先を変え、`docs/development-invariants.md` の不変条件を書き換えるため）
 推奨実装: Opus（秘密の読み先と承認記録の経路という境界に触れ、Task 1 のゲートの配置や Task 5・6 のテスト書き換えで実装中の判断が残る。Codex は host の checkout で完結する点では候補だが、Task 5 の `test_c3c_config.py` の書き換えが方針指示に留まり逐語手順まで確定していないため推さない。Sonnet は境界変更のため推さない）
 実装: Opus（持ち主指定 2026-09-29。推奨の提示に「続けて」と回答）
+
+## 実機確認の記録（Task 8、2026-09-29、コンテナ内、実装 0363775）
+
+- Step 1（コンテナ内で実行）: `./lint.sh` rc 0・警告ゼロ（Compose の検証は podman が無いため not run）。`./test-build.sh --launcher-only` PASS=448・FAIL=0。`./test-build.sh --validator-only` PASS=82・FAIL=0。`bash examples/hooks/tests/test-block-pr-approve.sh` 全ケース green。`python3 -m unittest discover -s tests -p 'test_*.py'` 445 件 OK（skip 12 件は `test_codex_entrypoint.py` の ComposeContractTests で、podman が無いため。変更前と同数）。
+- Step 1 のうち `TMPDIR=/tmp ./test-build.sh`（全体。実イメージのビルドと `io.c3c.image-layout`・`/etc/c3c/*` の確認）と `--config-ro-only`: not run（コンテナ内に実 Podman が無い。ホストで実施する）。
+- Step 2・3（`--check` の 4 種の検出、`-b` 後の全経路、ロールバック）: not run（ホストが必要）。

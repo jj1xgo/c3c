@@ -617,6 +617,7 @@ case "\$1 \$2" in
   "images --all") printf '%s\\n' '[]'; exit 0 ;;
   "image exists") exit 0 ;;
   "image inspect")
+    if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-2}"; fi
     if [[ "\$*" == *claude-container.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_NEW_SUPPORT-}"; fi
     if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH_NEW-}"; fi
@@ -1719,6 +1720,20 @@ CURL
   out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # LY 系（改名 第 2 段）: io.c3c.image-layout が 2 でない既存イメージは compose を呼ばずに止まる。
+  rm -f "$proj/.claude-container.d/env"
+  run_launcher TEST_IMAGE_LAYOUT=
+  check "LY-1: 配置 label の無い既存イメージは -b を案内して起動を止める（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"io.c3c.image-layout"* && "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
+  run_launcher TEST_IMAGE_LAYOUT=1
+  check "LY-2: 配置 label が対応値以外でも止める（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ]' _ "$rc" "$root"
+  run_launcher_check TEST_IMAGE_LAYOUT=
+  check "LY-3: --check は配置 label の不一致を FAIL にする（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL"' _ "$rc" "$out"
+  run_launcher
+  check "LY-4: 配置 label が 2 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # L 系（改名 第 1 段）: 単独の label の新名優先と旧名 fallback。後続の既存 check の env を消さないよう末尾に置く。
   printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"

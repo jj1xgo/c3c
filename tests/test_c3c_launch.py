@@ -62,7 +62,9 @@ elif head == 'image inspect':
     if not state.get('image_exists'):
         sys.exit(125)
     fmt = args[args.index('--format') + 1] if '--format' in args else ''
-    if 'io.c3c.codex-audit-protocol' in fmt:
+    if 'io.c3c.image-layout' in fmt:
+        print(state.get('layout', '2'))
+    elif 'io.c3c.codex-audit-protocol' in fmt:
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
         print('1')
@@ -78,6 +80,7 @@ elif args[:1] == ['compose']:
             sys.exit(rc)
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
+        state['layout'] = state.get('build_layout', '2')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
         spec = state.get('preflight', {})
@@ -708,7 +711,7 @@ jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTE
 case "${1:-} ${2:-}" in
   "images --all") echo '[]' ;;
   "image exists") exit 0 ;;
-  "image inspect") echo '' ;;
+  "image inspect") case "$*" in *io.c3c.image-layout*) echo 2 ;; *) echo '' ;; esac ;;
 esac
 exit 0
 '''
@@ -1076,6 +1079,62 @@ class StateMigrationLaunchTests(LaunchCase):
         self.assertFalse((real / 'projects').exists())
         self.assertTrue((real / 'agent-preferences').is_dir())
         self.assertTrue((self.home / '.local/state/claude-container').is_symlink())
+
+
+class ImageLayoutGateTests(LaunchCase):
+    """改名 第 2 段: io.c3c.image-layout が 2 でない既存イメージでは compose を 1 回も呼ばずに止まる。
+    v15.1 以前のイメージは承認記録と秘密を旧パスで読むため、新 compose で本起動させない。"""
+
+    def use_old_image(self):
+        self.state['image_exists'] = True
+        self.state['layout'] = ''
+
+    def test_claude_launch_rejects_old_image_before_compose(self):
+        self.use_old_image()
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('io.c3c.image-layout', result.stderr)
+        self.assertIn('-b', result.stderr)
+        self.assertEqual(self.compose_calls(), [])
+
+    def test_gate_runs_before_the_host_mcp_prompt(self):
+        # ホストの .mcp.json 承認の対話より前に止める（承認に答えさせてから -b を案内しない）。
+        self.use_old_image()
+        (self.proj / '.mcp.json').write_text('{"mcpServers": {"s": {"command": "x"}}}\n')
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('io.c3c.image-layout', result.stderr)
+        self.assertNotIn('[y/N]', result.stdout + result.stderr)
+
+    def test_codex_launch_rejects_old_image_before_preflight(self):
+        self.use_old_image()
+        self.state['label'] = '2'
+        self.approve_codex()
+        result = self.run_c3c('codex', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.preflight_calls(), [])
+        self.assertEqual(self.main_runs(), [])
+
+    def test_rebuild_passes_the_gate(self):
+        self.use_old_image()
+        result = self.run_c3c('claude', '-b', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertEqual(len(self.compose_calls('build')), 1)
+
+    def test_absent_image_is_not_checked(self):
+        # 未ビルドなら compose の暗黙ビルドが label 付きで作る。ゲートは既存イメージだけを見る。
+        self.state['image_exists'] = False
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+
+    def test_check_reports_fail_without_writing(self):
+        self.use_old_image()
+        before = self.snapshot(self.home)
+        result = self.run_c3c('--check', str(self.proj))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('io.c3c.image-layout', result.stdout + result.stderr)
+        self.assertIn('結果: FAIL', result.stdout)
+        self.assertEqual(self.snapshot(self.home), before)
 
 
 if __name__ == '__main__':

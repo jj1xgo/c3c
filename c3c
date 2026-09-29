@@ -29,6 +29,10 @@ readonly CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
 CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION=1
 CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL=io.c3c.claude-project-audit-protocol
 readonly CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL
+# コンテナ内の配置の版（改名 第 2 段）。Dockerfile.claude の LABEL io.c3c.image-layout と一致させる。
+IMAGE_LAYOUT_LABEL=io.c3c.image-layout
+IMAGE_LAYOUT_VERSION=2
+readonly IMAGE_LAYOUT_LABEL IMAGE_LAYOUT_VERSION
 
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
@@ -1190,6 +1194,24 @@ guard_codex_image_support() {
     guard_fail "ERROR: イメージ $IMAGE_NAME は Codex 起動時 MCP 審査（protocol $CODEX_AUDIT_PROTOCOL_VERSION）に対応していません（label $CODEX_AUDIT_PROTOCOL_LABEL=${label:-なし}）。-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
   fi
   [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Codex 審査 protocol: $CODEX_AUDIT_PROTOCOL_LABEL=$label"
+  return 0
+}
+
+# コンテナ内の配置の確認（改名 第 2 段）。v16 の compose は承認記録を /etc/c3c/*、秘密を新パスにだけ載せ、
+# v15.1 以前のイメージの entrypoint.sh はそこを読まない。既存イメージの label が対応値でなければ -b を案内して
+# 止める（guard_codex_image_support() と同じ型）。未ビルドなら何もしない（compose の暗黙ビルドが label 付きで
+# 作る）。通常起動の -b は、この後の明示ビルドで作り直すので見ない（guard_ipv6() と同じ）。通常起動ではガード列で
+# 呼び、ホストの MCP 承認の対話・検査用コンテナ・本起動より前に止める。--check では既存イメージの静的診断。
+guard_image_layout() {
+  [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]] && return 0
+  command -v podman >/dev/null 2>&1 || return 0
+  podman image exists "$IMAGE_NAME" 2>/dev/null || return 0
+  local layout
+  layout=$(podman image inspect --format "{{index .Labels \"$IMAGE_LAYOUT_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null || true)
+  if [[ "$layout" != "$IMAGE_LAYOUT_VERSION" ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME は c3c v16 のコンテナ内の配置に対応していません（label $IMAGE_LAYOUT_LABEL=${layout:-なし}、必要な値 $IMAGE_LAYOUT_VERSION）。v15 以前にビルドしたイメージは承認記録と秘密を旧パスで読むため、-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   イメージの配置: $IMAGE_LAYOUT_LABEL=$layout"
   return 0
 }
 
@@ -2709,6 +2731,7 @@ check_one_project() {
     echo "[SKIP] podman が見つからないためイメージ確認をスキップ"
   elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
     echo "[OK]   イメージ既ビルド: $IMAGE_NAME"
+    guard_image_layout || true
   else
     echo "[INFO] イメージ未ビルド: $IMAGE_NAME（初回起動時に自動ビルドされます。破壊的変更後は -b を推奨）"
   fi
@@ -3051,6 +3074,7 @@ guard_base_image
 guard_ipv6
 guard_claude_json
 guard_asset_drift
+guard_image_layout
 
 # 選択した CLI 側のゲートだけを通す。Claude の .mcp.json ゲートは従来どおり、Codex は
 # 検査用コンテナの結果に対する独立承認（下の check_codex_approval）を使い、互いに代用しない。

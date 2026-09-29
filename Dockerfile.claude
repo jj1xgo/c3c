@@ -383,13 +383,9 @@ ENV PATH=/home/node/.local/bin:$PATH
 # 置いているので、このラベルの追加は追加のキャッシュ無効化コストを生まない
 # （CACHEBUST 以降は `-b` 実行のたびに既に破棄されている）。
 ARG ASSET_HASH=unknown
-# 改名 第 1 段: 新 label（io.c3c.*）と旧 label（claude-container.*）の両方を書く。旧版の c3c へ戻したときも
-# ドリフト検知・IPv6 対応確認・--clean-missing が働くように（第 2 段で旧 label を外す）。
-LABEL io.c3c.asset-hash="${ASSET_HASH}" \
-      claude-container.asset-hash="${ASSET_HASH}"
+LABEL io.c3c.asset-hash="${ASSET_HASH}"
 # 旧 entrypoint が IPv6 モードを無視して起動するのを launcher で防ぐ。
-LABEL io.c3c.ipv6-support="1" \
-      claude-container.ipv6-support="1"
+LABEL io.c3c.ipv6-support="1"
 # Codex の起動時 MCP 審査 protocol（c3c 第1段階）。launcher の guard_codex_image_support() は
 # この label が対応 protocol（2）と一致するイメージでだけ検査用コンテナと本起動を行う（旧イメージ・
 # label 欠落では preflight 自体を起動しない）。protocol の内容は codex-mcp-audit.py と entrypoint.sh。
@@ -412,8 +408,7 @@ LABEL io.c3c.claude-project-audit-protocol="1"
 # スコープ外になるため、BASE_IMAGE をここで再宣言する必要がある（buildkit は
 # FROM 前の値を自動的に引き継ぐ）。
 ARG BASE_IMAGE
-LABEL io.c3c.base-image="${BASE_IMAGE}" \
-      claude-container.base-image="${BASE_IMAGE}"
+LABEL io.c3c.base-image="${BASE_IMAGE}"
 
 # compose.yml は init-firewall.sh が iptables を設定できるよう NET_ADMIN/NET_RAW
 # （cap_add）を追加する。userns_mode: keep-id を伴う rootless podman では、
@@ -436,7 +431,4 @@ ARG CC_PROJECT_PATH=
 ARG CC_PROJECT_NAME=
 LABEL io.c3c.project-metadata="${CC_PROJECT_METADATA}" \
       io.c3c.project-path="${CC_PROJECT_PATH}" \
-      io.c3c.project-name="${CC_PROJECT_NAME}" \
-      claude-container.project-metadata="${CC_PROJECT_METADATA}" \
-      claude-container.project-path="${CC_PROJECT_PATH}" \
-      claude-container.project-name="${CC_PROJECT_NAME}"
+      io.c3c.project-name="${CC_PROJECT_NAME}"

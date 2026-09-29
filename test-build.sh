@@ -832,6 +832,7 @@ run_launcher_tests() {
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
+  check "コンテナ側のファイルが旧名のパス・env キー・label を参照しない（改名 第 2 段）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_container_paths.py"
   check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
   check "state directory の移行（遷移表・RENAME_NOREPLACE・errno の対応・同一性・check/clean の無移行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_state_migration.py"
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
@@ -2338,6 +2339,8 @@ check "Codex 審査 helper の依存モジュールと起動" podman run --rm --
 check "Claude project 設定ゲート helper の起動" podman run --rm --network=none "$IMAGE" python3 -I /usr/local/bin/claude-project-audit.py --help
 # shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
 check "Claude project 設定ゲートの protocol label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-project-audit-protocol\"}}" "$1")" = 1 ]' _ "$IMAGE"
+# shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
+check "コンテナ内の配置 label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.image-layout\"}}" "$1")" = 2 ]' _ "$IMAGE"
 check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version

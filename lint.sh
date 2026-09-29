@@ -253,9 +253,14 @@ elif command -v podman >/dev/null 2>&1; then
   # 承認記録の :ro と TTY/stdin 無効は provider の出力形式（短縮 / long syntax、false の省略）に
   # 依らず意味で検査する（compose_mount_is_ro / compose_tty_disabled）。
   if base=$(podman compose -f compose.yml config); then
-    for target in /etc/claude-container/codex-mcp-approved.json /etc/claude-container/mcp-approved-hash /etc/claude-container/claude-project-approved.json /home/node/.gitconfig /home/node/.config/c3c/secrets /home/node/.config/claude-container/secrets; do
+    for target in /etc/c3c/codex-mcp-approved.json /etc/c3c/mcp-approved-hash /etc/c3c/claude-project-approved.json /home/node/.gitconfig /home/node/.config/c3c/secrets; do
       compose_mount_is_ro "$target" <<<"$base" || status=1
     done
+    # 改名 第 2 段: 旧名のパスへのマウントが残っていないこと（v16 のイメージは旧パスを読まない）。
+    if grep -qE '/etc/claude-container/|/home/node/\.config/claude-container/' <<<"$base"; then
+      echo "ERROR: compose.yml に旧名のコンテナ内パス（/etc/claude-container・~/.config/claude-container）へのマウントが残っています" >&2
+      status=1
+    fi
     grep -qE '^\s*CC_CODEX_START_MODE:' <<<"$base" \
       || { echo "ERROR: compose.yml の environment に CC_CODEX_START_MODE がありません" >&2; status=1; }
     grep -qE '^\s*CC_CLAUDE_START_MODE:' <<<"$base" \
@@ -270,8 +275,8 @@ elif command -v podman >/dev/null 2>&1; then
   fi
   if merged=$(podman compose -f compose.yml -f compose.codex-preflight.yml config); then
     compose_tty_disabled <<<"$merged" || status=1
-    compose_mount_is_ro /etc/claude-container/codex-mcp-approved.json <<<"$merged" || status=1
-    compose_mount_is_ro /etc/claude-container/claude-project-approved.json <<<"$merged" || status=1
+    compose_mount_is_ro /etc/c3c/codex-mcp-approved.json <<<"$merged" || status=1
+    compose_mount_is_ro /etc/c3c/claude-project-approved.json <<<"$merged" || status=1
   else
     status=1
   fi

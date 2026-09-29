@@ -104,7 +104,7 @@ fi
 # 本起動（run）では .mcp.json ゲートの後・秘密の export より前に、host が :ro で渡した承認記録と照合する。
 # opt-out は設けない（.mcp.json ゲートと同じ理由、#29）。
 CLAUDE_PROJECT_AUDIT=/usr/local/bin/claude-project-audit.py
-CLAUDE_PROJECT_APPROVED=/etc/claude-container/claude-project-approved.json
+CLAUDE_PROJECT_APPROVED=/etc/c3c/claude-project-approved.json
 CLAUDE_PROJECT_ROOT=/workspace
 if [ "$CC_AGENT" = claude ] && [ "$CLAUDE_START_MODE" = preflight ]; then
   if ! python3 -I "$CLAUDE_PROJECT_AUDIT" --root "$CLAUDE_PROJECT_ROOT" snapshot >&3; then
@@ -144,9 +144,9 @@ if [ "$CC_AGENT" = claude ] && [ -f "$MCP_CONFIG" ]; then
   if [ -n "$stdio_servers" ]; then
     # TOFU承認記録との照合（#28）。ホスト側 c3c が
     # 事前に対話承認済みなら、その正規化ハッシュが :ro マウントされている
-    # （/etc/claude-container/mcp-approved-hash、compose.yml参照）。正規化jqフィルタは
+    # （/etc/c3c/mcp-approved-hash、compose.yml参照）。正規化jqフィルタは
     # ホスト側 check_mcp_approval() と同一でなければならない（変更時は両ファイルを同期）。
-    approved_hash_file=/etc/claude-container/mcp-approved-hash
+    approved_hash_file=/etc/c3c/mcp-approved-hash
     current_hash=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$MCP_CONFIG" 2>/dev/null | sha256sum | cut -c1-64)
     recorded_hash=""
     if [ -f "$approved_hash_file" ]; then
@@ -220,7 +220,7 @@ fi
 # v3 以前とは直下/export の意味が逆転している（旧: 直下=export、noexport/=非export）。
 # 後方互換エイリアスは持たない（c3c 側の fail-closed ガードが旧レイアウト
 # 残存を検出する）。GH_TOKEN の ambient export は撤廃済み — gh は既定で未認証になる。
-SECRETS_MOUNT=/home/node/.config/claude-container/secrets
+SECRETS_MOUNT=/home/node/.config/c3c/secrets
 
 # Codex の固定 home と CLI 実体（c3c 第1段階）。firewall と capability 剥奪の後、秘密の export より前に
 # 確定する。下の export ループは「既に設定済みの名前」をスキップするため、secrets/export/CODEX_HOME・
@@ -305,7 +305,7 @@ fi
 #   run:       host が :ro で渡した承認記録と、同じファイルから再計算した hash が一致した場合だけ Codex を exec する。
 # 未導入・審査不能・不一致は停止し、Claude へ fallback しない。
 CODEX_AUDIT=/usr/local/bin/codex-mcp-audit.py
-CODEX_APPROVED=/etc/claude-container/codex-mcp-approved.json
+CODEX_APPROVED=/etc/c3c/codex-mcp-approved.json
 # 審査対象はリポジトリ同梱の project 設定だけ（#150）。Codex の CLI 実体や版には依存しない。
 CODEX_PROJECT_CONFIG=/workspace/.codex/config.toml
 if [ ! -f "$CODEX_CLI" ] || [ ! -x "$CODEX_CLI" ]; then

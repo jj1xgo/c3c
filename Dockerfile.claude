@@ -308,10 +308,10 @@ RUN set -e; \
 # 許可リストやスクリプト自体を変更できないようにする。node は sudo 経由で
 # このスクリプトのみを実行できる。
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY allowed-domains.txt /etc/claude-container/allowed-domains.txt
-COPY allowed-ports.txt /etc/claude-container/allowed-ports.txt
+COPY allowed-domains.txt /etc/c3c/allowed-domains.txt
+COPY allowed-ports.txt /etc/c3c/allowed-ports.txt
 RUN chmod 755 /usr/local/bin/init-firewall.sh && \
-  chmod 644 /etc/claude-container/allowed-domains.txt /etc/claude-container/allowed-ports.txt && \
+  chmod 644 /etc/c3c/allowed-domains.txt /etc/c3c/allowed-ports.txt && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
@@ -326,9 +326,9 @@ RUN chmod 755 /usr/local/bin/git-askpass.sh
 # 未認証の GitHub API のレート制限に一切触れない）。init-firewall.sh は実行時に
 # このスナップショットのみを読む — もはや動的な取得はしない。他のファイアウォール
 # アセットと同様に root 所有。
-COPY github-meta.json /etc/claude-container/github-meta.json
-RUN chmod 644 /etc/claude-container/github-meta.json && \
-  jq -e '.web and .api and .git' /etc/claude-container/github-meta.json >/dev/null
+COPY github-meta.json /etc/c3c/github-meta.json
+RUN chmod 644 /etc/c3c/github-meta.json && \
+  jq -e '.web and .api and .git' /etc/c3c/github-meta.json >/dev/null
 
 # 境界アセット（ASSET_HASH_TARGETS に列挙）: init-firewall.sh・git-askpass.sh と
 # 同じ root 所有の /usr/local/bin に置くことで、ファイル自体もそれを保持する
@@ -395,6 +395,11 @@ LABEL io.c3c.ipv6-support="1" \
 # label 欠落では preflight 自体を起動しない）。protocol の内容は codex-mcp-audit.py と entrypoint.sh。
 # 上と同じく CACHEBUST を消費する RUN より後に置く。
 LABEL io.c3c.codex-audit-protocol="2"
+# コンテナ内の配置の版（改名 第 2 段、v16）。launcher の guard_image_layout() は、この label が対応値（2）の
+# イメージでだけ本起動・検査用コンテナを起動する。v15.1 以前のイメージは承認記録と秘密を旧パスで読むため、
+# v16 の compose（/etc/c3c/* と ~/.config/c3c/secrets だけにマウント）では承認や秘密が黙って欠ける。
+# コンテナ内のパスや env の配置を変えたら値を上げ、c3c の IMAGE_LAYOUT_VERSION も揃える。
+LABEL io.c3c.image-layout="2"
 # Claude 経路の project 設定ゲートの protocol（#163）。launcher は、.claude か .mcp.json を持つ repo では
 # この label が対応 protocol（1）と一致するイメージでだけ検査用コンテナと本起動を行う。
 LABEL io.c3c.claude-project-audit-protocol="1"

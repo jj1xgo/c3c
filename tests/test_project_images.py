@@ -258,7 +258,7 @@ class ImageTests(unittest.TestCase):
 
     def clean_hint(self, stdout):
         line = next(l for l in stdout.splitlines() if 'c3c --clean' in l)
-        return re.search(r'(c3c --clean .+?) で削除', line).group(1)
+        return re.search(r'(c3c --clean .+?)（最後に dangling', line).group(1)
 
     # P2-1: 旧 label だけのイメージは、元パスが欠落して台帳にあっても削除しない。ID とクォート済みの --clean の案内を WARN で出す。
     def test_legacy_only_image_is_not_cleaned_and_is_reported(self):
@@ -268,7 +268,10 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(len(self.state['images']), 1)
         self.assertIn('[WARN]', result.stdout)
         self.assertIn(IMAGE_A, result.stdout)
+        # 個別の削除は親を残す rmi で案内し、全体 prune を伴う --clean は副作用を添えた別操作として示す（PR #186）。
+        self.assertIn(f'不要なら podman rmi --no-prune {IMAGE_A} で削除', result.stdout)
         self.assertIn(f'c3c --clean {shlex.quote(self.missing)}', result.stdout)
+        self.assertIn('dangling イメージ全体を prune', result.stdout)
         # 案内をシェルで分割すると、パスが 1 つの引数に戻る（self.missing は空白を含む）。
         self.assertEqual(shlex.split(self.clean_hint(result.stdout)), ['c3c', '--clean', self.missing])
 
@@ -281,14 +284,15 @@ class ImageTests(unittest.TestCase):
         result = self.run_helper()
         self.assertEqual(shlex.split(self.clean_hint(result.stdout)), ['c3c', '--clean', tricky])
 
-    # P2-2: 台帳に無い旧 label だけのイメージは podman rmi の案内になる。
+    # P2-2: 台帳に無い旧 label だけのイメージは podman rmi --no-prune の案内だけになる（--clean は示さない）。
     def test_legacy_only_image_outside_ledger_suggests_rmi(self):
         self.ledger.write_text(self.live + '\n')
         self.before = self.ledger.read_bytes(), self.ledger.stat().st_mode
         self.state['images'] = [self.legacy_only_image(self.missing)]
         result = self.run_helper()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(f'podman rmi {IMAGE_A}', result.stdout)
+        self.assertIn(f'podman rmi --no-prune {IMAGE_A}', result.stdout)
+        self.assertNotIn('c3c --clean', result.stdout)
 
     # P2-3: v15.1 のイメージ（新旧両方の label）は新の組で従来どおり清掃できる。
     def test_v15_image_is_cleaned_by_new_labels(self):
@@ -306,7 +310,7 @@ class ImageTests(unittest.TestCase):
         self.state['images'] = [image]
         result = self.run_helper()
         self.assertIn('[WARN]', result.stdout)
-        self.assertIn(f'podman rmi {IMAGE_A}', result.stdout)
+        self.assertIn(f'podman rmi --no-prune {IMAGE_A}', result.stdout)
 
     # P2-5: 対象を指定した診断では、台帳に無くても名前がその対象のイメージなら示す。
     def test_targeted_check_reports_legacy_image_outside_ledger(self):
@@ -324,7 +328,7 @@ class ImageTests(unittest.TestCase):
         self.state['images'] = [image]
         result = self.run_helper(paths=[self.live])
         self.assertIn('[WARN]', result.stdout)
-        self.assertIn(f'podman rmi {IMAGE_A}', result.stdout)
+        self.assertIn(f'podman rmi --no-prune {IMAGE_A}', result.stdout)
 
     # P2-7: 名前がプロジェクトイメージの形で、旧の由来 label が 3 つとも空の v15.0 以前のイメージも削除しない
     # （空の旧 label を「label なし」とみなして名前と台帳の照合で清掃しない。PR 前レビューの指摘）。

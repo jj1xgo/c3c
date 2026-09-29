@@ -268,13 +268,15 @@ def diagnose(args):
             if args.project and item['names'] and not set(named) & selected:
                 continue                                   # 名前なしは、どの対象のものか値を読まずに決められないので常に示す
             path = named[0] if len(named) == 1 else None
+            # 個別の削除は --no-prune の rmi で案内する。c3c --clean は最後に dangling イメージ全体を prune し、ここで
+            # 「保持します」と示した他の名前なしイメージも消すので、別操作として副作用を添える（PR #186 の Codex 指摘）。
+            project_hint = ''
             if path and (path in ledger or path_state(path) == 'directory'):
-                hint = f'c3c --clean {shlex.quote(path)}'
-            else:
-                hint = f'podman rmi {item["id"]}'
+                project_hint = (f' プロジェクトの台帳・承認記録もまとめて片付けるなら c3c --clean {shlex.quote(path)}'
+                                '（最後に dangling イメージ全体を prune するので、名前なしの他のイメージも消えます）。')
             report('WARN', f'旧 label だけのイメージ（c3c v15.0 以前）を保持します: {item["id"]} '
-                           f'名前={item["names"]!r}。不要なら {hint} で削除してください'
-                           f'（中身は podman image inspect {item["id"]}）。')
+                           f'名前={item["names"]!r}。不要なら podman rmi --no-prune {item["id"]} で削除してください'
+                           f'（中身は podman image inspect {item["id"]}）。{project_hint}')
             continue
         if args.project and not paths.intersection(selected):
             continue

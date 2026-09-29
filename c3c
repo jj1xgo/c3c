@@ -1119,11 +1119,20 @@ guard_codex_image_support() {
 # 止める（guard_codex_image_support() と同じ型）。未ビルドなら何もしない（compose の暗黙ビルドが label 付きで
 # 作る）。通常起動の -b は、この後の明示ビルドで作り直すので見ない（guard_ipv6() と同じ）。通常起動ではガード列で
 # 呼び、ホストの MCP 承認の対話・検査用コンテナ・本起動より前に止める。--check では既存イメージの静的診断。
+# 未ビルドと扱うのは podman image exists の rc 1（不在）だけ。ストレージの検査失敗（rc 125 等）で素通りすると、
+# 後で復旧したときに配置を確かめていないイメージで起動するので止める。
 guard_image_layout() {
   [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]] && return 0
   command -v podman >/dev/null 2>&1 || return 0
-  podman image exists "$IMAGE_NAME" 2>/dev/null || return 0
-  local layout
+  local exists_rc=0 layout
+  podman image exists "$IMAGE_NAME" 2>/dev/null || exists_rc=$?
+  case "$exists_rc" in
+    0) ;;
+    1) return 0 ;;
+    *)
+      guard_fail "ERROR: イメージ $IMAGE_NAME の有無を確認できません（podman image exists の終了コード $exists_rc）。Podman のストレージを確認してから再実行してください。起動を中止します。" || return 1
+      ;;
+  esac
   layout=$(podman image inspect --format "{{index .Labels \"$IMAGE_LAYOUT_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null || true)
   if [[ "$layout" != "$IMAGE_LAYOUT_VERSION" ]]; then
     guard_fail "ERROR: イメージ $IMAGE_NAME は c3c v16 のコンテナ内の配置に対応していません（label $IMAGE_LAYOUT_LABEL=${layout:-なし}、必要な値 $IMAGE_LAYOUT_VERSION）。v15 以前にビルドしたイメージは承認記録と秘密を旧パスで読むため、-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
@@ -2643,13 +2652,17 @@ check_one_project() {
     esac
   done
 
+  local image_exists_rc=0
   if ! command -v podman >/dev/null 2>&1; then
     echo "[SKIP] podman が見つからないためイメージ確認をスキップ"
-  elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+  elif podman image exists "$IMAGE_NAME" 2>/dev/null || { image_exists_rc=$?; false; }; then
     echo "[OK]   イメージ既ビルド: $IMAGE_NAME"
     guard_image_layout || true
-  else
+  elif [[ $image_exists_rc -eq 1 ]]; then
     echo "[INFO] イメージ未ビルド: $IMAGE_NAME（初回起動時に自動ビルドされます。破壊的変更後は -b を推奨）"
+  else
+    # 不在（rc 1）以外の検査失敗は未ビルドと報告せず、guard_image_layout() が FAIL にする。
+    guard_image_layout || true
   fi
 
   guard_asset_drift || true

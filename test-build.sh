@@ -615,7 +615,7 @@ fi
 if [[ "\${1:-}" == --remote=false ]]; then shift; fi
 case "\$1 \$2" in
   "images --all") printf '%s\\n' '[]'; exit 0 ;;
-  "image exists") exit 0 ;;
+  "image exists") exit "\${TEST_IMAGE_EXISTS_RC-0}" ;;
   "image inspect")
     if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-2}"; fi
     if [[ "\$*" == *claude-container.* ]]; then printf '%s\n' "\$*" >> "$root/legacy-label-reads"; fi
@@ -1715,9 +1715,16 @@ CURL
     bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ]' _ "$rc" "$root"
   run_launcher_check TEST_IMAGE_LAYOUT=
   check "LY-3: --check は配置 label の不一致を FAIL にする（rc=$rc）" \
-    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL"' _ "$rc" "$out"
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"コンテナ内の配置に対応していません"* ]]' _ "$rc" "$out"
   run_launcher
   check "LY-4: 配置 label が 2 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
+  # LY-5・6: image exists の不在（rc 1）以外の失敗（rc 125 等）は未ビルドと扱わず止める（PR #186 の Codex 指摘）。
+  run_launcher TEST_IMAGE_EXISTS_RC=125
+  check "LY-5: イメージの有無を確認できなければ compose を呼ばずに止める（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"イメージ"*"の有無を確認できません"* ]]' _ "$rc" "$root" "$out"
+  run_launcher_check TEST_IMAGE_EXISTS_RC=125
+  check "LY-6: --check もイメージの有無を確認できなければ FAIL にする（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"の有無を確認できません"* ]]' _ "$rc" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # L2 系（改名 第 2 段）: 単独の label は io.c3c.* だけを読み、旧 label へ fallback しない。
   rm -f "$proj/.c3c/env" "$root/legacy-label-reads"

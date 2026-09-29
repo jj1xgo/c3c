@@ -57,6 +57,14 @@
 - 同梱 default の `codex-version.txt` は固定版のまま残す（再現性と `test-build.sh` の検査のため）。`latest` を使うかは利用側が選ぶ。
 - 承認記録の保存先を `mcp-approvals/codex/<project>/<版>.json` から版を含まない名前（例: `mcp-approvals/codex/<project>/project-config.json`）に変える。record の `codex_version` は廃止し、`protocol_version` を 2 にする。旧記録は読まない（初回だけ再確認になる）。`--clean` の対象は現行どおり project の Codex subdirectory 全体。
 
+### 2026-09-29 の判断変更: 同梱 default を latest にする
+
+持ち主の依頼により、上記の「固定版のまま残す」を変更する。版照合を廃止した審査方式では固定版は技術的な必須条件ではなく、既存の `latest` 再解決を既定とし、再現性が必要な project で固定版を指定する。空ファイルの opt-out は維持する。実ビルド検査は npm パッケージの実際の版と CLI 表示を照合する。
+
+以下の「同梱 default の版を上げるときに再確認する」という運用も置き換える。最新の版に対する設定経路の網羅性を自動で保証する仕組みは追加しない。定期 runtime CI はビルド・起動・既存の境界の回帰を観測する。保守者が審査対象や許可 key を更新するときに上流の設定経路を再確認し、確認した版と範囲を `SECURITY-CLAIMS.md` に記録する。未確認の版が既定で導入されうることも同文書の限界として明示する。
+
+区分: 境界（保証文書にある既定の前提と再確認の運用を変更するため）。計画レビューを省いて着手したため、PR 前に独立 Codex / Claude レビューを行う。実装: Codex（持ち主の変更依頼による）。
+
 ### 失う保護と残余（SECURITY-CLAIMS・README に明記する）
 
 - `CODEX_DIR` の `config.toml` にセッションが MCP を書き足しても、次回起動の確認で止まらなくなる。Claude 経路の `~/.claude.json` と同じ限界。
@@ -71,7 +79,7 @@
 - project 設定の `hooks`（Codex 自身の信頼確認に委ねる）、`js_repl_node_path`、`shell_environment_policy`、helper の無い HTTP エントリの `env_http_headers`・`bearer_token_env_var` の扱いは現行（protocol 1）と同じく対象外。必要なら別 Issue で扱う。
 - Claude 経路でリポジトリ同梱の設定から plugin を有効化できるか（`.claude/settings.json` の `enabledPlugins`・`extraKnownMarketplaces` 等）は未確認。一次情報で確認したうえで別 Issue の候補として記録する。
 - hooks・sandbox 設定など MCP 以外の project 設定の扱いは現行のまま。
-- 同梱 default を `latest` にすることはしない。
+- 同梱 default を `latest` にすることはしない（2026-09-29 に変更。上記「判断変更」参照）。
 
 ## 検証の方針
 

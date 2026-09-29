@@ -333,7 +333,7 @@ class CodexStaticGuardTests(LaunchCase):
                         check = self.run_launcher('--check', '--agent', 'codex', str(self.proj))
                         self.assertIn(f'[OK]   Codex 版指定: {content.strip()}（採用元: project）', check.stdout)
                     if label == 'missing':
-                        self.assertIn(f'Codex 版: {SUPPORTED}（採用元: 同梱 default）', result.stderr)
+                        self.assertIn('Codex 版: latest（採用元: 同梱 default）', result.stderr)
                 else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('codex-version.txt', result.stderr)

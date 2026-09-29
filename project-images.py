@@ -171,14 +171,18 @@ def provenance_values(labels):
 
 def legacy_only(item):
     """由来 label を旧名でだけ持つプロジェクトイメージ（c3c v15.0 以前）。旧の値はイメージの種類の判定
-    （空か否か）にだけ使い、パスや由来の根拠にはしない。当たらないもの: 新の由来 label を持つ v15.1 の
-    イメージ、由来 label の無い中間イメージ・#118 より前のイメージ、値が空の直接ビルド、プロジェクト名で
-    ない名前だけのイメージ。"""
+    （名前なしで空か否か）にだけ使い、パスや由来の根拠にはしない。当たらないもの: 新の由来 label を持つ
+    v15.1 のイメージ、由来 label の無い中間イメージ・#118 より前のイメージ、プロジェクト名でない名前の
+    イメージ（直接ビルド等）、値が空の名前なしのイメージ。"""
     labels = item['labels']
     legacy = [k for k in labels if k.startswith(LEGACY_PREFIX)]
-    if not legacy or any(k in labels for k in NEW_LABELS) or not any(labels[k] for k in legacy):
+    if not legacy or any(k in labels for k in NEW_LABELS):
         return False
-    return not item['names'] or any(IMAGE_NAME.fullmatch(n) for n in item['names'])
+    # 名前ありはプロジェクトイメージの名前で決める（値が空でも、名前と台帳の照合で清掃させない）。
+    # 名前なしは値のどれかが空でないものだけ（値が空の名前なしは、直接ビルドの残りと区別できない）。
+    if item['names']:
+        return any(IMAGE_NAME.fullmatch(n) for n in item['names'])
+    return any(labels[k] for k in legacy)
 
 
 def provenance(item, ledger):

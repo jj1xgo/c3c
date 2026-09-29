@@ -326,6 +326,18 @@ class ImageTests(unittest.TestCase):
         self.assertIn('[WARN]', result.stdout)
         self.assertIn(f'podman rmi {IMAGE_A}', result.stdout)
 
+    # P2-7: 名前がプロジェクトイメージの形で、旧の由来 label が 3 つとも空の v15.0 以前のイメージも削除しない
+    # （空の旧 label を「label なし」とみなして名前と台帳の照合で清掃しない。PR 前レビューの指摘）。
+    def test_named_legacy_image_with_empty_old_labels_is_kept(self):
+        image = self.item(self.missing, labels=False)
+        image['Labels'].update({LEGACY_LABEL + k: '' for k in ('metadata', 'path', 'name')})
+        self.state['images'] = [image]
+        result = self.run_helper(clean=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.state['images']), 1)
+        self.assertIn('[WARN]', result.stdout)
+        self.assertIn(IMAGE_A, result.stdout)
+
     # P2-6: 中間イメージ（新旧の単独 label だけ、由来 label なし、名前なし）は ID を出さずに件数に入れる。
     def test_v15_intermediate_images_are_counted_without_id_noise(self):
         image = self.item(self.live, labels=False)

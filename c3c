@@ -314,7 +314,10 @@ resolve_state_dir() {
   [[ -e "$old" || -L "$old" ]] || return 0
   printf -v q_old '%q' "$old"
   printf -v q_new '%q' "$new"
-  if [[ ! -e "$new" && ! -L "$new" && $CHECK -eq 1 ]]; then
+  if [[ ! -d "$old" ]]; then
+    # ファイル・壊れた symlink 等は state として使えない。移すと新 state が使えない型になるので案内しない。
+    CC_STATE_NOTICE="旧 state $old はディレクトリではない（ファイル・壊れた symlink 等）ため、c3c v16 は使いません。中身を確かめて取り除いてください。"
+  elif [[ ! -e "$new" && ! -L "$new" && $CHECK -eq 1 ]]; then
     # --check は何も書かないので、新が無いまま。そのまま移せる。
     CC_STATE_NOTICE="旧 state $old が残っています（c3c v16 は読みません）。引き継ぐ場合は、c3c のセッションがすべて終わってから mv -T -- $q_old $q_new で移してください。移さずに起動すると、MCP 等の承認の確認がもう一度出て、起動台帳と CLI の記憶は空から始まります（README「旧名 claude-container からの移行（v16）」節）。"
   elif [[ ! -e "$new" && ! -L "$new" ]]; then

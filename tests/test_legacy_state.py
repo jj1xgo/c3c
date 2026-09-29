@@ -125,6 +125,19 @@ class LegacyStateTests(unittest.TestCase):
         self.old.write_text('x')
         self.assertIn(str(self.old), self.fields(self.run_resolve())['NOTICE'])
 
+    # S2-6b: 旧がディレクトリへ解決できない（ファイル・壊れた symlink）なら、移す案内を出さない
+    # （案内どおりに移すと、新 state が使えない型になる。PR 前レビューの指摘）。
+    def test_unusable_old_is_not_offered_for_moving(self):
+        for arrange in (lambda: self.old.write_text('x'), lambda: self.old.symlink_to(self.base / 'nowhere')):
+            with self.subTest(arrange=arrange):
+                if os.path.lexists(self.old):
+                    self.old.unlink()
+                arrange()
+                for check in (0, 1):
+                    notice = self.fields(self.run_resolve(check=check))['NOTICE']
+                    self.assertIn('ディレクトリではない', notice)
+                    self.assertNotIn('mv -T', notice)
+
     # S2-7: --check でも何も書かない
     def test_check_writes_nothing(self):
         self.make_old()

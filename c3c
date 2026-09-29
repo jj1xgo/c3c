@@ -1068,7 +1068,7 @@ guard_build_input_defaults() {
 }
 
 # --agent codex の静的前提（c3c 第1段階）。専用 home（CODEX_DIR）と Codex の版指定
-# （codex-version.txt。同梱 default は固定版 0.156.0 で、project 側の空ファイルは opt-out）を、
+# （codex-version.txt。同梱 default は latest で、project 側の空ファイルは opt-out）を、
 # 通常起動と --check の両方で診断する。起動時審査は Codex の版に依存しない（#150）。固定版・latest の
 # どちらも通し、空ファイル（opt-out）だけを止める。
 # 記憶した CLI が使えない場合は既存の理由に加えて明示再選択の案内（AGENT_RESELECT_HINT、memory 由来の
@@ -2310,7 +2310,7 @@ check_mcp_approval() {
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
 #                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
-#                  同梱 default（24.18.0 / Codex 0.156.0）を持ち、project 側の空ファイルは
+#                  同梱 default（24.18.0 / Codex latest）を持ち、project 側の空ファイルは
 #                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
 #                  （allowed-ports.txt・base-image.txt）
@@ -2409,7 +2409,7 @@ compute_asset_hash() {
 # packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
 # （$PROJECT_CONF_DIR）にあればそちらを、なければ c3c 同梱のデフォルト
 # （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
-# 同梱 default は空ではなく固定版（c3c 第2b-2段階）で、project 側の空ファイルは明示 opt-out
+# 同梱 default は Node.js 固定版・Codex latest（c3c 第2b-2段階）で、project 側の空ファイルは明示 opt-out
 # としてそのまま（空のまま）ステージする。allowed-ports.txt は無ければ静かに空ファイルを生成する。
 # 注意: 設定ディレクトリの env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
 # 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
@@ -2436,7 +2436,7 @@ stage_build_context() {
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
 
-  # node-version.txt / codex-version.txt は同梱 default が固定版のため WARNING を出さない
+  # node-version.txt / codex-version.txt は同梱 default があるため WARNING を出さない
   # （採用元の表示は guard_build_input_defaults() が両モードで行う）。project 側の空ファイルは
   # 明示 opt-out で、default で埋めずに空のままステージする（計画 §8-5: 空を missing と同一視して
   # Codex を勝手に導入しない）。allowed-ports.txt は任意機能で移行元が無く、無ければ静かに

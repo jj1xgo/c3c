@@ -31,9 +31,9 @@ NEW = '.c3c'
 LEGACY = '.claude-container.d'
 # env が読まれたら必ず出る目印（legacy トークン変数は fail-closed の ERROR 文言に変数名が載る）。
 ENV_PROBE = 'GH_TOKEN_FILE'
-# 同梱 default（c3c 第2b-2段階、計画 §5「2b-2: 既定イメージ」の固定値）。latest へ追従させない。
+# 同梱 default: Node.js は固定版、Codex CLI は latest。
 DEFAULT_NODE = '24.18.0'
-DEFAULT_CODEX = SUPPORTED
+DEFAULT_CODEX = 'latest'
 EMPTY_SHA256 = hashlib.sha256(b'').hexdigest()
 
 
@@ -550,19 +550,19 @@ class BuildInputDefaultTests(ConfigCase):
         for label, conf in self.layouts():
             with self.subTest(layout=label):
                 (conf / 'node-version.txt').write_text(self.PIN_NODE + '\n')
-                (conf / 'codex-version.txt').write_text(DEFAULT_CODEX + '\n')
+                (conf / 'codex-version.txt').write_text(SUPPORTED + '\n')
                 result, _, staged = self.launch_claude()
                 self.assertEqual(staged['node-version.txt'], sha256_text(self.PIN_NODE + '\n'))
-                self.assertEqual(staged['codex-version.txt'], sha256_text(DEFAULT_CODEX + '\n'))
+                self.assertEqual(staged['codex-version.txt'], sha256_text(SUPPORTED + '\n'))
                 self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project '
                                  + re.escape(str(conf / 'node-version.txt')) + r'）')
-                self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: project '
+                self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(SUPPORTED) + r'（採用元: project '
                                  + re.escape(str(conf / 'codex-version.txt')) + r'）')
                 self.assertNotIn('同梱 default', result.stderr)
                 check = self.run_check('c3c', self.proj)
                 self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
                 self.assertRegex(check.stdout, r'\[INFO\] Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project ')
-                self.assertRegex(check.stdout, r'\[INFO\] Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: project ')
+                self.assertRegex(check.stdout, r'\[INFO\] Codex 版: ' + re.escape(SUPPORTED) + r'（採用元: project ')
                 self.assertNotIn('npm', check.stdout)
 
     def test_pin_equal_to_default_yields_the_same_hash_as_absent(self):

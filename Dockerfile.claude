@@ -149,7 +149,7 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
 # codex-version.txt が指定するバージョン（例: "0.156.0"）か文字どおりの "latest" の
 # Codex CLI を npm からインストールする。上の node-version.txt と同じ設計思想（汎用の
 # ビルドフックではなく宣言的なファイル。設計の根拠は内部運用 issue を参照）で、
-# c3c 同梱の default（固定版 0.156.0）を
+# c3c 同梱の default（latest）を
 # プロジェクトの .c3c/codex-version.txt で上書きでき、空ファイルは明示 opt-out（Codex CLI を
 # 導入しない）。npm が必要 — node-version.txt を空にして Node.js を導入しない場合は
 # packages.txt 経由で nodejs/npm を追加するか、codex-version.txt も空にする（npm が無ければ

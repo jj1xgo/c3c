@@ -2336,8 +2336,8 @@ check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version
 log ""
 
-# 同梱 default（c3c 第2b-2段階）の実検査。イメージ内の Node.js / Codex CLI が同梱ファイルの固定値と
-# 一致することを必須にする（存在だけでは、ベースイメージ由来の別版や npm の latest 解決を見逃す）。
+# 同梱 default の実検査。Node.js は固定値、Codex CLI はイメージ内の npm パッケージの版と照合する。
+# latest の解決結果はビルド時に確定するので、検査時にレジストリを再問い合わせしない。
 # 起動時 MCP 審査は #150 から Codex の版に依存しないので、審査側の版との整合は検査しない。
 log "## 同梱 default（node-version.txt / codex-version.txt）の実検査"
 DEFAULT_NODE_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/node-version.txt")"
@@ -2345,16 +2345,24 @@ DEFAULT_CODEX_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/codex-version.txt")"
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
 check "同梱 node-version.txt が固定版（空・latest でない）" \
   bash -c '[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$DEFAULT_NODE_VERSION"
-# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
-check "同梱 codex-version.txt が固定版（空・latest でない）" \
-  bash -c '[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]' _ "$DEFAULT_CODEX_VERSION"
+check "同梱 codex-version.txt が latest" test "$DEFAULT_CODEX_VERSION" = latest
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
 check "node --version が同梱 default（v$DEFAULT_NODE_VERSION）と一致" \
   bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ]' _ "$IMAGE" "$DEFAULT_NODE_VERSION"
 check "npm --version" podman run --rm --network=none "$IMAGE" npm --version
-# shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
-check "codex --version が同梱 default（codex-cli $DEFAULT_CODEX_VERSION）と一致" \
-  bash -c 'actual=$(podman run --rm --network=none "$1" codex --version) && echo "$actual" && [ "$actual" = "codex-cli $2" ]' _ "$IMAGE" "$DEFAULT_CODEX_VERSION"
+# npm がビルド時に導入した実際の版と CLI の表示を照合する（ネットワーク不要）。
+# shellcheck disable=SC2329  # check 関数から間接的に呼ぶ
+check_codex_package_version() {
+  local image="$1" actual expected
+  expected=$(podman run --rm --network=none "$image" node -p \
+    'require("/usr/local/lib/node_modules/@openai/codex/package.json").version') || return 1
+  [[ "$expected" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  actual=$(podman run --rm --network=none "$image" codex --version) || return 1
+  echo "$actual (npm: $expected)"
+  [ "$actual" = "codex-cli $expected" ]
+}
+check "codex --version がインストール済み npm パッケージの版と一致" \
+  check_codex_package_version "$IMAGE"
 # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
 check "codex の起動口が entrypoint.sh の固定パス /usr/local/bin/codex にある" \
   bash -c 'podman run --rm --network=none "$1" sh -c "[ -x /usr/local/bin/codex ] && [ -x /usr/local/bin/node ] && [ -x /usr/local/bin/npm ]"' _ "$IMAGE"
@@ -2583,9 +2591,8 @@ if stage_common_context "$PIN_CONTEXT_DIR"; then
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "project pin: node --version が pin（v$PIN_NODE_VERSION）と一致し default ではない" \
     bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ] && [ "$actual" != "v$3" ]' _ "$PIN_IMAGE" "$PIN_NODE_VERSION" "$DEFAULT_NODE_VERSION"
-  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "project pin: Codex は同梱 default のまま入っている" \
-    bash -c '[ "$(podman run --rm --network=none "$1" codex --version)" = "codex-cli $2" ]' _ "$PIN_IMAGE" "$DEFAULT_CODEX_VERSION"
+    check_codex_package_version "$PIN_IMAGE"
 else
   check "project pin: node-version.txt の pin でビルド成功 (staging failed: see stderr above)" false
   check "project pin: node --version が pin（v$PIN_NODE_VERSION）と一致し default ではない" false

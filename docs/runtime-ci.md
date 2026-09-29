@@ -10,7 +10,8 @@ PR 用の `CI` とは独立し、必須チェックは追加しない。定期�
 2. **ビルド**: `test-build.sh --build-only` を再利用する。キャッシュを使わず
    `Dockerfile.claude` をビルドし、`claude --version`、`gh --version`、`jq --version` と
    IPv6 helper・Codex 審査 helper の起動、同梱 default の Node.js（`node --version`・
-   `npm --version`）と Codex CLI（`codex --version`）が固定版と一致することを確かめる。
+   `npm --version`）の起動と Node.js の固定版との一致を確かめる。Codex CLI（`codex --version`）は
+   インストール済み npm パッケージの版と一致することを確かめる。
    追加パッケージの上書き・不正入力ビルド・Node/Codex の opt-out と pin の検査は、
    従来の `./test-build.sh` 全体実行で行う。
 3. **マウント**: `test-build.sh --config-ro-only` を再利用する。

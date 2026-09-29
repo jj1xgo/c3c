@@ -508,6 +508,24 @@ class BuildInputDefaultTests(ConfigCase):
         run = self.assert_single_run(result, 'claude')
         return result, run, self.staged_files()
 
+    def test_rebuild_cachebust_follows_resolved_codex_version(self):
+        for value in (None, SUPPORTED, ''):
+            with self.subTest(version=value):
+                path = self.new / 'codex-version.txt'
+                if value is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(value + '\n')
+                self.launch_claude('-b')
+                builds = [call for call in self.calls
+                          if call['args'][:1] == ['compose'] and 'build' in call['args']]
+                self.assertEqual(len(builds), 1)
+                cachebust = builds[0]['env']['CODEX_CACHEBUST']
+                if value is None:
+                    self.assertRegex(cachebust, r'^\d+$', '既定 latest の再ビルドはキャッシュを破棄する')
+                else:
+                    self.assertEqual(cachebust, 'pinned', '固定版と opt-out はキャッシュを維持する')
+
     def test_bundled_defaults_are_the_contract_values(self):
         self.assertEqual((REPO / 'node-version.txt').read_bytes(), (DEFAULT_NODE + '\n').encode())
         self.assertEqual((REPO / 'codex-version.txt').read_bytes(), (DEFAULT_CODEX + '\n').encode())

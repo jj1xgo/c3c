@@ -2351,6 +2351,7 @@ check "node --version が同梱 default（v$DEFAULT_NODE_VERSION）と一致" \
   bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ]' _ "$IMAGE" "$DEFAULT_NODE_VERSION"
 check "npm --version" podman run --rm --network=none "$IMAGE" npm --version
 # npm がビルド時に導入した実際の版と CLI の表示を照合する（ネットワーク不要）。
+# 呼び出し元の default / Node pin イメージはいずれも Node を /usr/local へ導入する。
 # shellcheck disable=SC2329  # check 関数から間接的に呼ぶ
 check_codex_package_version() {
   local image="$1" actual expected
@@ -2591,12 +2592,12 @@ if stage_common_context "$PIN_CONTEXT_DIR"; then
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "project pin: node --version が pin（v$PIN_NODE_VERSION）と一致し default ではない" \
     bash -c 'actual=$(podman run --rm --network=none "$1" node --version) && echo "$actual" && [ "$actual" = "v$2" ] && [ "$actual" != "v$3" ]' _ "$PIN_IMAGE" "$PIN_NODE_VERSION" "$DEFAULT_NODE_VERSION"
-  check "project pin: Codex は同梱 default のまま入っている" \
+  check "project pin: Codex CLI が導入され npm パッケージの版と一致する" \
     check_codex_package_version "$PIN_IMAGE"
 else
   check "project pin: node-version.txt の pin でビルド成功 (staging failed: see stderr above)" false
   check "project pin: node --version が pin（v$PIN_NODE_VERSION）と一致し default ではない" false
-  check "project pin: Codex は同梱 default のまま入っている" false
+  check "project pin: Codex CLI が導入され npm パッケージの版と一致する" false
 fi
 podman rmi "$PIN_IMAGE" 2>/dev/null
 rm -rf "$PIN_PROJECT_DIR" "$PIN_CONTEXT_DIR"

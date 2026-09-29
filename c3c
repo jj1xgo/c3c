@@ -2310,7 +2310,7 @@ check_mcp_approval() {
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
 #                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
-#                  同梱 default（24.18.0 / Codex latest）を持ち、project 側の空ファイルは
+#                  同梱 default を持ち（現在は 24.18.0 / Codex latest）、project 側の空ファイルは
 #                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
 #                  （allowed-ports.txt・base-image.txt）
@@ -2409,7 +2409,7 @@ compute_asset_hash() {
 # packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
 # （$PROJECT_CONF_DIR）にあればそちらを、なければ c3c 同梱のデフォルト
 # （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
-# 同梱 default は Node.js 固定版・Codex latest（c3c 第2b-2段階）で、project 側の空ファイルは明示 opt-out
+# 同梱 default は Node.js 固定版・Codex latestで、project 側の空ファイルは明示 opt-out
 # としてそのまま（空のまま）ステージする。allowed-ports.txt は無ければ静かに空ファイルを生成する。
 # 注意: 設定ディレクトリの env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
 # 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。

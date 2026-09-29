@@ -832,7 +832,7 @@ run_launcher_tests() {
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "コンテナ側のファイルが旧名のパス・env キー・label を参照しない（改名 第 2 段）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_container_paths.py"
   check "欠落プロジェクトの限定清掃・残存イメージ診断" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_project_images.py"
-  check "state directory の移行（遷移表・RENAME_NOREPLACE・errno の対応・同一性・check/clean の無移行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_state_migration.py"
+  check "旧 state の検出と案内（読まない・移さない・消さない、mv -T の案内）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_legacy_state.py"
   check "Codex 起動時 MCP 審査 helper（正規化・strict schema・timeout・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_mcp_audit.py"
   check "Claude project 設定ゲート helper（全体 hash・停止条件・判定不能・verify）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_audit.py"
   check "--agent codex の launcher 経路（parser・label guard・preflight・独立承認・check/clean）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launch.py"

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import subprocess
@@ -1014,71 +1015,60 @@ class GitconfigSourceTests(LaunchCase):
 
 
 
-class StateMigrationLaunchTests(LaunchCase):
-    """改名 第 1 段: 通常起動でだけ旧 state を移し、--check・--clean は移さず旧を読む。"""
+class LegacyStateLaunchTests(LaunchCase):
+    """改名 第 2 段: 旧 state は読まない・移さない・消さない。検出して案内するだけ。"""
 
-    def make_legacy_state(self, agent='codex'):
+    def make_legacy_state(self):
         legacy = self.home / '.local/state/claude-container'
-        pref = legacy / 'agent-preferences' / (self.pref_key() + '.json')
-        pref.parent.mkdir(parents=True, mode=0o700)
-        pref.write_text(json.dumps({'schema': 1, 'agent': agent}, separators=(',', ':')) + '\n')
+        (legacy / 'agent-preferences').mkdir(parents=True, mode=0o700)
         (legacy / 'projects').write_text(str(self.proj) + '\n')
         return legacy
 
-    def test_normal_launch_migrates_and_keeps_remembered_cli(self):
-        legacy = self.make_legacy_state('codex')
-        self.approve_codex_in(legacy)
-        result = self.run_c3c(str(self.proj))
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        if '安全に移行できない' in result.stderr:
-            # RENAME_NOREPLACE 非対応の FS では旧 state を使い続ける（S-6 が検査する経路）。
-            self.skipTest('この環境では RENAME_NOREPLACE が使えない')
+    def test_normal_launch_warns_and_leaves_legacy_untouched(self):
+        legacy = self.make_legacy_state()
+        before = self.snapshot(legacy)
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertIn('WARNING: 旧 state', result.stderr)
+        self.assertEqual(self.snapshot(legacy), before)
+        self.assertIn(str(self.proj), (self.state_dir / 'projects').read_text())
+
+    def test_launch_hint_can_be_followed_after_the_launch(self):
+        # 起動が新 state を作った後でも、案内の mv -T を順に打てば旧が新の名前へ移る（入れ子にならない）。
+        legacy = self.make_legacy_state()
+        result = self.run_c3c('claude', str(self.proj))
+        token = r'(?:\\.|[^\s\\])+'
+        commands = re.findall(rf'mv -T -- {token} {token}', result.stderr)
+        self.assertEqual(len(commands), 2, result.stderr)
+        for command in commands:
+            subprocess.run(['bash', '-c', command], check=True)
         self.assertFalse(os.path.lexists(legacy))
-        self.assertTrue((self.state_dir / 'projects').is_file())
-        (run,) = self.main_runs()
-        self.assertEqual(run['env']['CC_AGENT'], 'codex')
-        self.assertIn('移行しました', result.stderr)
+        self.assertEqual((self.state_dir / 'projects').read_text(), str(self.proj) + '\n')
 
-    def approve_codex_in(self, base):
-        record = base / 'mcp-approvals' / 'codex' / self.project_name() / 'project-config.json'
-        record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text(json.dumps({'protocol_version': 2, 'hash': HASH_A}, separators=(',', ':')) + '\n')
-
-    def test_check_reads_legacy_ledger_without_writing(self):
+    def test_check_without_ledger_points_to_legacy_ledger_without_reading_it(self):
         legacy = self.make_legacy_state()
         before = self.snapshot(self.home)
         result = self.run_c3c('--check')
-        self.assertIn(f'=== {self.proj} ===', result.stdout)
         self.assertIn('[WARN] 旧 state', result.stdout)
+        self.assertIn('旧 state に起動台帳があります', result.stdout)
+        self.assertNotIn(f'=== {self.proj} ===', result.stdout)
         self.assertEqual(self.snapshot(self.home), before)
-        self.assertTrue(legacy.is_dir())
-        self.assertFalse(os.path.lexists(self.state_dir))
 
-    def test_clean_project_does_not_migrate(self):
+    def test_clean_all_leaves_legacy_state(self):
         legacy = self.make_legacy_state()
-        result = self.run_c3c('--clean', str(self.proj))
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(legacy.is_dir())
-        self.assertFalse(os.path.lexists(self.state_dir))
-        self.assertNotIn(str(self.proj) + '\n', (legacy / 'projects').read_text())
-
-    def test_clean_all_removes_approvals_and_ledger_of_legacy_symlink_state(self):
-        # 新旧が併存し、旧がディレクトリへの symlink の配置でも、旧の承認記録と台帳を消す（選択記憶は残す）。
-        real = self.root / 'legacy-real'
-        real.mkdir()
-        (real / 'mcp-approvals').mkdir()
-        (real / 'mcp-approvals' / 'x').write_text('a')
-        (real / 'projects').write_text(str(self.proj) + '\n')
-        (real / 'agent-preferences').mkdir()
-        (self.home / '.local/state').mkdir(parents=True, exist_ok=True)
-        (self.home / '.local/state/claude-container').symlink_to(real)
+        (legacy / 'mcp-approvals').mkdir()
         self.state_dir.mkdir(parents=True)
+        before = self.snapshot(legacy)
         result = self.run_c3c('--clean')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse((real / 'mcp-approvals').exists())
-        self.assertFalse((real / 'projects').exists())
-        self.assertTrue((real / 'agent-preferences').is_dir())
-        self.assertTrue((self.home / '.local/state/claude-container').is_symlink())
+        self.assertEqual(self.snapshot(legacy), before)
+
+    def test_clean_project_leaves_legacy_state(self):
+        legacy = self.make_legacy_state()
+        before = self.snapshot(legacy)
+        result = self.run_c3c('--clean', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.snapshot(legacy), before)
 
 
 class ImageLayoutGateTests(LaunchCase):

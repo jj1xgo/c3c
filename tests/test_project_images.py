@@ -556,7 +556,7 @@ class ImageTests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'rmi' for c in self.calls))
 
     def test_label_metadata_reaches_run_and_build_without_env_override(self):
-        conf = Path(self.live) / '.claude-container.d'
+        conf = Path(self.live) / '.c3c'
         conf.mkdir()
         (conf / 'env').write_text('CC_PROJECT_METADATA=2\nCC_PROJECT_PATH=/wrong\nCC_PROJECT_NAME=wrong\n')
         self.state['images'] = [self.item(self.live)]

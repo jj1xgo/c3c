@@ -134,7 +134,7 @@ class LaunchCase(unittest.TestCase):
         self.codex_dir = self.root / 'codex-home'
         self.codex_dir.mkdir(mode=0o700)
         self.proj = self.root / 'proj'
-        self.conf = self.proj / '.claude-container.d'
+        self.conf = self.proj / '.c3c'
         self.conf.mkdir(parents=True)
         (self.conf / 'env').write_text(f'CODEX_DIR={self.codex_dir}\n')
         (self.conf / 'codex-version.txt').write_text(SUPPORTED + '\n')

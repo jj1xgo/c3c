@@ -583,57 +583,43 @@ freeze_project_paths() {
   readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
 }
 
-# プロジェクト設定ディレクトリの選択（c3c 第2b-1段階）。起動 checkout 直下の新名 .c3c と旧名
-# .claude-container.d を次の表で解決し、採用パスを PROJECT_CONF_DIR に返してから readonly にする。
-# 呼出名（旧名の外部 symlink を含む）では結果を変えない。
-#   .c3c   旧名   → なし/なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
-#                 → 片方だけ: それを採用（旧名だけなら移行推奨 WARNING、--check は WARN 集計）
-#                 → 両方: ERROR（内容や実体が同じでも混ぜない・勝手に移動しない）
-#   採用側が directory へ解決できない（file・リンク先の無い symlink・file への symlink）: ERROR
-# 存在判定は -e だけでなく -L でも行う（dangling link や同じ実体への 2 本の symlink も「配置あり」）。
-# directory への symlink は既存互換のため許容する（-d は追従する）。
-# 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後（清掃は設定の状態に
-# 依らず既存対象を消す。清掃に要るパスは freeze_project_paths() が担う）。--check では失敗時に呼び出し元が
+# プロジェクト設定ディレクトリの選択。起動 checkout 直下の .c3c を採用パスとして PROJECT_CONF_DIR に返してから
+# readonly にする。旧名 .claude-container.d は v16 で読み取りを廃止した（改名 第 2 段）。存在すれば型も .c3c の
+# 有無も問わず止めて移行を案内する（黙って .c3c 側だけを読むと、旧名に書いた設定が効かないことに気づけない）。
+#   .c3c なし: .c3c を参照元にする（同梱の既定値へ fallback。directory は作らない）
+#   .c3c が directory（または directory への symlink）: 採用
+#   .c3c が directory へ解決できない（file・リンク先の無い symlink・file への symlink）: ERROR
+# 存在判定は -e だけでなく -L でも行う（dangling link も「配置あり」）。呼出名では結果を変えない。
+# 呼ぶ位置は通常起動・--check とも load_env_file() より前、--clean の分岐より後。--check では失敗時に呼び出し元が
 # return 20 し、env・resolver・hash・ガードへ進まない。readonly は結果を返した後に置く（#39）。
 PROJECT_CONF_NEW_NAME=.c3c
 PROJECT_CONF_LEGACY_NAME=.claude-container.d
 readonly PROJECT_CONF_NEW_NAME PROJECT_CONF_LEGACY_NAME
 select_project_conf_dir() {
-  local new_path="$WORKING_DIR/$PROJECT_CONF_NEW_NAME" legacy_path="$WORKING_DIR/$PROJECT_CONF_LEGACY_NAME"
-  local new_present=0 legacy_present=0 chosen kind warn_prefix=""
-  [[ -e "$new_path" || -L "$new_path" ]] && new_present=1
-  [[ -e "$legacy_path" || -L "$legacy_path" ]] && legacy_present=1
-  [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
-  if [[ $new_present -eq 1 && $legacy_present -eq 1 ]]; then
-    guard_fail "ERROR: 設定ディレクトリが二重配置です: $new_path と $legacy_path の両方があります（内容や実体が同じでも混ぜません）。" \
-      "  移行済みなら旧名 $PROJECT_CONF_LEGACY_NAME を設定探索の対象外（プロジェクト外のバックアップ先等）へ移し、未移行なら $PROJECT_CONF_NEW_NAME 側を取り除いてください（README「利用側プロジェクトの設定」節）。起動を中止します。" || return 1
+  local new_path="$WORKING_DIR/$PROJECT_CONF_NEW_NAME" legacy_path="$WORKING_DIR/$PROJECT_CONF_LEGACY_NAME" kind
+  if [[ -e "$legacy_path" || -L "$legacy_path" ]]; then
+    guard_fail "ERROR: 旧名の設定ディレクトリ $legacy_path があります（c3c v16 で旧名の読み取りを廃止しました）。" \
+      "  $PROJECT_CONF_NEW_NAME が無ければ、起動していない状態でプロジェクト直下で mv -T -- $PROJECT_CONF_LEGACY_NAME $PROJECT_CONF_NEW_NAME（Git 追跡対象なら git mv）を実行し、.gitignore の $PROJECT_CONF_LEGACY_NAME/env も $PROJECT_CONF_NEW_NAME/env に書き換えてください。" \
+      "  $PROJECT_CONF_NEW_NAME が既にある場合は、中身を確かめてから旧名をプロジェクトの外へ退避してください（README「旧名 claude-container からの移行（v16）」節）。起動を中止します。" || return 1
   fi
-  if [[ $new_present -eq 1 ]]; then
-    chosen="$new_path"
-  elif [[ $legacy_present -eq 1 ]]; then
-    chosen="$legacy_path"
-  else
+  if [[ ! -e "$new_path" && ! -L "$new_path" ]]; then
     PROJECT_CONF_DIR="$new_path"
     readonly PROJECT_CONF_DIR
     [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] 設定ディレクトリ: なし（$PROJECT_CONF_NEW_NAME を参照元にし、同梱の既定値を使います）"
     return 0
   fi
-  if [[ ! -d "$chosen" ]]; then
+  if [[ ! -d "$new_path" ]]; then
     kind="ディレクトリではありません"
-    if [[ -L "$chosen" && ! -e "$chosen" ]]; then
+    if [[ -L "$new_path" && ! -e "$new_path" ]]; then
       kind="リンク先の無い symlink です"
-    elif [[ -L "$chosen" ]]; then
+    elif [[ -L "$new_path" ]]; then
       kind="ディレクトリ以外を指す symlink です"
     fi
-    guard_fail "ERROR: 設定ディレクトリ $chosen は$kind。ディレクトリ（またはディレクトリへの symlink）に直すか取り除いてください。起動を中止します。" || return 1
+    guard_fail "ERROR: 設定ディレクトリ $new_path は$kind。ディレクトリ（またはディレクトリへの symlink）に直すか取り除いてください。起動を中止します。" || return 1
   fi
-  PROJECT_CONF_DIR="$chosen"
+  PROJECT_CONF_DIR="$new_path"
   readonly PROJECT_CONF_DIR
-  if [[ "$chosen" == "$legacy_path" ]]; then
-    guard_warn "${warn_prefix}WARNING: $legacy_path は旧名です。起動していない状態で $PROJECT_CONF_NEW_NAME へ改名してください（mv $PROJECT_CONF_LEGACY_NAME $PROJECT_CONF_NEW_NAME。追跡対象なら git mv、ローカル設定の .gitignore も更新。両方を並べて置くと起動を拒否します。README「利用側プロジェクトの設定」節）。"
-  elif [[ ${CHECK_MODE:-0} -eq 1 ]]; then
-    echo "[OK]   設定ディレクトリ: $PROJECT_CONF_DIR"
-  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   設定ディレクトリ: $PROJECT_CONF_DIR"
   return 0
 }
 
@@ -778,7 +764,7 @@ write_agent_preference() {
 # --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
 # カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（#60）。
 # リポジトリ同梱の .env が CODEX_DIR・EXTRA_MOUNT・C3C_NO_FIREWALL 等を
-# 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env、旧 .claude-container.d/env）だけにする。
+# 全ガード素通りで設定できていた。ランタイム設定の入口はプロジェクト設定ディレクトリ（.c3c/env）だけにする。
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 run_main_compose() {
@@ -2154,7 +2140,7 @@ prepare_codex_host_plugins() {
   return 0
 }
 
-# プロジェクト設定の env（.c3c/env、旧 .claude-container.d/env）は運用者が書く信頼入力として扱う（`#29`）。
+# プロジェクト設定の env（.c3c/env）は運用者が書く信頼入力として扱う（`#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
 # （ホスト固有パスを含みうる）は出力せず、キー名のみ列挙する。
@@ -3027,7 +3013,7 @@ cd -- "$WORKING_DIR" 2>/dev/null || guard_fail "ERROR: ディレクトリを開�
 
 record_project_in_ledger
 
-# 設定ディレクトリ（.c3c / 旧 .claude-container.d）の選択。--clean の分岐より後・env 読込より前。
+# 設定ディレクトリ（.c3c）の選択。旧名 .claude-container.d があれば止める。--clean の分岐より後・env 読込より前。
 # 二重配置・型不正はここで fail-closed に止まる（ビルドや env 読込へ進まない）。
 select_project_conf_dir
 

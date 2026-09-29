@@ -1311,7 +1311,7 @@ run_codex_host_plugins_launcher_tests() {
   local root bin home proj out rc before_ctx value src_real
   launcher_sandbox_init
   log "## ホストの Codex plugin キャッシュ共有（CODEX_HOST_PLUGINS）"
-  mkdir -p "$home/.codex/plugins/cache/mk/p/1.0" "$home/.codex-container" "$proj/.claude-container.d" "$root/outside"
+  mkdir -p "$home/.codex/plugins/cache/mk/p/1.0" "$home/.codex-container" "$proj/.c3c" "$root/outside"
   chmod 700 "$home/.codex-container"
   src_real=$(cd "$home/.codex/plugins/cache" && pwd -P)
 
@@ -1319,7 +1319,7 @@ run_codex_host_plugins_launcher_tests() {
   check "未設定なら override を選ばず、注入された内部変数も破棄する" \
     bash -c '[ "$1" = 0 ] && ! grep -q "compose\.codex-plugins" "$2/compose-args" && ! grep -q "^C3C_CODEX_PLUGINS_SOURCE=" "$2/compose-env" && [ ! -e "$3/.codex-container/plugins" ]' _ "$rc" "$root" "$home"
 
-  printf 'CODEX_DIR=~/.codex-container\nCODEX_HOST_PLUGINS=1\n' > "$proj/.claude-container.d/env"
+  printf 'CODEX_DIR=~/.codex-container\nCODEX_HOST_PLUGINS=1\n' > "$proj/.c3c/env"
   local snapshot_ok=1
   snapshot_check_targets > "$root/before" 2>> "$LOG_FILE" || snapshot_ok=0
   run_launcher_check
@@ -1336,7 +1336,7 @@ run_codex_host_plugins_launcher_tests() {
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "build と run の両方に override が渡る" \
     bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.1" && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.2"' _ "$rc" "$root" "$SCRIPT_DIR"
-  : > "$proj/.claude-container.d/env"
+  : > "$proj/.c3c/env"
 
   touch "$home/.codex-container/plugins/cache/container-installed"
   run_launcher CODEX_DIR="$home/.codex-container" CODEX_HOST_PLUGINS=1
@@ -1424,15 +1424,15 @@ run_codex_host_plugins_launcher_tests() {
   launcher_sandbox_cleanup
 }
 
-# .claude-container.d/env の許可リスト（#44）と、対象プロジェクト直下の
+# .c3c/env の許可リスト（#44）と、対象プロジェクト直下の
 # .env を compose の補間に使わせない遮断（#60）の検証。env ファイルは
-# 実際に $proj/.claude-container.d/env へ書く（既存テストのようにシェル環境で渡すと、
+# 実際に $proj/.c3c/env へ書く（既存テストのようにシェル環境で渡すと、
 # 「ファイルのキーを export するか」という本題を検証できない）。
 run_env_file_launcher_tests() {
   local root bin home proj out rc before_ctx
   launcher_sandbox_init
-  local envf="$proj/.claude-container.d/env"
-  mkdir -p "$proj/.claude-container.d"
+  local envf="$proj/.c3c/env"
+  mkdir -p "$proj/.c3c"
 
   # D1: 対象プロジェクト直下の .env は compose へ --env-file /dev/null で遮断される
   printf 'C3C_NO_FIREWALL=1\n' > "$proj/.env"
@@ -1590,7 +1590,7 @@ DUMMY
 run_base_image_launcher_tests() {
   local root bin home proj out rc before_ctx
   launcher_sandbox_init
-  local conf="$proj/.claude-container.d"
+  local conf="$proj/.c3c"
   mkdir -p "$conf"
   local label
 
@@ -1659,9 +1659,9 @@ run_base_image_launcher_tests() {
 run_ipv6_launcher_tests() {
   local root bin home proj out rc before_ctx value
   launcher_sandbox_init
-  mkdir -p "$proj/.claude-container.d"
+  mkdir -p "$proj/.c3c"
   for value in '' 0 1; do
-    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.c3c/env"
     run_launcher
     if [[ "$value" == 1 ]]; then
       check "IPv6=1 は固定 override を run に渡す" \
@@ -1673,7 +1673,7 @@ run_ipv6_launcher_tests() {
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
   for value in 2 true '1 ' '1;echo unsafe'; do
-    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.claude-container.d/env"
+    printf 'C3C_IPV6=%s\n' "$value" > "$proj/.c3c/env"
     run_launcher
     check "不正な IPv6=$value で起動を止める" \
       bash -c '[ "$1" -ne 0 ] && [ ! -f "$2/compose-args" ] && [[ "$3" == *ERROR:* ]]' _ "$rc" "$root" "$out"
@@ -1681,7 +1681,7 @@ run_ipv6_launcher_tests() {
     check "不正な IPv6=$value を --check も拒否する" [ "$rc" -ne 0 ]
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
-  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
+  printf 'C3C_IPV6=1\n' > "$proj/.c3c/env"
   run_launcher TEST_IPV6_SUPPORT=
   check "IPv6 未対応の旧イメージでは起動前に -b を案内して拒否" \
     bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
@@ -1706,7 +1706,7 @@ CURL
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # LY 系（改名 第 2 段）: io.c3c.image-layout が 2 でない既存イメージは compose を呼ばずに止まる。
-  rm -f "$proj/.claude-container.d/env"
+  rm -f "$proj/.c3c/env"
   run_launcher TEST_IMAGE_LAYOUT=
   check "LY-1: 配置 label の無い既存イメージは -b を案内して起動を止める（rc=$rc）" \
     bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"io.c3c.image-layout"* && "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
@@ -1720,7 +1720,7 @@ CURL
   check "LY-4: 配置 label が 2 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # L2 系（改名 第 2 段）: 単独の label は io.c3c.* だけを読み、旧 label へ fallback しない。
-  rm -f "$proj/.claude-container.d/env" "$root/legacy-label-reads"
+  rm -f "$proj/.c3c/env" "$root/legacy-label-reads"
   run_launcher
   local real_hash real_base
   real_hash=$(sed -n 's/^ASSET_HASH=//p' "$root/compose-env")
@@ -1998,8 +1998,8 @@ CURL
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # P3: IPv6=1 併用の -b では両 override が build・run の各呼び出しに 1 回ずつ共存する
-  mkdir -p "$proj/.claude-container.d"
-  printf 'C3C_IPV6=1\n' > "$proj/.claude-container.d/env"
+  mkdir -p "$proj/.c3c"
+  printf 'C3C_IPV6=1\n' > "$proj/.c3c/env"
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "P3: IPv6 override と別名 override が build・run に共存する（rc=$rc）" \
@@ -2008,7 +2008,7 @@ CURL
       [ "$(grep -cxF "$3/compose.plugins-alias.yml" "$2/compose-args.$n")" -eq 1 ] || exit 1
     done' _ "$rc" "$root" "$SCRIPT_DIR"
   printf '%s\n' "$out" >> "$LOG_FILE"
-  rm -f "$proj/.claude-container.d/env"
+  rm -f "$proj/.c3c/env"
 
   # P4: CLAUDE_CONFIG_DIR=~/cfg/（末尾スラッシュ）→ 正規化した綴りで別名を付ける
   mkdir -p "$home/cfg" && printf '{}\n' > "$home/cfg/.claude.json"
@@ -2077,7 +2077,7 @@ run_instruction_mount_launcher_tests() {
   local root bin home proj out rc before_ctx value
   launcher_sandbox_init
   log "## 指示ファイルとスキルの追加共有（#99）"
-  mkdir -p "$home/obsidian-vault/knowledge" "$home/.agents/skills" "$proj/.claude-container.d"
+  mkdir -p "$home/obsidian-vault/knowledge" "$home/.agents/skills" "$proj/.c3c"
   printf '索引\n' > "$home/obsidian-vault/knowledge/索引.md"
 
   run_launcher SHARED_MOUNT="$home/obsidian-vault" \
@@ -2085,7 +2085,7 @@ run_instruction_mount_launcher_tests() {
   check "未設定なら /shared のみで内部別名変数も破棄する" \
     bash -c '[ "$1" = 0 ] && ! grep -qE "compose\.(shared|agents)|^CLAUDE_SHARED_(HOME|HOST)_PATH=" "$2/compose-args" "$2/compose-env"' _ "$rc" "$root"
 
-  printf 'SHARED_MOUNT=~/obsidian-vault\nSHARED_MOUNT_HOME_ALIAS=1\nAGENTS_DIR=~/.agents\n' > "$proj/.claude-container.d/env"
+  printf 'SHARED_MOUNT=~/obsidian-vault\nSHARED_MOUNT_HOME_ALIAS=1\nAGENTS_DIR=~/.agents\n' > "$proj/.c3c/env"
   run_launcher
   check "env の opt-in が ~/ とホスト絶対パスの別名、およびスキル共有を渡す" \
     bash -c '[ "$1" = 0 ] && grep -qxF "CLAUDE_SHARED_HOME_PATH=/home/node/obsidian-vault" "$2/compose-env" && grep -qxF "CLAUDE_SHARED_HOST_PATH=$3/obsidian-vault" "$2/compose-env" && grep -qxF "AGENTS_DIR=$3/.agents" "$2/compose-env" && grep -qxF "$4/compose.shared-home.yml" "$2/compose-args" && grep -qxF "$4/compose.shared-host.yml" "$2/compose-args" && grep -qxF "$4/compose.agents.yml" "$2/compose-args"' _ "$rc" "$root" "$home" "$SCRIPT_DIR"
@@ -2107,7 +2107,7 @@ run_instruction_mount_launcher_tests() {
         grep -qxF "$3/compose.$f.yml" "$2/compose-args.$n" || exit 1
       done; done' _ "$rc" "$root" "$SCRIPT_DIR"
   printf '%s\n' "$out" >> "$LOG_FILE"
-  : > "$proj/.claude-container.d/env"
+  : > "$proj/.c3c/env"
 
   # ガードを落とすと、これらが compose に到達して設定を隠すか、ホストに空の実体を作る。
   for value in '' 2 true '1 '; do
@@ -2394,17 +2394,17 @@ if [[ "${1:-}" == "--build-only" ]]; then
   finish_by_result
 fi
 
-log "## .claude-container.d によるパッケージ上書き"
+log "## .c3c によるパッケージ上書き"
 OVERRIDE_IMAGE="localhost/claude-test-override"
 OVERRIDE_PROJECT_DIR="$(mktemp -d)"
 OVERRIDE_CONTEXT_DIR="$(mktemp -d)"
-mkdir -p "$OVERRIDE_PROJECT_DIR/.claude-container.d"
-echo "htop" > "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt"
+mkdir -p "$OVERRIDE_PROJECT_DIR/.c3c"
+echo "htop" > "$OVERRIDE_PROJECT_DIR/.c3c/packages.txt"
 
 # c3c スクリプトが行うステージング（プロジェクト側 packages.txt を
 # ビルドコンテキストへ集約する処理）を模して検証する
 if stage_common_context "$OVERRIDE_CONTEXT_DIR"; then
-  cp "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
+  cp "$OVERRIDE_PROJECT_DIR/.c3c/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
   cp "${SCRIPT_DIR}/requirements.txt" "$OVERRIDE_CONTEXT_DIR/requirements.txt"
   check "podman build (override context)" podman build --no-cache \
     -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OVERRIDE_IMAGE" "$OVERRIDE_CONTEXT_DIR"
@@ -2446,10 +2446,10 @@ check_fails() {
 NEG1_IMAGE="localhost/claude-test-neg1"
 NEG1_PROJECT_DIR="$(mktemp -d)"
 NEG1_CONTEXT_DIR="$(mktemp -d)"
-mkdir -p "$NEG1_PROJECT_DIR/.claude-container.d"
-printf 'tini-\n' > "$NEG1_PROJECT_DIR/.claude-container.d/packages.txt"
+mkdir -p "$NEG1_PROJECT_DIR/.c3c"
+printf 'tini-\n' > "$NEG1_PROJECT_DIR/.c3c/packages.txt"
 if stage_common_context "$NEG1_CONTEXT_DIR"; then
-  cp "$NEG1_PROJECT_DIR/.claude-container.d/packages.txt" "$NEG1_CONTEXT_DIR/packages.txt"
+  cp "$NEG1_PROJECT_DIR/.c3c/packages.txt" "$NEG1_CONTEXT_DIR/packages.txt"
   cp "${SCRIPT_DIR}/requirements.txt" "$NEG1_CONTEXT_DIR/requirements.txt"
   check_fails "陰性1: packages.txt注入行でビルドfail" "仕様外の行があります" \
     podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$NEG1_IMAGE" "$NEG1_CONTEXT_DIR"
@@ -2464,11 +2464,11 @@ rm -rf "$NEG1_PROJECT_DIR" "$NEG1_CONTEXT_DIR"
 NEG2_IMAGE="localhost/claude-test-neg2"
 NEG2_PROJECT_DIR="$(mktemp -d)"
 NEG2_CONTEXT_DIR="$(mktemp -d)"
-mkdir -p "$NEG2_PROJECT_DIR/.claude-container.d"
-printf -- '--index-url https://evil.example/simple\n' > "$NEG2_PROJECT_DIR/.claude-container.d/requirements.txt"
+mkdir -p "$NEG2_PROJECT_DIR/.c3c"
+printf -- '--index-url https://evil.example/simple\n' > "$NEG2_PROJECT_DIR/.c3c/requirements.txt"
 if stage_common_context "$NEG2_CONTEXT_DIR"; then
   cp "${SCRIPT_DIR}/packages.txt" "$NEG2_CONTEXT_DIR/packages.txt"
-  cp "$NEG2_PROJECT_DIR/.claude-container.d/requirements.txt" "$NEG2_CONTEXT_DIR/requirements.txt"
+  cp "$NEG2_PROJECT_DIR/.c3c/requirements.txt" "$NEG2_CONTEXT_DIR/requirements.txt"
   check_fails "陰性2: requirements.txt注入行でビルドfail" "仕様外の行があります" \
     podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$NEG2_IMAGE" "$NEG2_CONTEXT_DIR"
 else
@@ -2485,12 +2485,12 @@ rm -rf "$NEG2_PROJECT_DIR" "$NEG2_CONTEXT_DIR"
 POS1_IMAGE="localhost/claude-test-pos1"
 POS1_PROJECT_DIR="$(mktemp -d)"
 POS1_CONTEXT_DIR="$(mktemp -d)"
-mkdir -p "$POS1_PROJECT_DIR/.claude-container.d"
-printf 'python3-pip\n' > "$POS1_PROJECT_DIR/.claude-container.d/packages.txt"
-printf 'requests#garbage\n' > "$POS1_PROJECT_DIR/.claude-container.d/requirements.txt"
+mkdir -p "$POS1_PROJECT_DIR/.c3c"
+printf 'python3-pip\n' > "$POS1_PROJECT_DIR/.c3c/packages.txt"
+printf 'requests#garbage\n' > "$POS1_PROJECT_DIR/.c3c/requirements.txt"
 if stage_common_context "$POS1_CONTEXT_DIR"; then
-  cp "$POS1_PROJECT_DIR/.claude-container.d/packages.txt" "$POS1_CONTEXT_DIR/packages.txt"
-  cp "$POS1_PROJECT_DIR/.claude-container.d/requirements.txt" "$POS1_CONTEXT_DIR/requirements.txt"
+  cp "$POS1_PROJECT_DIR/.c3c/packages.txt" "$POS1_CONTEXT_DIR/packages.txt"
+  cp "$POS1_PROJECT_DIR/.c3c/requirements.txt" "$POS1_CONTEXT_DIR/requirements.txt"
   check "陽性1: 正規化済みrequirementsでビルド成功" podman build \
     -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$POS1_IMAGE" "$POS1_CONTEXT_DIR"
   # ビルド成功だけを assert しない — 「pip が正しく走った」と「pip 段が丸ごと
@@ -2578,7 +2578,7 @@ podman rmi "$PIN_IMAGE" 2>/dev/null
 rm -rf "$PIN_PROJECT_DIR" "$PIN_CONTEXT_DIR"
 log ""
 
-log "## .claude-container.d/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"
+log "## .c3c/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"
 # 模倣コピーではなく c3c 本体の stage_build_context() を実際に実行させて
 # 検証する。podman をダミー化し「イメージ未ビルド」を常に返させることでビルド分岐に
 # 入らせ、実際のステージング結果（.build-context/<project>/）に env が無いことを見る。
@@ -2598,10 +2598,10 @@ DUMMY
 chmod +x "$ENV_TESTROOT/bin/podman"
 
 ENV_PROJECT_DIR="$ENV_TESTROOT/proj"
-mkdir -p "$ENV_PROJECT_DIR/.claude-container.d"
+mkdir -p "$ENV_PROJECT_DIR/.c3c"
 echo "[user]
 	name = dummy" > "$ENV_TESTROOT/dummy-gitconfig"
-echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.claude-container.d/env"
+echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.c3c/env"
 
 BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 # 他のランチャーテストと同じく env -i で隔離する。隔離しないと record_project_in_ledger() が
@@ -2611,11 +2611,11 @@ AFTER_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || tru
 NEW_BUILD_CONTEXT="$(comm -13 <(echo "$BEFORE_BUILD_CONTEXTS" | sort) <(echo "$AFTER_BUILD_CONTEXTS" | sort) | head -1)"
 
 if [[ -n "$NEW_BUILD_CONTEXT" ]]; then
-  check ".claude-container.d/env がビルドコンテキストに含まれない" \
+  check ".c3c/env がビルドコンテキストに含まれない" \
     bash -c "[[ ! -e '${SCRIPT_DIR}/.build-context/${NEW_BUILD_CONTEXT}/env' ]]"
   rm -rf "${SCRIPT_DIR}/.build-context/${NEW_BUILD_CONTEXT}"
 else
-  check ".claude-container.d/env がビルドコンテキストに含まれない" false
+  check ".c3c/env がビルドコンテキストに含まれない" false
 fi
 
 # 起動台帳は隔離 HOME 側に書かれ、実台帳（実ユーザーの ~/.local/state）には触れない（#59）

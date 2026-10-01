@@ -491,7 +491,7 @@ git commit -m "docs: #190 の受入結果と確認した版を記録する"
   |---|---|---|
   | `c3c codex`（通常） | NO-BANNER（サインイン到達） | NO-BANNER |
   | `c3c codex --read-only` | NO-BANNER | NO-BANNER |
-  | `podman run … /usr/local/bin/codex`（名前で呼ぶ） | NO-BANNER | NO-BANNER |
+  | `podman run … sh /tmp/named-probe.sh named`（コンテナ内で `exec codex`、PATH 解決） | NO-BANNER | NO-BANNER |
   | `podman run … bash -lc codex`（ログインシェル） | NO-BANNER | NO-BANNER |
   | `podman exec --user node … codex`（動いているコンテナへ） | NO-BANNER | NO-BANNER |
   | 対照: 変更前のイメージの名前で呼ぶ codex | BANNER | BANNER |
@@ -504,4 +504,20 @@ git commit -m "docs: #190 の受入結果と確認した版を記録する"
   1. Dockerfile の RUN 直前コメントを、挙動を変えずに書き直した。
   2. 変更前のイメージは、181c1cc の worktree での再ビルドをやめ、#183 の受入で作った既存のイメージ（`latest-d1d6be7e`、`pin0156-d2cb8dd2`）を tag で退避して使った。両イメージとも `/etc/codex` が無く、`entrypoint.sh` に #183 の `-c` があることを確認した。#189 は Dockerfile を変えていない。
   3. 計画の `observe`（素の `script`）は、Codex TUI の端末への問い合わせに応答できず、TUI が先へ進まなかった（fixture A の最初の起動が、問い合わせの制御文字だけを出して 3 分間止まった）。#183 の受入と同じ pty と応答処理を使う `observe.py` に置き換えた。判定の文言と対象は計画どおり。
+     - `observe.py` の要点: `pty.openpty()` の端末（28 行 × 100 列、`TERM=xterm-256color`）でコマンドを起動し、読み取りの途中で、`ESC[6n`（カーソル位置）には `ESC[1;1R`、`ESC]10;?`（前景色）と `ESC]11;?`（背景色）には固定の RGB を返す。指定の秒数が過ぎたら Ctrl-C を送って止め、画面から制御文字を除いて、`Update available` があれば BANNER、`Sign in with ChatGPT` があれば NO-BANNER（サインイン到達）、どちらも無ければ UNOBSERVED と判定する。#183 の `/tmp/c3c-183-tui-probe.py` と同じ応答を使っている。ファイルは追跡していない（`.superpowers/` は git の管理外）。
+     - 素の `script` で動かした `observe()`（計画の本文）は、上の応答が無いので先へ進まない。再受入するときは、上の要点で書き直す。
 - not run: `--launcher-only`、GitHub CI（未投稿）、0.146.0〜0.155.x と 0.145.0 以前の実測（上流のソースを読んだだけ）、cloud 管理の要件層との組み合わせ、実際の認証済み TUI での更新案内（認証情報を持ち込まない方針のため）。
+- probe の doctor 部分の判別力（PR 前レビューの Minor への追加実測）: 要件ファイルの無い #183 のイメージ（0.159.3）で probe と同じ `codex -c check_for_update_on_startup=true doctor --json` を実行すると、doctor は終了コード 1、`check for update on startup` は `"true"` だった。このため probe は、要件ファイルが無ければ「実効値が true」で FAIL する（先頭の `/etc/codex` の検査より後の部分の判別力）。
+
+## PR 前レビュー結果（2026-10-01、対象 181c1cc..38dbd03）
+
+- Codex: GPT-6 Astra（`gpt-6-astra`、CLI のヘッダで確認、`codex exec --model gpt-6-astra --sandbox read-only`、先に background 起動）。判定: Yes（静的コードレビューとして）。Critical 0・Important 0・Minor 1。
+- Claude: Opus 5.5（headless の `claude -p`、`modelUsage` は claude-opus-5-5、Read / Grep / Glob のみ）。判定: Yes。Critical 0・Important 0・Minor 5。
+- 実装者（Sonnet 5.5）と計画者（Opus 5.5）のどちらも関わっていないセッションがレビューした。確認限定巡は不要（Critical・Important が無い）。
+- 反映した Minor（記録の事実の訂正と補足）: 受入表の「名前で呼ぶ」の行の表記（両者が指摘）、`observe.py` の要点の記録、probe の doctor 部分の実測の追記。
+- 未対応の Minor（PR 本文に記載）:
+  1. opt-out の検査 `[ ! -e /etc/codex ]` は dangling symlink を見逃す。`[ ! -L /etc/codex ]` を足す案（Codex）。
+  2. probe が doctor の stderr を捨てるので、FAIL の原因が追いにくい。`2>"$home/doctor.err"` に書いて失敗時に出す案（Claude）。
+  3. 0.146.0 より前の固定版では、名前で呼ぶ codex の抑止が効かない。README は未確認として記載済みで、明示の 1 文を足す案（Claude）。
+  - どれも動作を壊さず、コードの変更は再検証（`--build-only` と全体実行）が要るため、この PR では直さない。
+- レビュー呼び出し: Codex 1 回、Claude 1 回。

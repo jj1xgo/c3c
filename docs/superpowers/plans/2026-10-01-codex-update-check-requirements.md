@@ -477,3 +477,31 @@ git commit -m "docs: #190 の受入結果と確認した版を記録する"
     - Important: 対照に使う変更前イメージの退避と作り方が無い。対照で同じキャッシュを使えない。README 777 行目の手順が成立しなくなる。
   - 確認限定 1 巡目: 全件解決。「実装に渡せる」。新たに Minor 1 件（`\&\&`）が出て、反映済み。
 - 未対応の Critical・Important・Minor は無い。レビューは静的な計画の照合であり、実装や実機受入の成功を意味しない。
+
+## 実装・検証結果（2026-10-01）
+
+- 実装: Claude Sonnet 5.5（持ち主指定。transcript の `.message.model` で claude-sonnet-5-5 の応答を確認）。branch `fix/codex-update-check-requirements`、分岐元 181c1cc。実装の commit は f5921c3。
+- 上流コードの確認: 計画の一次情報のとおり（rust-v0.159.3 の loader・requirements・updates・doctor）。実装中に追加で、更新案内の見出し `Update available`（`codex-rs/tui/src/update_prompt.rs`）とサインイン画面の文言をソースで確かめた。
+- RED: `./test-build.sh --build-only` で、新しい check だけが FAIL（PASS=21・FAIL=1）。テスト用イメージに `/etc/codex` が無いことを直接確認した。
+- GREEN: `./test-build.sh --build-only` は PASS=22・FAIL=0。引数なしの全体実行は PASS=589・FAIL=0（opt-out の「要件ファイルなし」の check を含む）。`./lint.sh` は rc 0・警告ゼロ（host、Compose 検証を含む）。`--launcher-only` は `entrypoint.sh` と起動口を変えていないため、今回は not run。
+- 実 argv（fixture A・B、通常・read-only の 4 本）: `podman top` で、sandbox・approval・trust override と末尾の `-c check_for_update_on_startup=false` が #183 の記録と同じことを確認した。上書きの警告（`overridden by the required value`）は 0 件。
+- 実 TUI の抑止と対照（疑似端末、使い捨ての `CODEX_HOME`、毎回 `latest_version: 999.0.0` のキャッシュを作り直す、`--network=none` の直接起動は対照も含めて同条件）:
+
+  | 経路 | A（0.159.3） | B（0.156.0） |
+  |---|---|---|
+  | `c3c codex`（通常） | NO-BANNER（サインイン到達） | NO-BANNER |
+  | `c3c codex --read-only` | NO-BANNER | NO-BANNER |
+  | `podman run … /usr/local/bin/codex`（名前で呼ぶ） | NO-BANNER | NO-BANNER |
+  | `podman run … bash -lc codex`（ログインシェル） | NO-BANNER | NO-BANNER |
+  | `podman exec --user node … codex`（動いているコンテナへ） | NO-BANNER | NO-BANNER |
+  | 対照: 変更前のイメージの名前で呼ぶ codex | BANNER | BANNER |
+  | 対照: 変更前のイメージのログインシェル | BANNER | BANNER |
+
+  変更前のイメージと変更後のイメージは、A が 0.159.3、B が 0.156.0 で版が一致した。本起動の試行後のキャッシュ（`dismissed_version` は null、`last_checked_at` は不変）も確認した。
+- ドリフト WARNING: #183 の旧イメージ（latest）に、変更後の `c3c --check` を当てて、境界アセットの WARNING を確認した（WARN=1・FAIL=0）。
+- base image の fail-closed（手動ビルド）: 既存の `/etc/codex/requirements.toml` があるとき `ERROR: /etc/codex/requirements.toml が既にあります…`、`/etc/codex` が 0775 のとき `ERROR: /etc/codex が root:root 0755 ではありません（0:0:775）` で、どちらもビルドが rc 1 で止まった。
+- 計画からの逸脱（台帳の `Ruling:`）:
+  1. Dockerfile の RUN 直前コメントを、挙動を変えずに書き直した。
+  2. 変更前のイメージは、181c1cc の worktree での再ビルドをやめ、#183 の受入で作った既存のイメージ（`latest-d1d6be7e`、`pin0156-d2cb8dd2`）を tag で退避して使った。両イメージとも `/etc/codex` が無く、`entrypoint.sh` に #183 の `-c` があることを確認した。#189 は Dockerfile を変えていない。
+  3. 計画の `observe`（素の `script`）は、Codex TUI の端末への問い合わせに応答できず、TUI が先へ進まなかった（fixture A の最初の起動が、問い合わせの制御文字だけを出して 3 分間止まった）。#183 の受入と同じ pty と応答処理を使う `observe.py` に置き換えた。判定の文言と対象は計画どおり。
+- not run: `--launcher-only`、GitHub CI（未投稿）、0.146.0〜0.155.x と 0.145.0 以前の実測（上流のソースを読んだだけ）、cloud 管理の要件層との組み合わせ、実際の認証済み TUI での更新案内（認証情報を持ち込まない方針のため）。

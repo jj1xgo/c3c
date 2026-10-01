@@ -483,7 +483,7 @@ git commit -m "docs: #190 の受入結果と確認した版を記録する"
 - 実装: Claude Sonnet 5.5（持ち主指定。transcript の `.message.model` で claude-sonnet-5-5 の応答を確認）。branch `fix/codex-update-check-requirements`、分岐元 181c1cc。実装の commit は f5921c3。
 - 上流コードの確認: 計画の一次情報のとおり（rust-v0.159.3 の loader・requirements・updates・doctor）。実装中に追加で、更新案内の見出し `Update available`（`codex-rs/tui/src/update_prompt.rs`）とサインイン画面の文言をソースで確かめた。
 - RED: `./test-build.sh --build-only` で、新しい check だけが FAIL（PASS=21・FAIL=1）。テスト用イメージに `/etc/codex` が無いことを直接確認した。
-- GREEN: `./test-build.sh --build-only` は PASS=22・FAIL=0。引数なしの全体実行は PASS=589・FAIL=0（opt-out の「要件ファイルなし」の check を含む）。`./lint.sh` は rc 0・警告ゼロ（host、Compose 検証を含む）。`--launcher-only` は `entrypoint.sh` と起動口を変えていないため、今回は not run。
+- GREEN: `./test-build.sh --build-only` は PASS=22・FAIL=0。引数なしの全体実行は PASS=589・FAIL=0（opt-out の「要件ファイルなし」の check を含む）。`./lint.sh` は rc 0・警告ゼロ（host、Compose 検証を含む）。ランチャーテスト（`--launcher-only` と同じ関数）は、引数なしの全体実行（PASS=589）に含まれる。ログの `Codex 起動口（同梱 bubblewrap の PATH 先頭化…）` が PASS で、`--launcher-only` 単体の実行は不要と判断した。
 - 実 argv（fixture A・B、通常・read-only の 4 本）: `podman top` で、sandbox・approval・trust override と末尾の `-c check_for_update_on_startup=false` が #183 の記録と同じことを確認した。上書きの警告（`overridden by the required value`）は 0 件。
 - 実 TUI の抑止と対照（疑似端末、使い捨ての `CODEX_HOME`、毎回 `latest_version: 999.0.0` のキャッシュを作り直す、`--network=none` の直接起動は対照も含めて同条件）:
 
@@ -506,7 +506,7 @@ git commit -m "docs: #190 の受入結果と確認した版を記録する"
   3. 計画の `observe`（素の `script`）は、Codex TUI の端末への問い合わせに応答できず、TUI が先へ進まなかった（fixture A の最初の起動が、問い合わせの制御文字だけを出して 3 分間止まった）。#183 の受入と同じ pty と応答処理を使う `observe.py` に置き換えた。判定の文言と対象は計画どおり。
      - `observe.py` の要点: `pty.openpty()` の端末（28 行 × 100 列、`TERM=xterm-256color`）でコマンドを起動し、読み取りの途中で、`ESC[6n`（カーソル位置）には `ESC[1;1R`、`ESC]10;?`（前景色）と `ESC]11;?`（背景色）には固定の RGB を返す。指定の秒数が過ぎたら Ctrl-C を送って止め、画面から制御文字を除いて、`Update available` があれば BANNER、`Sign in with ChatGPT` があれば NO-BANNER（サインイン到達）、どちらも無ければ UNOBSERVED と判定する。#183 の `/tmp/c3c-183-tui-probe.py` と同じ応答を使っている。ファイルは追跡していない（`.superpowers/` は git の管理外）。
      - 素の `script` で動かした `observe()`（計画の本文）は、上の応答が無いので先へ進まない。再受入するときは、上の要点で書き直す。
-- not run: `--launcher-only`、GitHub CI（未投稿）、0.146.0〜0.155.x と 0.145.0 以前の実測（上流のソースを読んだだけ）、cloud 管理の要件層との組み合わせ、実際の認証済み TUI での更新案内（認証情報を持ち込まない方針のため）。
+- not run: GitHub CI（未投稿）、0.146.0〜0.155.x と 0.145.0 以前の実測（上流のソースを読んだだけ）、cloud 管理の要件層との組み合わせ、実際の認証済み TUI での更新案内（認証情報を持ち込まない方針のため）。
 - probe の doctor 部分の判別力（PR 前レビューの Minor への追加実測）: 要件ファイルの無い #183 のイメージ（0.159.3）で probe と同じ `codex -c check_for_update_on_startup=true doctor --json` を実行すると、doctor は終了コード 1、`check for update on startup` は `"true"` だった。このため probe は、要件ファイルが無ければ「実効値が true」で FAIL する（先頭の `/etc/codex` の検査より後の部分の判別力）。
 
 ## PR 前レビュー結果（2026-10-01、対象 181c1cc..38dbd03）

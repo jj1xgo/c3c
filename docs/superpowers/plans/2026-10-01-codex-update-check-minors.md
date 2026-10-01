@@ -45,12 +45,12 @@
 - Consumes: 既存の `check()`、`CODEX_REQUIREMENTS_PROBE`、ビルド済みのテストイメージ `localhost/claude-test`（`--build-only` が作る）。
 - Produces: 無し（テストの内部だけ）。
 
-- [ ] **Step 1: テスト用イメージを用意する（host）**
+- [x] **Step 1: テスト用イメージを用意する（host）**
 
 Run: `./test-build.sh --build-only`
 Expected: `結果: PASS=22  FAIL=0`。終わった後も `localhost/claude-test` が残っていること（`podman image exists localhost/claude-test && echo ok` が `ok`）。残らない場合は、Step 2・3 の RED を `not run` にして理由を記録し、Step 4 へ進む。
 
-- [ ] **Step 2: RED（opt-out の検査式が dangling symlink を見逃すこと）**
+- [x] **Step 2: RED（opt-out の検査式が dangling symlink を見逃すこと）**
 
 `/etc/codex` を dangling symlink に置き換えて、今の式と新しい式を同じ条件で評価する。
 
@@ -63,7 +63,7 @@ podman run --rm --network=none --user root localhost/claude-test sh -c '
 
 Expected: `old: PASS（見逃し）` と `new: FAIL（検出）`。rc 9 で止まった場合は root でも消せなかったので、その出力を記録して `not run` 扱いにする。
 
-- [ ] **Step 3: RED（probe が doctor の stderr を捨てること）**
+- [x] **Step 3: RED（probe が doctor の stderr を捨てること）**
 
 stderr に目印を書いて失敗する偽の `codex` を PATH の先頭に置き、今の probe を流す。
 
@@ -85,7 +85,7 @@ podman run --rm --network=none -v "$SCRATCH/stub:/stub:ro" \
 
 Expected: rc が 0 以外、`codex doctor --json（rc=1）から更新確認の実効値を読めない` が出て、`stub: doctor failed on purpose` は出ない。SELinux でマウントが読めない場合は `:ro` を `:ro,z` にする。
 
-- [ ] **Step 4: opt-out の検査式を直す**
+- [x] **Step 4: opt-out の検査式を直す**
 
 `test-build.sh` の opt-out の check（2574 行付近）の末尾を次のように変える。説明の文字列は変えない。
 
@@ -98,7 +98,7 @@ Expected: rc が 0 以外、`codex doctor --json（rc=1）から更新確認の�
 [ ! -e /usr/local/libexec/c3c/codex-bwrap ] && [ ! -e /etc/codex ] && [ ! -L /etc/codex ]'
 ```
 
-- [ ] **Step 5: probe の doctor 部分を直す**
+- [x] **Step 5: probe の doctor 部分を直す**
 
 probe の直前のコメント（2415〜2417 行）の 3 行目の末尾に次を足す。
 
@@ -134,13 +134,13 @@ v="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"checks\"]
 
 単一引用符を足していないことを確かめる: `python3 - <<'PY'` で Step 3 と同じ抽出をして、`"'" in m.group(1)` が `False` であること。
 
-- [ ] **Step 6: GREEN（Step 2・3 をやり直す）**
+- [x] **Step 6: GREEN（Step 2・3 をやり直す）**
 
 Step 2 の `new:` の行は、Step 4 の式そのものなので、Step 2 の Expected のままでよい（`new: FAIL（検出）`）。
 Step 3 は、probe を抽出し直して（Step 3 の python ブロックを再実行）同じ `podman run` を流す。
 Expected: rc が 0 以外。`codex doctor --json（rc=1）から更新確認の実効値を読めない（上流の出力形式の変更を疑う）`、`--- codex doctor の stderr ---`、`stub: doctor failed on purpose` の 3 行が出る。
 
-- [ ] **Step 7: lint と回帰（host）**
+- [x] **Step 7: lint と回帰（host）**
 
 Run: `./lint.sh`
 Expected: rc 0、警告ゼロ。
@@ -161,7 +161,7 @@ Expected: `FAIL=0`（前回は PASS=589）。`Codex opt-out: codex が入って�
 - Modify: `README.md:622`（「イメージの変更」節の Codex の段落の最後の文）
 - Modify: `docs/superpowers/plans/2026-10-01-codex-update-check-minors.md`（この計画。計画者が承認後に main へ commit して渡す。実装者は末尾に実装結果を足す）。#190 の計画ファイルは変えない。
 
-- [ ] **Step 1: README の最後の文を置き換える**
+- [x] **Step 1: README の最後の文を置き換える**
 
 変更前:
 ```
@@ -172,12 +172,12 @@ Expected: `FAIL=0`（前回は PASS=589）。`Codex opt-out: codex が入って�
 要件ファイルでこの設定を扱えるのは、上流のソースでは rust-v0.146.0 以降。それより前の版を `.c3c/codex-version.txt` で固定した場合は要件ファイルが効かず、ログインシェルや `podman exec` から名前で呼ぶ対話 `codex` では起動時の更新確認が止まらない（上流のソースを読んだ判断で、実測はしていない）。
 ```
 
-- [ ] **Step 2: lint**
+- [x] **Step 2: lint**
 
 Run: `./lint.sh`
 Expected: rc 0、警告ゼロ。
 
-- [ ] **Step 3: 計画ファイルに実装結果を書き、commit する**
+- [x] **Step 3: 計画ファイルに実装結果を書き、commit する**
 
 計画ファイルの末尾に「## 実装結果」を足し、Task 1 の各 Step の実際の出力（RED・GREEN の行、PASS/FAIL の件数、lint の rc）と、実行しなかった項目を `not run` と理由付きで書く。
 
@@ -206,3 +206,26 @@ commit の末尾には、実装者のセッションの attribution の行を付
 推奨実装: Codex — 判定基準を上から当てると、1（コンテナ内でしか成立しない）は当たらない。むしろ実ビルドの検証に Podman が要り、このコンテナには無いので host が必要になる。2・3 も当たらず、host の checkout で完結し逐語手順と Expected まで確定しているので 4 に当たる。
 
 実装: Codex（持ち主指定、2026-10-01。host の checkout で、計画末尾の `/goal` の文面を渡す）
+
+
+## 実装結果
+
+2026-10-01、host の Codex（GPT-6.1 Sol、セッションの `turn_context.model` は `gpt-6.1-sol`）が、`2fec672` から `fix/codex-update-check-minors` を切って実装した。テストの 2 か所と README の 1 文は計画の逐語どおり。既存の未追跡ファイルは対象外とした。
+
+- Task 1 Step 1: host の `TMPDIR=/tmp ./test-build.sh --build-only` は rc 0、`PASS=22  FAIL=0`。`podman image exists localhost/claude-test` は rc 0、`ok`。ログ: `.claude/test-results/2026-10-01_194132.log`。
+- Step 2 RED: `old: PASS（見逃し）` と `new: FAIL（検出）`、rc 0。使い捨てコンテナ内で `/etc/codex` を dangling symlink に置き換えられた。
+- Step 3 RED: probe は rc 1。`codex doctor --json（rc=1）から更新確認の実効値を読めない（上流の出力形式の変更を疑う）` が出て、`stub: doctor failed on purpose` は出なかった。不正な JSON を読む Python の traceback も出た。
+- Step 4・5: opt-out に `[ ! -L /etc/codex ]` を追加し、doctor の stderr をファイルへ保存して失敗時だけ表示する関数を追加。probe を抽出した単一引用符の検査は `False`。
+- Step 6 GREEN: symlink は RED と同じ `old: PASS（見逃し）` / `new: FAIL（検出）`。probe は rc 1 で、上記の JSON 読取失敗メッセージに加え、`--- codex doctor の stderr ---` と `stub: doctor failed on purpose` が出た。Python の traceback は RED と同じ。
+- Step 7: host の `./lint.sh` は rc 0、警告ゼロ、Compose 検証を含め `lint OK`。修正後の `TMPDIR=/tmp ./test-build.sh --build-only` は rc 0、`PASS=22  FAIL=0`。成功ログに stderr の見出しが無いことも確認した（`.claude/test-results/2026-10-01_194645.log`）。
+- Step 7 全体: host の `TMPDIR=/tmp ./test-build.sh` は rc 0、`PASS=589  FAIL=0`（前回と同数）。opt-out のビルド、Codex と起動口・同梱 bubblewrap・要件ファイルの不在、Node default の 3 検査はすべて PASS。契約・ランチャー検査も全体実行に含まれる。ログ: `.claude/test-results/2026-10-01_195055.log`。
+- Task 2: README の 1 文を逐語どおり置換。変更後の host lint も rc 0、警告ゼロ、Compose 検証を含め `lint OK`。
+
+環境制約と未実施範囲:
+
+- sandbox 内の初回 build-only は rc 1（`PASS=1  FAIL=2`、Podman と DNS の制約）。sandbox 内 lint も Podman の `/run` 書込制約で rc 1。いずれも host 権限で再実行し、上記の成功を確認した。
+- host の各実ビルドでは GitHub meta の取得が既知の 403 で失敗し、既存スナップショットを再利用した。meta の新規取得は未確認であり、テスト成功と分けて扱う。
+- 0.146.0 より前の Codex の実測は not run（今回の計画対象外。README に未実測であることを明記）。
+- 計画レビュー・PR 前レビューは、承認済みの軽量区分に従って省略。PR 後の独立した二重レビューは未実施（PR 作成前）。push・PR は持ち主の確認後に行う。
+
+手順の判断: 全体テスト待ちに、独立な README の置換を先行した。実行中の `test-build.sh` は変更していない。追加 worktree は作らず、承認済み計画が指定する checkout と専用ブランチを使用した。検証済みのテストは、記録・commit のためだけには繰り返さない。

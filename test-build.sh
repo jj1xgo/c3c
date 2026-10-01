@@ -2415,6 +2415,7 @@ check "Codex 起動口（通常ファイル・root:root 0755・node から書込
 # Codex の起動時の更新確認を要件ファイルで無効にする（#190）。名前で呼ぶ codex も本起動も、-c や user の
 # config.toml で true にしても false のままになる。doctor はネットワークも認証も無いと非ゼロで終わるので
 # 終了コードでは判定しない。timeout（124）だけは失敗にし、JSON にキーが無ければ（上流の出力形式の変更）失敗させる。
+# doctor の stderr はファイルに残し、失敗したときだけ出す（原因を追う手掛かり）。
 # shellcheck disable=SC2016  # コンテナ内の sh で評価する
 CODEX_REQUIREMENTS_PROBE='set -e
 d=/etc/codex; f=/etc/codex/requirements.toml
@@ -2427,11 +2428,12 @@ d=/etc/codex; f=/etc/codex/requirements.toml
 home="$(mktemp -d)"
 printf "check_for_update_on_startup = true\n" > "$home/config.toml"
 rc=0
-CODEX_HOME="$home" timeout 60 codex -c check_for_update_on_startup=true doctor --json > "$home/doctor.json" 2>/dev/null || rc=$?
-[ "$rc" != 124 ] || { echo "codex doctor が 60 秒で終わらない"; exit 1; }
+CODEX_HOME="$home" timeout 60 codex -c check_for_update_on_startup=true doctor --json > "$home/doctor.json" 2>"$home/doctor.err" || rc=$?
+doctor_fail() { echo "$1"; echo "--- codex doctor の stderr ---"; cat "$home/doctor.err"; exit 1; }
+[ "$rc" != 124 ] || doctor_fail "codex doctor が 60 秒で終わらない"
 v="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"checks\"][\"updates.status\"][\"details\"][\"check for update on startup\"])" "$home/doctor.json")" \
-  || { echo "codex doctor --json（rc=$rc）から更新確認の実効値を読めない（上流の出力形式の変更を疑う）"; exit 1; }
-[ "$v" = false ] || { echo "要件ファイルがあるのに更新確認の実効値が $v"; exit 1; }
+  || doctor_fail "codex doctor --json（rc=$rc）から更新確認の実効値を読めない（上流の出力形式の変更を疑う）"
+[ "$v" = false ] || doctor_fail "要件ファイルがあるのに更新確認の実効値が $v"
 [ "$(id -u)" != 0 ]'
 check "Codex の更新確認の要件ファイル（root:root・node から書込不可・固定内容・-c と user 設定の true より優先）" \
   podman run --rm --network=none "$IMAGE" sh -c "$CODEX_REQUIREMENTS_PROBE"
@@ -2571,7 +2573,7 @@ if stage_common_context "$OPTOUT_CONTEXT_DIR"; then
   check "Codex opt-out: 空の codex-version.txt でビルド成功" podman build \
     -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OPTOUT_IMAGE" "$OPTOUT_CONTEXT_DIR"
   check "Codex opt-out: codex が入っていない（起動口・同梱 bubblewrap・要件ファイルなし）" \
-    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c '! command -v codex >/dev/null && [ ! -e /usr/local/bin/codex ] && [ ! -e /usr/local/libexec/c3c/codex-bwrap ] && [ ! -e /etc/codex ]'
+    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c '! command -v codex >/dev/null && [ ! -e /usr/local/bin/codex ] && [ ! -e /usr/local/libexec/c3c/codex-bwrap ] && [ ! -e /etc/codex ] && [ ! -L /etc/codex ]'
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "Codex opt-out: Node は同梱 default のまま入っている" \
     bash -c '[ "$(podman run --rm --network=none "$1" node --version)" = "v$2" ]' _ "$OPTOUT_IMAGE" "$DEFAULT_NODE_VERSION"

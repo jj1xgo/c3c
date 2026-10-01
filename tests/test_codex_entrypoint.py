@@ -248,7 +248,8 @@ class RunTests(EntrypointCase):
                 self.assertNotIn('"hash"', result.stdout)
                 self.assertEqual(self.kinds(), ['exec'])
                 execd = self.codex_calls[-1]
-                self.assertEqual(execd['args'], ['--sandbox', sandbox, '--ask-for-approval', 'on-request', '-c', TRUST_OVERRIDE])
+                self.assertEqual(execd['args'], ['--sandbox', sandbox, '--ask-for-approval', 'on-request', '-c', TRUST_OVERRIDE,
+                                                 '-c', 'check_for_update_on_startup=false'])
                 self.assertEqual([r.split()[0] for r in self.records], ['sudo', 'refresh'])
                 self.assertIn('一致', result.stderr)
 

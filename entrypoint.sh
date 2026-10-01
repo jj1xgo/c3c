@@ -333,4 +333,5 @@ codex_sandbox=workspace-write
 if [ "$CODEX_READ_ONLY" = 1 ]; then
   codex_sandbox=read-only
 fi
-exec "$CODEX_CLI" --sandbox "$codex_sandbox" --ask-for-approval on-request -c 'projects={"/workspace"={trust_level="trusted"}}'
+# 起動時の更新確認は無効にする（#183）。版の更新は -b の再ビルドで行う。
+exec "$CODEX_CLI" --sandbox "$codex_sandbox" --ask-for-approval on-request -c 'projects={"/workspace"={trust_level="trusted"}}' -c 'check_for_update_on_startup=false'

@@ -304,6 +304,36 @@ RUN set -e; \
     rm -f /tmp/codex-launcher.sh
 # <<< c3c codex-launcher
 
+# >>> c3c codex-requirements
+# 名前で呼ぶ codex（ログインシェル、podman exec、Claude 経路の Bash ツール）も含め、起動時の更新確認を
+# 無効にする（#190）。Codex の管理側の要件ファイル（Unix は /etc/codex/requirements.toml）の値は、-c・user・
+# project の設定値を置き換える。root 所有なので node は書き換えられない。版の更新は -b の再ビルドで行う。
+# 次の場合はビルドを止める（上書き・追記・chmod で直さない）: base image が既に要件ファイルを持つ（管理
+# ポリシーを黙って消さない）、既存の /etc/codex が root:root 0755 のディレクトリでない（test-build.sh の
+# probe が要求する配置と揃える）。opt-out では何も作らない。
+RUN set -e; \
+    CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)"; \
+    if [ -z "$CODEX_VERSION" ]; then \
+      echo "INFO: Codex は opt-out のため更新確認の要件ファイルを置きません"; \
+    else \
+      d=/etc/codex; f=/etc/codex/requirements.toml; \
+      if [ -e "$f" ] || [ -L "$f" ]; then \
+        echo "ERROR: $f が既にあります（base image の管理ポリシー）。c3c は上書きしません" >&2; exit 1; \
+      fi; \
+      if [ -e "$d" ] || [ -L "$d" ]; then \
+        [ -d "$d" ] && ! [ -L "$d" ] || { echo "ERROR: $d が symlink でないディレクトリではありません" >&2; exit 1; }; \
+        mode="$(stat -c %u:%g:%a "$d")" || { echo "ERROR: $d の所有者・mode を検査できません" >&2; exit 1; }; \
+        [ "$mode" = 0:0:755 ] || { echo "ERROR: $d が root:root 0755 ではありません（$mode）" >&2; exit 1; }; \
+      else \
+        install -d -o root -g root -m 0755 "$d"; \
+      fi; \
+      printf '%s\n' '# c3c: 起動時の更新確認を無効にする（#190）。版の更新は -b の再ビルドで行う。' \
+        'check_for_update_on_startup = false' > "$f"; \
+      chown root:root "$f"; chmod 0644 "$f"; \
+      echo "INFO: Codex の更新確認を無効にする要件ファイル: $f"; \
+    fi
+# <<< c3c codex-requirements
+
 # エグレスファイアウォールのアセット: root 所有にし、node ユーザーが実行時に
 # 許可リストやスクリプト自体を変更できないようにする。node は sudo 経由で
 # このスクリプトのみを実行できる。

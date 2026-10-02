@@ -19,3 +19,6 @@ tmp
 
 # .marksman.toml はメンテナ個人のエディタ（Markdown LSP）設定。プロダクト本体ではない。
 .marksman.toml
+
+# tests/ の Python テストを走らせると生成されるバイトコードのキャッシュ。
+__pycache__/

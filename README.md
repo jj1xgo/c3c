@@ -428,7 +428,7 @@ legacy 変数が設定されたまま起動すると fail-closed で停止し、
 
 c3c はメイン PAT に `Workflows`（`Read and write`）を付けることを推奨しない。付けると、workflow の定義そのもの（起動の条件、`GITHUB_TOKEN` の権限、参照する secrets）までコンテナ内から書き換えられ、実行の条件と権限によっては、そのリポジトリで使える secrets や `GITHUB_TOKEN` の漏洩につながりうる。ただし付けなくても、`Contents: write` があれば既存の workflow が実行するスクリプト（テストやビルドのスクリプトなど）は書き換えられ、Actions 上で実行されうる。`Workflows` を付けないことは CI への影響をすべて防ぐものではなく、workflow の定義の書き換えをコンテナの権限から外すためのものである。
 
-workflow ファイルを変える commit は、コンテナ内では commit までにとどめ、ホストの端末から push する。ホストからの push にはホスト側の認証（workflow を更新できるもの）を使い、コンテナの PAT は変えない。push の前に、ホストで workflow の変更内容を確かめる（例: 分岐元が `main` なら `git log -p origin/main..<branch> -- .github/workflows/`）（[#195](https://github.com/jj1xgo/c3c/issues/195)）。
+workflow ファイルを変える commit は、コンテナ内では commit までにとどめ、ホストの端末から push する。ホストからの push にはホスト側の認証（workflow を更新できるもの）を使い、コンテナの PAT は変えない。push の前に、ホストで workflow の変更内容を確かめる（例: 分岐元が `main` なら `git log -p --diff-merges=first-parent origin/main..<branch> -- .github/workflows/`）（[#195](https://github.com/jj1xgo/c3c/issues/195)）。
 
 **コンテナ内 git commit（`GITCONFIG_FILE`）**: ホストで `git config --global user.name`/`user.email` を設定していても、デフォルトではコンテナ内に反映されず `git commit` が `Author identity unknown` で失敗する。`.c3c/env` に以下を書くと解消する。
 
@@ -659,7 +659,7 @@ Codex CLI の起動時の更新確認は、イメージに焼き込む要件フ�
 **GitHub 操作が失敗したときの切り分け**
 
 1. 失敗した操作・対象リポジトリ・ツール名・HTTP ステータスを確認する。`git`、PAT を明示した `gh`、プロジェクトの GitHub MCP、エージェントの GitHub 連携（App／Connector）は分けて扱う。連携側の認証が c3c に配置した PAT を使うとは仮定しない。連携の `403 Resource not accessible by integration` や素の `gh` の未認証だけで、配置した PAT の権限不足やコンテナ全体での操作不可とは判断しない。エラー文だけから連携の認証主体・トークン種別を確定しない。
-2. `git` の失敗なら、接続先が github.com の HTTPS リモートか確認する（SSH や他ホストは ASKPASS の対象外）。起動中のコンテナで `GIT_ASKPASS` と `GITHUB_MAIN_PAT_FILE` の設定、後者が指すファイルの存在・読み取り可否を、値を表示せず確認する。未配線なら「git push を使う場合」に戻り、`SECRETS_DIR`、PAT 配置後の再起動、ASKPASS 配線に対応したイメージかを確認する。古い実装のイメージには再ビルドが必要だが、PAT の更新だけなら不要。push が `refusing to allow a Personal Access Token to create or update workflow` で拒否された場合は、配線の問題ではなく `Workflows` 権限が無いためである。c3c の推奨ではホストから push する（「git push を使う場合」参照）。
+2. `git` の失敗なら、接続先が github.com の HTTPS リモートか確認する（SSH や他ホストは ASKPASS の対象外）。起動中のコンテナで `GIT_ASKPASS` と `GITHUB_MAIN_PAT_FILE` の設定、後者が指すファイルの存在・読み取り可否を、値を表示せず確認する。未配線なら「git push を使う場合」に戻り、`SECRETS_DIR`、PAT 配置後の再起動、ASKPASS 配線に対応したイメージかを確認する。古い実装のイメージには再ビルドが必要だが、PAT の更新だけなら不要。push が `refusing to allow a Personal Access Token to create or update workflow` で拒否された場合は、配線の問題ではなく、トークンに workflow の権限（fine-grained PAT では `Workflows`）が無いことによる拒否である。c3c の推奨ではホストから push する（「git push を使う場合」参照）。
 3. PAT の経路を確認する場合は、前述の明示読み手順で、目的に合った PAT を必要な `gh` コマンドにだけ渡す。明示読み手順の最後のコマンドを `GH_TOKEN="$github_pat" gh api --hostname github.com user --jq .login` に置き換えて認証、対象リポジトリの GET で読み取りを確認する。読み取り成功は書き込み権限の証明ではない。特に public リポジトリの GET やリポジトリ応答の `permissions` は、PAT の対象範囲・書き込み権限を証明しない。詳細は「設定済みスコープの確認」を参照。トークン値や環境変数全体を出力しない。
 4. GitHub の PAT 設定画面で対象リポジトリと操作に必要な権限を照合する。[PR 作成](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)には `Pull requests: write`、[PR マージ](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)には `Contents: write` が必要。実際の操作にはリポジトリのルールや利用側の承認条件も適用される。Issues 用 PAT の権限拡大やメイン PAT への自動切替は行わず、権限確認だけを目的とする PR 作成・マージもしない。
 

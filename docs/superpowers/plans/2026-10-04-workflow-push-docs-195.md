@@ -80,7 +80,7 @@ Expected: `docs/workflow-push-195`、最新 commit は `docs: #195 の計画を�
 
 c3c はメイン PAT に `Workflows`（`Read and write`）を付けることを推奨しない。付けると、workflow の定義そのもの（起動の条件、`GITHUB_TOKEN` の権限、参照する secrets）までコンテナ内から書き換えられ、実行の条件と権限によっては、そのリポジトリで使える secrets や `GITHUB_TOKEN` の漏洩につながりうる。ただし付けなくても、`Contents: write` があれば既存の workflow が実行するスクリプト（テストやビルドのスクリプトなど）は書き換えられ、Actions 上で実行されうる。`Workflows` を付けないことは CI への影響をすべて防ぐものではなく、workflow の定義の書き換えをコンテナの権限から外すためのものである。
 
-workflow ファイルを変える commit は、コンテナ内では commit までにとどめ、ホストの端末から push する。ホストからの push にはホスト側の認証（workflow を更新できるもの）を使い、コンテナの PAT は変えない。push の前に、ホストで workflow の変更内容を確かめる（例: 分岐元が `main` なら `git log -p origin/main..<branch> -- .github/workflows/`）（[#195](https://github.com/jj1xgo/c3c/issues/195)）。
+workflow ファイルを変える commit は、コンテナ内では commit までにとどめ、ホストの端末から push する。ホストからの push にはホスト側の認証（workflow を更新できるもの）を使い、コンテナの PAT は変えない。push の前に、ホストで workflow の変更内容を確かめる（例: 分岐元が `main` なら `git log -p --diff-merges=first-parent origin/main..<branch> -- .github/workflows/`）（[#195](https://github.com/jj1xgo/c3c/issues/195)）。
 ````
 
 - [ ] **Step 3: PAT の設定手順と対応表から参照する**
@@ -108,7 +108,7 @@ workflow ファイルを変える commit は、コンテナ内では commit ま�
 (4b) 「GitHub 操作が失敗したときの切り分け」の手順 2（行頭が `` 2. `git` の失敗なら、 ``、main では 652 行目）の末尾 `…PAT の更新だけなら不要。` の直後に、同じ行のまま次を追記する。
 
 ```markdown
-push が `refusing to allow a Personal Access Token to create or update workflow` で拒否された場合は、配線の問題ではなく `Workflows` 権限が無いためである。c3c の推奨ではホストから push する（「git push を使う場合」参照）。
+push が `refusing to allow a Personal Access Token to create or update workflow` で拒否された場合は、配線の問題ではなく、トークンに workflow の権限（fine-grained PAT では `Workflows`）が無いことによる拒否である。c3c の推奨ではホストから push する（「git push を使う場合」参照）。
 ```
 
 - [ ] **Step 5: セキュリティモデルから参照する**
@@ -227,3 +227,5 @@ push は持ち主に確認してから行う。PR 本文には、#195 を閉じ�
 `/goal` に渡す文面: 「#195 の計画 `docs/superpowers/plans/2026-10-04-workflow-push-docs-195.md` を executing-plans で実装する。Task 1 の Step 1〜8 を順に行う。コマンド中の `/workspace` は host の checkout のパスに読み替える。Step 1 でブランチ `docs/workflow-push-195` を確かめ、Step 2〜5 のとおり README.md に逐語で挿入・追記し、Step 6 の grep・diff・`./lint.sh` を実行して Expected と照らし、Step 7 の読み直しのあと Step 8 の 1 commit にする（commit の昇格の承認は持ち主に求める）。実際の出力を報告し、未実施の項目は not run と理由を書く。他セッションの変更と未追跡ファイルに触れない。push と PR は行わない。」
 
 実装: Sonnet 5.5（持ち主指定、2026-10-04。`/model` でこのセッションを切り替え。計画者と同じセッションが Task 1 を実施した。実効モデルは `/model` の表示で確認）
+
+PR 前レビュー（Codex・Claude とも Yes、Critical と Important なし）の Minor のうち、切り分け手順の原因の断定（Step 4b）とホストでの確認例の merge commit の見落とし（Step 2）の 2 件は、上の逐語から変更して README に反映した。参照側の言い方の強さ（Step 3a・3b）は変更しない。

@@ -225,3 +225,5 @@ push は持ち主に確認してから行う。PR 本文には、#195 を閉じ�
 - Codex の実行条件: host の checkout（`~/…/c3c`）。sandbox は `workspace-write`。この sandbox では `.git` が読み取り専用なので、Step 8 の `git commit` には昇格の承認が 1 回要る（持ち主が承認する）。`./lint.sh` の Compose 検証が sandbox で動かなければ、Step 6 の Expected のとおり `not run` として PR の CI に委ねる。ネットワークは不要（push と PR は持ち主の確認後に行う）。`/goal` は持ち主が明示した場合だけ開始する。
 
 `/goal` に渡す文面: 「#195 の計画 `docs/superpowers/plans/2026-10-04-workflow-push-docs-195.md` を executing-plans で実装する。Task 1 の Step 1〜8 を順に行う。コマンド中の `/workspace` は host の checkout のパスに読み替える。Step 1 でブランチ `docs/workflow-push-195` を確かめ、Step 2〜5 のとおり README.md に逐語で挿入・追記し、Step 6 の grep・diff・`./lint.sh` を実行して Expected と照らし、Step 7 の読み直しのあと Step 8 の 1 commit にする（commit の昇格の承認は持ち主に求める）。実際の出力を報告し、未実施の項目は not run と理由を書く。他セッションの変更と未追跡ファイルに触れない。push と PR は行わない。」
+
+実装: Sonnet 5.5（持ち主指定、2026-10-04。`/model` でこのセッションを切り替え。計画者と同じセッションが Task 1 を実施した。実効モデルは `/model` の表示で確認）

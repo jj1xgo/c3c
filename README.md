@@ -326,7 +326,7 @@ fine-grained PAT はトークン単位で、選択した全リポジトリに同
 
 1. GitHub の Settings → Developer settings → Personal access tokens → Fine-grained tokens で新規トークンを作成する。**classic PAT は使わない**（最小の書き込みスコープ `repo` でも全リポジトリのコード読み書きを含んでしまい、漏洩時の被害が過大なため）。設定は用途に応じて選ぶ:
    - Repository access: `Only select repositories` → 書き込み先リポジトリのみ選択（複数選択すると、以下のパーミッションが選択した全リポジトリに一律適用される点に注意）
-   - Repository permissions: 必要最小限のみ付与する。MCP／issues 用トークンなら `Issues: Read and write` のみを推奨。メイン PAT に `Pull requests: Read and write` を足すと自リポジトリの PR レビューまで、`Contents: write` を足すと push・PR マージ・Release 作成までコンテナ内から実行可能になる（`Contents: write` を付与しない限り push・マージ・Release作成はホスト側限定のまま維持される）
+   - Repository permissions: 必要最小限のみ付与する。MCP／issues 用トークンなら `Issues: Read and write` のみを推奨。メイン PAT に `Pull requests: Read and write` を足すと自リポジトリの PR レビューまで、`Contents: write` を足すと push・PR マージ・Release 作成までコンテナ内から実行可能になる（`Contents: write` を付与しない限り push・マージ・Release作成はホスト側限定のまま維持される）。`Workflows` は付けない（`.github/workflows/` を変える push はホストから行う。後述「git push を使う場合」）
    - Expiration: 90日以下を推奨
 2. ホストにディレクトリを作り（例: `~/.config/c3c/secrets.d/<project>`）、`chmod 700` する。中に置く各ファイルの**ファイル名がそのままコンテナ内の環境変数名（`export/` 配下のみ）になる**（`^[A-Za-z_][A-Za-z0-9_]*$` に合致しない名前は起動時に WARNING を出してスキップされる）。各ファイルは `chmod 600` し、中身はトークン文字列1行のみ（`export/` では CR・LF が除去されるが、複数行の値は連結されるため非対応。後述の gh 明示読みでは末尾の LF だけが除去されるので、CR や余分な空白を含めない）。各ファイルは実体（通常ファイル）として置くこと — コンテナにはこのディレクトリ単体がマウントされるため、ディレクトリ外を指すシンボリックリンクはコンテナ内でリンク先を解決できず、**警告なしにスキップされる**（既存のトークンファイルを流用したい場合はシンボリックリンクでなく値をコピーする）
 3. メイン PAT は `SECRETS_DIR` 直下に置く（例 `SECRETS_DIR/GITHUB_MAIN_PAT`）。Issues 用を gh の明示読みだけで使う場合も直下に置く（例 `SECRETS_DIR/GITHUB_ISSUES_PAT`）。MCP・hook 等が環境変数を必要とする場合だけ `SECRETS_DIR/export/` 配下に置く（例 `export/GITHUB_MCP_PAT`。`export/` ディレクトリ自体も `chmod 700`）
@@ -419,6 +419,16 @@ legacy 変数が設定されたまま起動すると fail-closed で停止し、
 `GITHUB_MAIN_PAT` を検知すると、`entrypoint.sh` は `GIT_CONFIG_*` 環境変数で `credential.helper` を空にリセットする。これは、`GITCONFIG_FILE`（後述）でマウントしたホストの gitconfig に `credential.helper = store` 等の設定が含まれていても、`git-askpass.sh` が都度読んだトークンを `~/.git-credentials` へ平文で永続化させないための対策（マウントされる `~/.gitconfig` は read-only のため `git config --global` での上書きはできず、全 config ファイルより後に適用される `GIT_CONFIG_*` 環境変数がこの目的で使える唯一の手段）。
 
 **force push 対策**: `GITHUB_MAIN_PAT` はコンテナ内からの `git push --force` 等の強制上書きも素通しするため、対象プロジェクトの `.claude/settings.json` に `permissions.deny` で `Bash(git push --force:*)` を追加するのが一次防御になる。ただしこの deny はコマンド文字列の前方一致で判定されるため、フラグ後置形（`git push origin master --force`）・`git -C <path> push --force`・`+refspec` 形式（例: `git push origin +feature:main`）は素通しする既知の限界がある。`--force-with-lease` は `--force` で始まらない別オプションのため `Bash(git push --force-with-lease:*)` を別途追加する必要がある。この見逃し範囲を deny ルールの列挙だけで完全に塞ぐのは煩雑なため、「force push はユーザーの明示承認後のみ」という CLAUDE.md 等の文書ルールを二重の防波堤として併用することを推奨する（利用側プロジェクトでの実機検証を踏まえた知見）。
+
+**workflow ファイルを含む push（`.github/workflows/`）**: `.github/workflows/` 配下のファイルを作成・更新する push は、トークンに workflow の権限（fine-grained PAT では Repository permissions の `Workflows`。[公式の権限表](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens#repository-permissions-for-workflows)）が無いと、GitHub に次のエラーで拒否されることがある。拒否されたブランチは更新されない。
+
+```text
+! [remote rejected] <branch> -> <branch> (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)
+```
+
+c3c はメイン PAT に `Workflows`（`Read and write`）を付けることを推奨しない。付けると、workflow の定義そのもの（起動の条件、`GITHUB_TOKEN` の権限、参照する secrets）までコンテナ内から書き換えられ、実行の条件と権限によっては、そのリポジトリで使える secrets や `GITHUB_TOKEN` の漏洩につながりうる。ただし付けなくても、`Contents: write` があれば既存の workflow が実行するスクリプト（テストやビルドのスクリプトなど）は書き換えられ、Actions 上で実行されうる。`Workflows` を付けないことは CI への影響をすべて防ぐものではなく、workflow の定義の書き換えをコンテナの権限から外すためのものである。
+
+workflow ファイルを変える commit は、コンテナ内では commit までにとどめ、ホストの端末から push する。ホストからの push にはホスト側の認証（workflow を更新できるもの）を使い、コンテナの PAT は変えない。push の前に、ホストで workflow の変更内容を確かめる（例: 分岐元が `main` なら `git log -p --diff-merges=first-parent origin/main..<branch> -- .github/workflows/`）（[#195](https://github.com/jj1xgo/c3c/issues/195)）。
 
 **コンテナ内 git commit（`GITCONFIG_FILE`）**: ホストで `git config --global user.name`/`user.email` を設定していても、デフォルトではコンテナ内に反映されず `git commit` が `Author identity unknown` で失敗する。`.c3c/env` に以下を書くと解消する。
 
@@ -640,7 +650,7 @@ Codex CLI の起動時の更新確認は、イメージに焼き込む要件フ�
 | 操作 | 認証経路 | コンテナ内での可否 |
 |---|---|---|
 | git ローカル操作（`commit` / `log` / `diff` / `branch` / `merge` 等） | 認証不要（`commit` のみ `GITCONFIG_FILE` で `user.name`/`user.email` が必要。前述） | 可 |
-| git リモート操作（`push` / `pull` / `fetch`） | `SECRETS_DIR/GITHUB_MAIN_PAT` 設定時の `GIT_ASKPASS`（credential helper はリセットする） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる |
+| git リモート操作（`push` / `pull` / `fetch`） | `SECRETS_DIR/GITHUB_MAIN_PAT` 設定時の `GIT_ASKPASS`（credential helper はリセットする） | 既定では **push は不可**。**public リポジトリの fetch/pull は認証不要のため可**（private リポジトリの fetch/pull は不可）。`SECRETS_DIR/GITHUB_MAIN_PAT`（前述）を設定した場合のみ、対象リポジトリへの push（および同トークンでの private リポジトリの fetch/pull）が可能になる。`.github/workflows/` を作成・更新する push は、メイン PAT に `Workflows` が無いと拒否されることがある（「git push を使う場合」参照） |
 | `gh` CLI（素） | 認証なし | **既定で未認証・失敗する**（v4〜の正常な既定状態） |
 | `gh` CLI（直下の PAT 明示読み） | 「PAT を gh CLI に明示的に渡す」の手順（メイン PAT または `GITHUB_ISSUES_PAT`） | 渡した PAT のパーミッション・対象リポジトリの範囲内で可 |
 | `gh` CLI（export 済みの MCP／issues 用 PAT） | `[ -n "${GITHUB_MCP_PAT:-}" ] && GH_TOKEN="$GITHUB_MCP_PAT" gh ...`（空・未設定なら実行しない） | MCP／issues 用 PAT のパーミッション範囲内で可（通常 Issues のみ） |
@@ -649,7 +659,7 @@ Codex CLI の起動時の更新確認は、イメージに焼き込む要件フ�
 **GitHub 操作が失敗したときの切り分け**
 
 1. 失敗した操作・対象リポジトリ・ツール名・HTTP ステータスを確認する。`git`、PAT を明示した `gh`、プロジェクトの GitHub MCP、エージェントの GitHub 連携（App／Connector）は分けて扱う。連携側の認証が c3c に配置した PAT を使うとは仮定しない。連携の `403 Resource not accessible by integration` や素の `gh` の未認証だけで、配置した PAT の権限不足やコンテナ全体での操作不可とは判断しない。エラー文だけから連携の認証主体・トークン種別を確定しない。
-2. `git` の失敗なら、接続先が github.com の HTTPS リモートか確認する（SSH や他ホストは ASKPASS の対象外）。起動中のコンテナで `GIT_ASKPASS` と `GITHUB_MAIN_PAT_FILE` の設定、後者が指すファイルの存在・読み取り可否を、値を表示せず確認する。未配線なら「git push を使う場合」に戻り、`SECRETS_DIR`、PAT 配置後の再起動、ASKPASS 配線に対応したイメージかを確認する。古い実装のイメージには再ビルドが必要だが、PAT の更新だけなら不要。
+2. `git` の失敗なら、接続先が github.com の HTTPS リモートか確認する（SSH や他ホストは ASKPASS の対象外）。起動中のコンテナで `GIT_ASKPASS` と `GITHUB_MAIN_PAT_FILE` の設定、後者が指すファイルの存在・読み取り可否を、値を表示せず確認する。未配線なら「git push を使う場合」に戻り、`SECRETS_DIR`、PAT 配置後の再起動、ASKPASS 配線に対応したイメージかを確認する。古い実装のイメージには再ビルドが必要だが、PAT の更新だけなら不要。push が `refusing to allow a Personal Access Token to create or update workflow` で拒否された場合は、配線の問題ではなく、トークンに workflow の権限（fine-grained PAT では `Workflows`）が無いことによる拒否である。c3c の推奨ではホストから push する（「git push を使う場合」参照）。
 3. PAT の経路を確認する場合は、前述の明示読み手順で、目的に合った PAT を必要な `gh` コマンドにだけ渡す。明示読み手順の最後のコマンドを `GH_TOKEN="$github_pat" gh api --hostname github.com user --jq .login` に置き換えて認証、対象リポジトリの GET で読み取りを確認する。読み取り成功は書き込み権限の証明ではない。特に public リポジトリの GET やリポジトリ応答の `permissions` は、PAT の対象範囲・書き込み権限を証明しない。詳細は「設定済みスコープの確認」を参照。トークン値や環境変数全体を出力しない。
 4. GitHub の PAT 設定画面で対象リポジトリと操作に必要な権限を照合する。[PR 作成](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)には `Pull requests: write`、[PR マージ](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)には `Contents: write` が必要。実際の操作にはリポジトリのルールや利用側の承認条件も適用される。Issues 用 PAT の権限拡大やメイン PAT への自動切替は行わず、権限確認だけを目的とする PR 作成・マージもしない。
 
@@ -660,7 +670,7 @@ Codex CLI の起動時の更新確認は、イメージに焼き込む要件フ�
 | 想定用途 | push・PR レビュー・Release 作成等、主対象リポジトリへの広い操作 | issue 連絡・MCP 経由の操作（クロスリポジトリ含む） |
 | 配置・export | `SECRETS_DIR` 直下。値は export されず、パスのみ `GITHUB_MAIN_PAT_FILE` として export | gh の明示読みだけなら直下（非 export）。環境変数を必要とする MCP・hook 等がある場合だけ `export/`（値ごと export） |
 | 一般的に許可してよいパーミッション | 用途に応じて `Issues`/`Pull requests`/`Contents` を組み合わせる（`Contents: write` を含めると push・PR承認・マージが明示読みで可能になる点を理解した上で） | `Issues: Read and write` のみ |
-| 持たせるべきでないパーミッション | 用途に不要な権限（非 export でも直接読み取りは可能） | `Pull requests: write`・`Contents: write`（MCP のツール面に push・マージ等が現れ、スコープを絞らないと実効化するため） |
+| 持たせるべきでないパーミッション | 用途に不要な権限（非 export でも直接読み取りは可能）。`Workflows`（workflow を変える push はホストから。「git push を使う場合」参照） | `Pull requests: write`・`Contents: write`（MCP のツール面に push・マージ等が現れ、スコープを絞らないと実効化するため） |
 | 設定手順・スコープ確認 | 「GitHub トークンの配線」節参照 | 同左 |
 
 **ホストの Claude Code 設定（`~/.claude`）の読み書き**
@@ -720,7 +730,7 @@ Claude は `--permission-mode auto`（Claude Code の auto mode）で起動す�
 
 `CODEX_DIR`（前述「Codex CLI をセカンドオピニオンとして使う」節）を設定した場合、コンテナ内のコードは Codex の認証情報（`auth.json`、ChatGPT アカウントのアクセストークン）を読める。`SECRETS_DIR` と異なり rw マウントのため、コンテナ側から書き込みも可能 — 専用ディレクトリ（実 `~/.codex` でない）を指定する設計により、汚染がホスト側の Codex 実行環境（`config.toml` の `notify` フック等）へ波及する経路を遮断している。Codex は `codex exec` としてセッション中に Claude が判断して実行する通常のコマンドであり、`.mcp.json` には登録しないため、前述の MCP 監査ゲート（TOFU）の対象外である。同ゲートが対象とするのは「セッション開始と同時に人間・モデルどちらの判断も挟まず実行される」経路であり、`codex exec` はそれに当たらない。c3c が固定で渡す `--sandbox read-only`・`--sandbox workspace-write` は、コンテナ内にマウントされた秘密（`SECRETS_DIR` のマウント先・`~/.claude`・`CODEX_DIR` 自体を含む）を隠す境界としては働かない: Linux では bubblewrap がファイルシステム全体を `--ro-bind / /` で読み取り可能にしたうえで、sandbox モードごとの書き込み可能な root だけを `--bind` で追加する構成のため（[openai/codex `codex-rs/linux-sandbox/README.md`（rust-v0.156.0）](https://github.com/openai/codex/blob/rust-v0.156.0/codex-rs/linux-sandbox/README.md)）。読み取りだけを絞る仕組み（`[permissions]` の deny-read パターン等）は Codex 自身にあるが、c3c は `-c 'projects={"/workspace"={trust_level="trusted"}}'` 以外の permission 設定を渡さないため使っていない。`-C /workspace` で固定する起点の `AGENTS.md` は、Codex 本体が指示として読み込むファイルで、リポジトリ側が内容を書ける（sandbox 内のコマンドの読み取り範囲とは別の経路）。
 
-`SECRETS_DIR/GITHUB_MAIN_PAT`（前述「git push を使う場合」）に `Contents: write` を付与した場合、能動的リスクは push・PRマージにも及ぶ: プロンプトインジェクションや悪意あるパッケージが、明示読み（前述の gh CLI への明示読み手順等）を介して対象リポジトリへの意図しないコミット・push・マージを引き起こしうる。非 export であることは「黙ってはできない」という一手間の壁ではあるが、コンテナ内の任意のプロセスがそのファイルパスを読める以上、確実な壁ではない。緩和策は他のトークン同様スコープ最小化（対象リポジトリ限定）に加え、GitHub 側の branch protection（force-push 禁止・レビュー必須化）を組み合わせること。
+`SECRETS_DIR/GITHUB_MAIN_PAT`（前述「git push を使う場合」）に `Contents: write` を付与した場合、能動的リスクは push・PRマージにも及ぶ: プロンプトインジェクションや悪意あるパッケージが、明示読み（前述の gh CLI への明示読み手順等）を介して対象リポジトリへの意図しないコミット・push・マージを引き起こしうる。非 export であることは「黙ってはできない」という一手間の壁ではあるが、コンテナ内の任意のプロセスがそのファイルパスを読める以上、確実な壁ではない。緩和策は他のトークン同様スコープ最小化（対象リポジトリ限定）に加え、GitHub 側の branch protection（force-push 禁止・レビュー必須化）を組み合わせること。`Workflows` を付けていなくても、既存の workflow が実行するスクリプトは `Contents: write` で書き換えられ、Actions 上で実行されうる。`Workflows` を付けると、workflow の定義まで書き換えられる（「git push を使う場合」参照）。
 
 自リポジトリ向けのメイン PAT に `Pull requests: Read and write` を付与した場合の追加リスク:
 

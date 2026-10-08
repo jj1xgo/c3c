@@ -1,3 +1,4 @@
 api.githubcopilot.com
 chatgpt.com
 auth.openai.com
+api.typesafe.ai

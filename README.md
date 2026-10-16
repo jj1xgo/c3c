@@ -498,9 +498,9 @@ OpenAI の Codex CLI をコンテナ内の Claude Code セッションから諮�
 4. ターゲットプロジェクトの `.c3c/env` に `CODEX_DIR=~/.codex-container` を設定する（`-b` 不要、ランタイムマウント）
 5. コンテナ内の Claude Code セッションから、通常のコマンドとして呼ぶ（`.mcp.json` には登録しない）:
    ```bash
-   codex exec --sandbox read-only -C /workspace "<依頼文>"
+   codex exec --sandbox read-only -c 'approval_policy="never"' -C /workspace "<依頼文>"
    ```
-   `--sandbox read-only` は省略しない（呼び出し時の `--sandbox` が `config.toml` の値に勝つ。諮問・レビュー用途は読み取り専用で足りる）。`-C /workspace` で作業ルートを明示する（Codex は作業ルートの `AGENTS.md` を指示として読むため、起点を固定する）。最終応答だけをファイルに取りたい場合は `-o <ファイル>` を足す。`/workspace` が git リポジトリでない場合は `--skip-git-repo-check` が必要
+   `--sandbox read-only` は省略しない（呼び出し時の `--sandbox` が `config.toml` の値に勝つ。諮問・レビュー用途は読み取り専用で足りる）。`-c 'approval_policy="never"'` も省略しない（承認の方針は呼び出し時に指定しなければ `config.toml` に従い、`approvals_reviewer = "auto_review"` のように承認要求を自動で通す設定の下では、Codex が求めた sandbox の外での実行が承認され、read-only の sandbox の外でコマンドが走りうる。`never` に固定すると、外での実行の要求は断られる。諮問・レビュー用途は sandbox の外での実行を要しない）。`-C /workspace` で作業ルートを明示する（Codex は作業ルートの `AGENTS.md` を指示として読むため、起点を固定する）。最終応答だけをファイルに取りたい場合は `-o <ファイル>` を足す。`/workspace` が git リポジトリでない場合は `--skip-git-repo-check` が必要
 6. `-b` での再ビルドが必要（`codex-version.txt`/`allowed-domains.txt` はいずれもビルド時焼き込み設定のため）
 
 **運用上の注意**: Codex が拾う `AGENTS.md` は起点（cwd）とリポジトリの境界で変わる（[openai/codex#12128](https://github.com/openai/codex/issues/12128) は、nested な `.git` が探索の境界になる例）。`codex exec` でも起点が変われば意図しない `AGENTS.md` が拾われうるので、`-C /workspace` を毎回明示する運用を徹底すること。また auth.json のリフレッシュフローには既知の不具合報告（[openai/codex#15502](https://github.com/openai/codex/issues/15502)）があり、この領域は枯れていない可能性がある点に留意する。リフレッシュ先は `auth.openai.com` なので、手順 2 の許可が欠けていると、トークンの期限が切れた時点で呼び出しが失敗しうる。

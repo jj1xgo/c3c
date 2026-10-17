@@ -106,6 +106,8 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 **根拠・検証範囲**: `c3c`、`entrypoint.sh`、`codex-mcp-audit.py`、`compose.yml`、
 `compose.codex-preflight.yml` と各 Codex 回帰テスト。実装の契約と実機受入は区別し、現在の受入状況は
 [README の Codex 節](README.md#codex-cli-を対話で使う) を参照する。
+`--read-only` で sandbox の外での実行を断るという主張は、Codex の `approval_policy = "never"` の仕様に基づく。
+実測で確かめたのは、read-only での書き込みが失敗し、sandbox の外での実行が起きなかったことまでで、要求が断られる場面そのものは観測していない（#207）。
 
 **再確認契機**: 同梱 default の Codex 版を上げるとき。Codex の公開設定形式（`mcp_servers` の key・plugin と marketplace の設定方法）・
 project 設定の探索規則・trust、起動経路、承認保存先、マウントの変更時。

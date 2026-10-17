@@ -507,7 +507,7 @@ OpenAI の Codex CLI をコンテナ内の Claude Code セッションから諮�
 
 ## Codex CLI を対話で使う
 
-`--agent codex <ディレクトリ>` は、Claude と同じ外側境界（マウント・capability 剥奪・エグレス制限・`.c3c/env` の許可リスト）の中で、Codex CLI の標準の対話 UI を起動する。無指定と `--agent claude` は従来どおり Claude Code で、既存の起動フロー・`.mcp.json` ゲート・承認記録は変えない。未知の値・値の欠落・複数指定は終了コード 2 で止まり、別の CLI へ黙って切り替えることはない。`--read-only` は `--agent codex` 専用で、Codex を read-only sandbox で起動する（諮問・レビュー用。通常は workspace-write）。`--agent` は `--clean`/`--clean-missing` と併用できない（清掃は両 CLI の記録を対象にする）。
+`--agent codex <ディレクトリ>` は、Claude と同じ外側境界（マウント・capability 剥奪・エグレス制限・`.c3c/env` の許可リスト）の中で、Codex CLI の標準の対話 UI を起動する。無指定と `--agent claude` は従来どおり Claude Code で、既存の起動フロー・`.mcp.json` ゲート・承認記録は変えない。未知の値・値の欠落・複数指定は終了コード 2 で止まり、別の CLI へ黙って切り替えることはない。`--read-only` は `--agent codex` 専用で、Codex を read-only sandbox と承認の方針 `never` で起動する（諮問・レビュー用。通常は workspace-write と `on-request`）。モデルが sandbox の外での実行を求めても、人にも自動レビュー（`config.toml` の `approvals_reviewer`）にも回らず、失敗としてモデルに返る。信頼済みの `.codex/config.toml` が有効にする hooks・MCP サーバーと、TUI の中で利用者が承認の方針を変える操作は、この限りでない。`--agent` は `--clean`/`--clean-missing` と併用できない（清掃は両 CLI の記録を対象にする）。
 
 **前提**（`--check --agent codex <ディレクトリ>` が静的に診断する）:
 

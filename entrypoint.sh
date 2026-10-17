@@ -327,11 +327,15 @@ if ! python3 -I "$CODEX_AUDIT" --config "$CODEX_PROJECT_CONFIG" verify "$CODEX_A
   echo "ERROR: Codex の MCP 実行定義がホスト側の承認記録と一致しないか検証できません。Codex を起動しません" >&2
   exit 1
 fi
-# 固定 argv。sandbox は launcher の --read-only だけで切り替える。固定の trust override は /workspace を
+# 固定 argv。sandbox と承認の方針は launcher の --read-only だけで切り替える。固定の trust override は /workspace を
 # trusted project にして .codex/config.toml を有効にする値。審査は同じファイルを直接読むので、この引数とは独立。
+# read-only で never にするのは、config.toml の approvals_reviewer が承認要求を自動レビューに回すと、
+# read-only の sandbox の外でコマンドが走りうるため（#207）。
 codex_sandbox=workspace-write
+codex_approval=on-request
 if [ "$CODEX_READ_ONLY" = 1 ]; then
   codex_sandbox=read-only
+  codex_approval=never
 fi
 # 起動時の更新確認は無効にする（#183）。版の更新は -b の再ビルドで行う。
-exec "$CODEX_CLI" --sandbox "$codex_sandbox" --ask-for-approval on-request -c 'projects={"/workspace"={trust_level="trusted"}}' -c 'check_for_update_on_startup=false'
+exec "$CODEX_CLI" --sandbox "$codex_sandbox" --ask-for-approval "$codex_approval" -c 'projects={"/workspace"={trust_level="trusted"}}' -c 'check_for_update_on_startup=false'

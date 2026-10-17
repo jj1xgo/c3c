@@ -100,6 +100,7 @@ iptables の実消費者は `sudo` 経由で root になった `init-firewall.sh
 - 固定 repo trust は `.codex/config.toml`、適用対象の hooks・exec policy・sandbox 設定も有効化する。
   MCP 承認はこれらの承認を兼ねず、hooks の信頼確認は Codex の native 機能に委ねる。
   CLI の sandbox/approval 指定は固定するが、追加の書込み先などは native 設定の影響を受ける。
+  `--read-only` では承認の方針を `never` にし、モデルが求める sandbox の外での実行を断る（#207）。
 - 審査はイメージ内の python3（3.11 以上）で行う。`tomllib` が無ければ停止する。
 
 **根拠・検証範囲**: `c3c`、`entrypoint.sh`、`codex-mcp-audit.py`、`compose.yml`、

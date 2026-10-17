@@ -644,6 +644,23 @@ fi
 exit 0
 DUMMY
   chmod +x "$bin/podman"
+  # -b の meta 取得（stage_build_context）を通信なしで通す。本物の取得に頼ると、
+  # スナップショットの無い checkout（CI）で一時的な失敗が rc 1 になる（#213）。
+  # 呼び出しは curl-calls に残し、テストが取得をスタブ経由で通ったことを確かめる。
+  cat > "$bin/curl" <<CURL
+#!/bin/sh
+# 実 curl と同じく --output 先へ書く（stdout へ出すと再試行時に巻き戻せない）。
+printf '%s\\n' "\$*" >> "$root/curl-calls"
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = --output ]; then
+    printf '%s\\n' '{"web":[],"api":[],"git":[]}' > "\$2"
+    exit 0
+  fi
+  shift
+done
+exit 2
+CURL
+  chmod +x "$bin/curl"
   # ランチャーはプロジェクト毎の .build-context/<name>/ を作るため、前後の差分を控えて後始末する
   before_ctx="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 }
@@ -652,7 +669,7 @@ DUMMY
 # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
 # 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
 launcher_sandbox_reset_records() {
-  rm -f "$root/compose-env" "$root/compose-args" "$root/compose-calls" "$root"/compose-env.* "$root"/compose-args.*
+  rm -f "$root/compose-env" "$root/compose-args" "$root/compose-calls" "$root"/compose-env.* "$root"/compose-args.* "$root/curl-calls"
 }
 
 run_launcher() {
@@ -1340,7 +1357,7 @@ run_codex_host_plugins_launcher_tests() {
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "build と run の両方に override が渡る" \
-    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.1" && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.2"' _ "$rc" "$root" "$SCRIPT_DIR"
+    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.1" && grep -qxF "$3/compose.codex-plugins.yml" "$2/compose-args.2" && grep -qF "https://api.github.com/meta" "$2/curl-calls"' _ "$rc" "$root" "$SCRIPT_DIR"
   : > "$proj/.c3c/env"
 
   touch "$home/.codex-container/plugins/cache/container-installed"
@@ -1692,19 +1709,6 @@ run_ipv6_launcher_tests() {
     bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
   run_launcher_check TEST_IPV6_SUPPORT=
   check "IPv6 未対応の旧イメージを --check も拒否" [ "$rc" -ne 0 ]
-  cat > "$bin/curl" <<'CURL'
-#!/bin/sh
-# 実 curl と同じく --output 先へ書く（stdout へ出すと再試行時に巻き戻せない）。
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = --output ]; then
-    printf '%s\n' '{"web":[],"api":[],"git":[]}' > "$2"
-    exit 0
-  fi
-  shift
-done
-exit 2
-CURL
-  chmod +x "$bin/curl"
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
@@ -1990,19 +1994,6 @@ CASES
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # P2: -b では build・run の各呼び出しに export と override が 1 回ずつ渡る
-  cat > "$bin/curl" <<'CURL'
-#!/bin/sh
-# 実 curl と同じく --output 先へ書く（stdout へ出すと再試行時に巻き戻せない）。
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = --output ]; then
-    printf '%s\n' '{"web":[],"api":[],"git":[]}' > "$2"
-    exit 0
-  fi
-  shift
-done
-exit 2
-CURL
-  chmod +x "$bin/curl"
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "P2: -b の build と run の各呼び出しに別名が渡る（rc=$rc）" \
@@ -2119,7 +2110,7 @@ run_instruction_mount_launcher_tests() {
   out=$(env -i HOME="$home" PATH="$bin:$PATH" C3C_IPV6=1 \
     "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "build と run に共有・スキル・plugin・IPv6 の override が共存する" \
-    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] || exit 1
+    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] && grep -qF "https://api.github.com/meta" "$2/curl-calls" || exit 1
       for n in 1 2; do for f in shared-home shared-host agents plugins-alias ipv6; do
         grep -qxF "$3/compose.$f.yml" "$2/compose-args.$n" || exit 1
       done; done' _ "$rc" "$root" "$SCRIPT_DIR"

@@ -265,3 +265,5 @@ finishing-a-development-branch では、push して PR を作る選択肢を名�
 区分: 境界 — Codex 経路の起動引数（`entrypoint.sh`）と、sandbox の約束の記述（README.md・`docs/development-invariants.md`・SECURITY-CLAIMS.md）を変える。グローバル指示の「セキュリティ境界」に当たる。計画・PR 前・PR 後の 3 段のレビューを行う。
 
 推奨実装: Opus — 判定順を上から当てると、1（コンテナでしか成立しない）は当たらない（Task 2 の実測はホストの codex でもできる）。2（Claude Code の設定ディレクトリ・hook・秘密）も当たらない。3（設計判断が残る）も当たらない（直し方は既決、変える値は逐語で決めてある）。4（ホスト限定）は Task 3 Step 2 だけで、そこは持ち主の操作なので実装者を決めない。5（利用枠）は当たらない。6 は c3c のプロジェクト既定で Claude Code 面の Claude（Sonnet）。ただし sandbox の約束というセキュリティ境界を含むので、グローバル指示の「Opus は … セキュリティ境界を含むときに推す」により Opus にする。計画者と同じモデルになるが、Codex にする理由（ホスト限定、Claude の利用枠の不足）は無い。
+
+実装: Opus 5.5（持ち主指定、2026-10-17。推奨どおり。計画者と同じセッションで、`/model` の切り替えなし。executing-plans）

@@ -207,8 +207,8 @@ def snapshot(root):
         if real is None:
             continue
         data = read_regular(real, rel)
-        # 0 バイトは何も設定できない（c3c 自身が ~/.claude/settings.json を 0 バイトで作るため、$HOME を
-        # 作業ディレクトリにしたときに止めない）。hash の対象には残し、中身が入れば変更として確認になる。
+        # 0 バイトは何も設定できないので止めない（利用者が空の settings.json を置くことがある。c3c が作る
+        # ~/.claude/settings.json の中身は {}）。hash の対象には残し、中身が入れば変更として確認になる。
         if data:
             check_settings(parse_object(data, rel), rel)
         files.append((rel, data))

@@ -1828,7 +1828,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_reset_records
   run_launcher
   check "B3: symlink の dev-mods/ は ERROR で起動中止（rc=$rc）" \
-    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'dev-mods'" "$out"
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -F "ERROR" | grep -qF "/.claude/dev-mods が symlink です"' _ "$rc" "$out"
   check "B3: symlink の dev-mods/ の拒否では何も作成せず compose を呼ばない" \
     [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 -a ! -e "$root/compose-calls" ]
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -1838,7 +1838,7 @@ run_config_ro_launcher_tests() {
   rm -rf "$home/.claude/dev-mods"
   run_launcher_check
   check "C3: --check は欠けている dev-mods/ を WARN する（rc=$rc）" \
-    bash -c 'printf "%s" "$1" | grep -F "WARN" | grep -qF "dev-mods が無い（通常起動時に空で作成）"' _ "$out"
+    bash -c '[ "$1" -eq 0 ] && ! printf "%s" "$2" | grep -qF "結果: FAIL" && printf "%s" "$2" | grep -F "WARN" | grep -qF "dev-mods が無い（通常起動時に空で作成）"' _ "$rc" "$out"
   check "C3: --check は dev-mods/ を作らない" [ ! -e "$home/.claude/dev-mods" ]
   printf '%s\n' "$out" >> "$LOG_FILE"
   mkdir -p "$home/.claude/dev-mods"

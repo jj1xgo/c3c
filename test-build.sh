@@ -655,7 +655,8 @@ DUMMY
 printf '%s\\n' "\$*" >> "$root/curl-calls"
 while [ "\$#" -gt 0 ]; do
   if [ "\$1" = --output ]; then
-    printf '%s\\n' '{"web":[],"api":[],"git":[]}' > "\$2"
+    [ "\$#" -ge 2 ] || exit 2
+    printf '%s\\n' '{"web":[],"api":[],"git":[]}' > "\$2" || exit 1
     exit 0
   fi
   shift
@@ -1714,7 +1715,7 @@ run_ipv6_launcher_tests() {
   launcher_sandbox_reset_records
   out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IPV6_SUPPORT= "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
   check "IPv6=1 の build と run は同じ override を使う" \
-    bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ]' _ "$rc" "$SCRIPT_DIR" "$root"
+    bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ] && grep -qF "https://api.github.com/meta" "$3/curl-calls"' _ "$rc" "$SCRIPT_DIR" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # LY 系（改名 第 2 段）: io.c3c.image-layout が 2 でない既存イメージは compose を呼ばずに止まる。
   rm -f "$proj/.c3c/env"
@@ -2034,7 +2035,8 @@ CASES
       && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/.claude/plugins" "$3/compose-env.1" \
       && grep -qxF "CLAUDE_PLUGINS_HOST_PATH=$2/.claude/plugins" "$3/compose-env.2" \
       && [ "$(grep -cxF "$4/compose.plugins-alias.yml" "$3/compose-args.1")" -eq 1 ] \
-      && [ "$(grep -cxF "$4/compose.plugins-alias.yml" "$3/compose-args.2")" -eq 1 ]' _ "$rc" "$home" "$root" "$SCRIPT_DIR"
+      && [ "$(grep -cxF "$4/compose.plugins-alias.yml" "$3/compose-args.2")" -eq 1 ] \
+      && grep -qF "https://api.github.com/meta" "$3/curl-calls"' _ "$rc" "$home" "$root" "$SCRIPT_DIR"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # P3: IPv6=1 併用の -b では両 override が build・run の各呼び出しに 1 回ずつ共存する
@@ -2046,7 +2048,7 @@ CASES
     bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2/compose-calls")" -eq 2 ] && for n in 1 2; do
       [ "$(grep -cxF "$3/compose.ipv6.yml" "$2/compose-args.$n")" -eq 1 ] || exit 1
       [ "$(grep -cxF "$3/compose.plugins-alias.yml" "$2/compose-args.$n")" -eq 1 ] || exit 1
-    done' _ "$rc" "$root" "$SCRIPT_DIR"
+    done && grep -qF "https://api.github.com/meta" "$2/curl-calls"' _ "$rc" "$root" "$SCRIPT_DIR"
   printf '%s\n' "$out" >> "$LOG_FILE"
   rm -f "$proj/.c3c/env"
 

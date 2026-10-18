@@ -729,7 +729,7 @@ class NoPythonMixin:
             if not os.path.isdir(directory):
                 continue
             for name in os.listdir(directory):
-                if name.startswith('python') or (nopy / name).exists():
+                if name.startswith('python') or os.path.lexists(nopy / name):
                     continue
                 (nopy / name).symlink_to(os.path.join(directory, name))
         return str(self.bin) + ':' + str(nopy)

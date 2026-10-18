@@ -43,6 +43,8 @@ gh run view -R jj1xgo/c3c <run-id> --log
 gh run download -R jj1xgo/c3c <run-id> --dir ./runtime-results
 ```
 
+コンテナ内から `gh workflow run` を使うには、メイン PAT を gh に明示的に渡し、その PAT に `Actions: Read and write` が要る（README「workflow の手動起動（`Actions`）」参照）。private リポジトリでは、実行の一覧・ログ・成果物の取得にも `Actions: Read` が要る。
+
 初回導入時の手動実行は workflow を既定ブランチへマージしてから可能になる。
 これは [GitHub の workflow_dispatch の条件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
 による。Dockerfile・起動処理・通信制限の変更時は、その後この手順でマージ前のブランチを検証する。

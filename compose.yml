@@ -75,6 +75,9 @@ services:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/workflows:/home/node/.claude/workflows:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/rules:/home/node/.claude/rules:ro
       - ${CLAUDE_CONFIG_DIR:-~}/.claude/output-styles:/home/node/.claude/output-styles:ro
+      # dev-mods はセッション中に Claude が書く mod の置き場。次にそのセッションが始まると読み込まれ、
+      # mod は sandbox の外で動き permissions.deny や PreToolUse hook を越えて承認しうるため hook と同じ扱い（#201）。
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude/dev-mods:/home/node/.claude/dev-mods:ro
       # ~/.claude 自体を git リポジトリにしているホスト向け（#129）。.git/hooks と
       # .git/config（core.hooksPath 等）はホストで git を打った時点でホスト権限で実行・参照される。
       # リポジトリでないホストでも空で作って重ね、コンテナが .git を植え付ける経路を閉じる。

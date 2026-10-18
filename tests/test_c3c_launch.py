@@ -548,7 +548,7 @@ class CheckMigrationInfoTests(LaunchCase):
             directory.mkdir(exist_ok=True)
             for name in ('packages.txt', 'requirements.txt', 'allowed-domains.txt'):
                 (directory / name).write_text('')
-        for name in ('hooks', 'skills', 'plugins', 'commands', 'agents', 'workflows', 'rules', 'output-styles', '.git'):
+        for name in ('hooks', 'skills', 'plugins', 'commands', 'agents', 'workflows', 'rules', 'output-styles', 'dev-mods', '.git'):
             (self.home / '.claude' / name).mkdir()
         for name in ('settings.json', 'CLAUDE.md', 'statusline.sh'):
             (self.home / '.claude' / name).write_text('')

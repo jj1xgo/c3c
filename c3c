@@ -1604,14 +1604,17 @@ run_explicit_build() {
 }
 
 # ホスト ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、compose.yml が
-# rw マウントの内側に :ro で重ねる 12 項目（compose.yml の volumes と test-build.sh の
+# rw マウントの内側に :ro で重ねる 13 項目（compose.yml の volumes と test-build.sh の
 # CONFIG_RO_DIRS/FILES と同期すること）。侵害されたセッションがここへ hook/skill/plugin 等を
 # 書くと、ホストの Claude Code がそれを読み込み・実行する（user settings の hooks は file
 # watcher で稼働中セッションにも反映）ため、この経路をマウント層で閉じる。
 # 認証（.credentials.json）・transcript・memory 等の状態は対象外（rw のまま）。
 # .git は ~/.claude 自体を git リポジトリにしているホスト向け（#129）。.git/hooks と
 # .git/config はホストで git を打った時点でホスト権限で実行・参照されるため、hook と同じ扱いにする。
-CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
+# dev-mods はセッション中に Claude が書く mod の置き場（~/.claude/dev-mods/<セッション ID>/）。そのセッションが
+# 次に始まるときに読み込まれ、mod は Claude Code のプロセスの中で sandbox の外で動き、permissions.deny や
+# PreToolUse hook を越えて承認しうるため、hook と同じ扱いにする（#201）。
+CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles dev-mods .git)
 CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 
 # 保護対象 1 件の型を検査する（#131）。ファイルシステムは変更せず、判定と
@@ -1653,7 +1656,7 @@ validate_claude_config_ro_path() {
   return 0
 }
 
-# 上記 12 項目のマウント先をホスト側に用意する。マウント先が無いと podman がサブ uid
+# 上記 13 項目のマウント先をホスト側に用意する。マウント先が無いと podman がサブ uid
 # 所有・0700 の実体をホストの ~/.claude 内に作り、ユーザー権限で消せない残骸になるため、
 # ランチャーがユーザー権限で明示的に空で作る（空ディレクトリ・空ファイル・`{}` は
 # Claude Code にとって不活性）。基点は compose.yml の親マウントと同じ ${CLAUDE_CONFIG_DIR:-~}。
@@ -1665,7 +1668,7 @@ validate_claude_config_ro_path() {
 # source が無いと podman が空のディレクトリを作り、イメージ内の通常ファイル /home/node/.claude.json
 # へのマウントが crun の Not a directory（rc=126）で分かりにくく失敗する。作られたディレクトリは
 # 残り、利用者が手で消すまで同じ失敗が続く。Codex 経路も同じ compose サービスを使うので同じ扱い。
-# 通常ファイルへの symlink は通す（:ro 保護の 12 項目と違い、もともと rw の共有で、ホストの dotfile
+# 通常ファイルへの symlink は通す（:ro 保護の 13 項目と違い、もともと rw の共有で、ホストの dotfile
 # 管理で symlink にしている構成を壊さないため）。基点が解決できないときは何も言わずに通し、
 # 診断は prepare_claude_config_ro() に任せる。{} の自動作成はしない。
 guard_claude_json() {
@@ -1707,7 +1710,7 @@ resolve_claude_config_base() {
   base="${base/#\~\//$HOME/}"
   CLAUDE_CONFIG_BASE_HOST="$base"
   # 相対パスは拒否する。compose は相対 bind source を compose.yml のディレクトリ基準で
-  # 解決し、ランチャーの解釈と食い違って親マウントと 12 項目が別実体を指しうるため。
+  # 解決し、ランチャーの解釈と食い違って親マウントと 13 項目が別実体を指しうるため。
   [[ "$base" == /* ]] || return 2
   [[ -d "$base" ]] || return 3
   base="$(cd "$base" 2>/dev/null && pwd -P)" || return 4
@@ -1748,14 +1751,14 @@ prepare_claude_config_ro() {
       guard_fail "ERROR: $cfg がディレクトリではありません。起動を中止します。" || return 1
     fi
     if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
-      guard_warn "[WARN] $cfg が無い（通常起動時に空で作成。12 項目もその際に作成）"
+      guard_warn "[WARN] $cfg が無い（通常起動時に空で作成。13 項目もその際に作成）"
       return 0
     fi
     mkdir -p "$cfg" || { guard_fail "ERROR: $cfg を作成できません。起動を中止します。" || return 1; }
     echo "INFO: $cfg を読み取り専用保護のため空で作成しました" >&2
   fi
 
-  # 通常起動では、1 項目でも作る前に 12 項目すべての型を検査する（#131）。
+  # 通常起動では、1 項目でも作る前に 13 項目すべての型を検査する（#131）。
   # 配列末尾の項目が不正なときに、先行する項目だけホストへ作ってから拒否するのを防ぐ。
   # --check はここを通さず、従来どおりの順で欠落を WARN しつつ不正項目で失敗する（無書込）。
   if [[ ${CHECK_MODE:-0} -eq 0 ]]; then
@@ -1989,7 +1992,7 @@ guard_shared_home_alias() {
 
 # エージェント共通のスキル置き場（AGENTS_DIR、通常 ~/.agents）を /home/node/.agents に :ro で
 # 付ける opt-in（#99）。~/.claude/agents/（Claude Code の subagent 定義、
-# :ro 保護 12 項目の一つ）とは別物。
+# :ro 保護 13 項目の一つ）とは別物。
 guard_agents_dir() {
   [[ -n "${AGENTS_DIR:-}" ]] || return 0
   local agents_path other other_real

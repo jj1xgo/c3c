@@ -370,12 +370,12 @@ run_validator_layer1_and_contract() {
 }
 
 # --- ホスト ~/.claude 設定の読み取り専用保護（compose.yml の :ro 重ねマウント） ---
-# ホスト側で実行・読込される user scope の設定 12 項目を、コンテナ内から書き換え
+# ホスト側で実行・読込される user scope の設定 13 項目を、コンテナ内から書き換え
 # られないことを検証する。検証するストリームと実際に使うストリームを分岐させない
 # ため、実物の compose.yml・実物のイメージ・userns keep-id をそのまま使い、
 # `podman compose run --entrypoint bash` で書き込みを試みる（volumes を抜き出して
 # 別コマンドに組み直すと、検証した構成と起動する構成が別物になる）。
-CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles .git)
+CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles dev-mods .git)
 CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 
 # コンテナ内で実行する検査スクリプト。各項目について「新規作成」「既存への追記」
@@ -401,6 +401,8 @@ expect_ro() {  # $1=ラベル, 残り=コマンド。EROFS/EBUSY で失敗すれ
   esac
 }
 for d in '"${CONFIG_RO_DIRS[*]}"'; do
+  # 書けないだけでなく、ホストの中身は読める（#201: dev-mods/ のホストの mod も読めることを含む）
+  if [ "$(cat "$d/seed" 2>/dev/null)" = seed ]; then echo "READ-OK $d"; else echo "READ-BROKEN $d"; fail=1; fi
   expect_ro "$d/create"  sh -c "echo x > $d/probe-new"
   expect_ro "$d/append"  sh -c "echo x >> $d/seed"
   expect_ro "$d/delete"  rm -f "$d/seed"
@@ -526,13 +528,13 @@ run_config_ro_tests() {
     check "compose run (テストイメージ $IMAGE が無い)" false
     rm -rf "$root"; return
   fi
-  check "12項目へ書けず projects/ へは書ける" env \
+  check "13項目へ書けず projects/ へは書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
   # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
   # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
-  check "別名 override 込みでも 12項目へ書けず projects/ へは書ける" env \
+  check "別名 override 込みでも 13項目へ書けず projects/ へは書ける" env \
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     CLAUDE_PLUGINS_HOST_PATH="$CONFIG_RO_ALIAS_DEST" \
     podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.plugins-alias.yml" -p "$proj" --in-pod false \
@@ -742,7 +744,7 @@ launcher_sandbox_cleanup() {
 
 # 基点の .claude.json の欠落・型違いを compose より前に止める（#159）。podman は bind source が
 # 無いと空のディレクトリを作り、イメージ内の通常ファイル /home/node/.claude.json へのマウントが
-# rc=126 で分かりにくく失敗する。通常ファイルとそれへの symlink は通す。ガードと 12 項目の準備と
+# rc=126 で分かりにくく失敗する。通常ファイルとそれへの symlink は通す。ガードと 13 項目の準備と
 # compose が同じ基点（論理 cd の後の pwd -P）を見ることも、symlink と .. の組み合わせで確かめる。
 # shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
 run_claude_json_launcher_tests() {
@@ -770,7 +772,7 @@ run_claude_json_launcher_tests() {
         bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -F "ERROR" | grep -F ".claude.json" | grep -qF "$3"' \
           _ "$rc" "$out" "$j_expect"
       check "J: $j_case は compose を呼ばない（$j_mode）" [ ! -e "$root/compose-calls" ]
-      check "J: $j_case は 12 項目を作らない（$j_mode）" [ ! -e "$j_base/.claude/hooks" ]
+      check "J: $j_case は 13 項目を作らない（$j_mode）" [ ! -e "$j_base/.claude/hooks" ]
       if [[ "$j_mode" == check ]]; then
         check "J: $j_case は --check の結果を FAIL にする" \
           bash -c 'printf "%s" "$1" | grep -qF "→ 結果: FAIL"' _ "$out"
@@ -1785,16 +1787,16 @@ run_config_ro_launcher_tests() {
   check "C0: --check は未作成の台帳・承認記録などを作らない" cmp "$root/check-before" "$root/check-after"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
-  # A: 空の ~/.claude → 12 項目が空で作られ、作成が 12 行ログされ、すべてユーザー所有
+  # A: 空の ~/.claude → 13 項目が空で作られ、作成が 13 行ログされ、すべてユーザー所有
   run_launcher
   local ok=1
   for d in "${CONFIG_RO_DIRS[@]}"; do [[ -d "$home/.claude/$d" ]] || ok=0; done
   for f in "${CONFIG_RO_FILES[@]}"; do [[ -f "$home/.claude/$f" ]] || ok=0; done
   [[ "$(cat "$home/.claude/settings.json")" == "{}" ]] || ok=0
   [[ ! -s "$home/.claude/CLAUDE.md" && ! -s "$home/.claude/statusline.sh" ]] || ok=0
-  check "A: 欠けている 12 項目を空で作成する（rc=$rc）" [ "$ok" -eq 1 -a "$rc" -eq 0 ]
-  check "A: 作成を 12 行ログする" \
-    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 12 ]
+  check "A: 欠けている 13 項目を空で作成する（rc=$rc）" [ "$ok" -eq 1 -a "$rc" -eq 0 ]
+  check "A: 作成を 13 行ログする" \
+    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 13 ]
   check "A: 作成物がすべて実行ユーザー所有" \
     bash -c "out=\$(find '$home/.claude' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   printf '%s\n' "$out" >> "$LOG_FILE"
@@ -1810,6 +1812,36 @@ run_config_ro_launcher_tests() {
   run_launcher
   check "A2: 2 回目の起動では作成ログが出ない（rc=$rc）" \
     [ "$rc" -eq 0 -a "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
+
+  # A3: ホストに中身のある dev-mods/ があっても、起動は止まらず中身も変えない（#201）
+  printf 'host\n' > "$home/.claude/dev-mods/keep"
+  run_launcher
+  check "A3: 中身のある dev-mods/ で起動し、作成ログを出さない（rc=$rc）" \
+    [ "$rc" -eq 0 -a "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 ]
+  check "A3: dev-mods/ の中身を変えない" [ "$(cat "$home/.claude/dev-mods/keep")" = host ]
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$home/.claude/dev-mods/keep"
+
+  # B3: dev-mods/ の symlink も拒否する（#201。B2 と同じ理由）
+  mkdir -p "$home/.claude/projects/dev-mods-target"
+  rm -rf "$home/.claude/dev-mods"; ln -s projects/dev-mods-target "$home/.claude/dev-mods"
+  launcher_sandbox_reset_records
+  run_launcher
+  check "B3: symlink の dev-mods/ は ERROR で起動中止（rc=$rc）" \
+    bash -c "[ $rc -ne 0 ] && printf '%s' \"\$0\" | grep -q 'ERROR' && printf '%s' \"\$0\" | grep -q 'dev-mods'" "$out"
+  check "B3: symlink の dev-mods/ の拒否では何も作成せず compose を呼ばない" \
+    [ "$(printf '%s\n' "$out" | grep -c '読み取り専用保護のため空で作成')" -eq 0 -a ! -e "$root/compose-calls" ]
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -f "$home/.claude/dev-mods"; mkdir -p "$home/.claude/dev-mods"
+
+  # C3: dev-mods/ だけが欠けているとき、--check は WARN し、作らない（#201）
+  rm -rf "$home/.claude/dev-mods"
+  run_launcher_check
+  check "C3: --check は欠けている dev-mods/ を WARN する（rc=$rc）" \
+    bash -c 'printf "%s" "$1" | grep -F "WARN" | grep -qF "dev-mods が無い（通常起動時に空で作成）"' _ "$out"
+  check "C3: --check は dev-mods/ を作らない" [ ! -e "$home/.claude/dev-mods" ]
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  mkdir -p "$home/.claude/dev-mods"
 
   # B: 型不一致（hooks がディレクトリでなく通常ファイル）→ fail-closed
   rm -rf "$home/.claude/hooks"; echo x > "$home/.claude/hooks"
@@ -1931,12 +1963,12 @@ run_config_ro_launcher_tests() {
       printf '%s\n' "$out" >> "$LOG_FILE"
     done
   done <<'GCASES'
-G1 .git が gitfile|.git|file|8
-G2 .git が有効 symlink|.git|link|8
-G3 .git が dangling symlink|.git|dangling|8
-G4 statusline.sh がディレクトリ|statusline.sh|dir|11
-G5 statusline.sh が有効 symlink|statusline.sh|linkfile|11
-G6 statusline.sh が dangling symlink|statusline.sh|dangling|11
+G1 .git が gitfile|.git|file|9
+G2 .git が有効 symlink|.git|link|9
+G3 .git が dangling symlink|.git|dangling|9
+G4 statusline.sh がディレクトリ|statusline.sh|dir|12
+G5 statusline.sh が有効 symlink|statusline.sh|linkfile|12
+G6 statusline.sh が dangling symlink|statusline.sh|dangling|12
 GCASES
   rm -rf "$g_base"
 

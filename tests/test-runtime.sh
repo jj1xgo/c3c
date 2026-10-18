@@ -120,7 +120,7 @@ outcome[environment]=PASS
 
 root="$(mktemp -d /tmp/claude-runtime.XXXXXX)"
 mkdir -p "$root/config/.claude" "$root/project" "$root/probe/bin" "$root/mount-tmp"
-for directory in hooks skills plugins commands agents workflows rules output-styles projects; do
+for directory in hooks skills plugins commands agents workflows rules output-styles dev-mods .git projects; do
   mkdir -p "$root/config/.claude/$directory"
 done
 for file in settings.json CLAUDE.md statusline.sh; do : > "$root/config/.claude/$file"; done

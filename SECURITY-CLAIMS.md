@@ -126,7 +126,7 @@ project 設定の探索規則・trust、起動経路、承認保存先、マウ�
 
 **限界・非対象**: 専用 home は「ホストの実 Codex home を共有しない」という範囲の保護である。
 第1段階では共通 Compose の `.claude.json` と `.claude` の rw 共有を残すため、Codex セッションからも
-Claude の認証・履歴等を読み書きできる。既存の Claude 設定 12 項目の内側 `:ro` 保護は維持するが、
+Claude の認証・履歴等を読み書きできる。既存の Claude 設定 13 項目の内側 `:ro` 保護は維持するが、
 CLI 間の認証・状態の完全隔離は未達成である。Codex 専用 home 自体もコンテナ内から変更可能なので、
 ホストの通常作業でその home を使えば、変更された設定をホストで読み込むことになる。
 第0B-4 の認証成功は現在の launcher 全体の受入や、期限切れ認証の refresh 成功を保証しない。
@@ -194,5 +194,5 @@ c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に�
 `claude-project-audit.py`、`compose.yml`・`compose.codex-preflight.yml` と `tests/test_claude_project_*.py`。
 実機受入の記録は PR を参照する。
 
-**再確認契機**: Claude Code の設定形式・workspace trust・plugin の読み込み・MCP の `headersHelper` の仕様の変更、
+**再確認契機**: Claude Code の設定形式・workspace trust・plugin の読み込み・Claude Code の mod の読み込み（置き場と承認の扱い）・MCP の `headersHelper` の仕様の変更、
 `CLAUDE_CODE_VERSION` の既定の変更、起動経路・承認保存先・マウントの変更時。

@@ -1611,9 +1611,10 @@ run_explicit_build() {
 # 認証（.credentials.json）・transcript・memory 等の状態は対象外（rw のまま）。
 # .git は ~/.claude 自体を git リポジトリにしているホスト向け（#129）。.git/hooks と
 # .git/config はホストで git を打った時点でホスト権限で実行・参照されるため、hook と同じ扱いにする。
-# dev-mods はセッション中に Claude が書く mod の置き場（~/.claude/dev-mods/<セッション ID>/）。そのセッションが
-# 次に始まるときに読み込まれ、mod は Claude Code のプロセスの中で sandbox の外で動き、permissions.deny や
-# PreToolUse hook を越えて承認しうるため、hook と同じ扱いにする（#201）。
+# dev-mods はセッション中に Claude が書く mod の置き場（~/.claude/dev-mods/<セッション ID>/）。承認すれば
+# そのセッションで読み込まれ（turn の終わりか、次にそのセッションが始まるとき）、mod は Claude Code の
+# プロセスの中で sandbox の外で動き、permissions.deny や PreToolUse hook を越えて承認しうるため、hook と
+# 同じ扱いにする（#201）。
 CLAUDE_CONFIG_RO_DIRS=(hooks skills plugins commands agents workflows rules output-styles dev-mods .git)
 CLAUDE_CONFIG_RO_FILES=(settings.json CLAUDE.md statusline.sh)
 

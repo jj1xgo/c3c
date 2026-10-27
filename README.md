@@ -829,7 +829,7 @@ gh release create vX.Y.Z -R jj1xgo/c3c --verify-tag --title vX.Y.Z --notes-file 
 
 ## ライセンス
 
-GNU General Public License v3.0（GPL-3.0）。全文は [LICENSE](LICENSE)。
+GNU General Public License v3.0 以降（GPL-3.0-or-later）。全文は [LICENSE](LICENSE)。
 
 ```text
 Copyright (C) 2026 JJ1XGO

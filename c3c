@@ -126,7 +126,7 @@ set_agent_option() {
 # `--` 以降はすべて位置引数。未知オプションは exit 2（旧入口の「位置引数として扱う」解釈は削除済み）。
 # 同名ディレクトリは ./codex や -- codex と書く。
 # 結果は POSITIONAL_ARGS・C3C_SUBCOMMAND と各フラグの変数に置く。引数は配列の添字で順に読む。
-POSITIONAL_ARGS=()
+declare -a POSITIONAL_ARGS=()
 C3C_SUBCOMMAND=""
 parse_cli_args() {
   local -a args=("$@")
@@ -2924,9 +2924,8 @@ for row in data["paths"]:
 # dispatch（トップレベル実行文。相対順序は関数化前と同一に保つ）
 # ============================================================
 
-if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
-  set -- "${POSITIONAL_ARGS[@]}"
-fi
+# 空のときは入れ直さない（$# は解析の後の set -- で 0 のまま）
+(( ${#POSITIONAL_ARGS[@]} == 0 )) || set -- "${POSITIONAL_ARGS[@]}"
 
 # --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
 # （agent 確定はこの経路では選択せず既定の Claude。記憶は読まない・消さない）

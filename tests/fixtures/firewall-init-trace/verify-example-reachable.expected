@@ -1,0 +1,40 @@
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+iptables -N CLAUDE_EGRESS
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -d 10.88.0.53 -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -d 10.88.0.53 -p tcp --dport 53 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 140.82.112.0/20 -p tcp -m multiport --dports 443,22 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 143.55.64.0/20 -p tcp -m multiport --dports 443,22 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 185.199.108.0/22 -p tcp -m multiport --dports 443,22 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 192.30.252.0/22 -p tcp -m multiport --dports 443,22 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 160.79.104.10 -p tcp -m multiport --dports 443,22 -m comment --comment domain=api.anthropic.com;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 160.79.104.11 -p tcp -m multiport --dports 443,22 -m comment --comment domain=claude.ai;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 160.79.104.12 -p tcp -m multiport --dports 443,22 -m comment --comment domain=console.anthropic.com;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 34.36.57.103 -p tcp -m multiport --dports 443,22 -m comment --comment domain=statsig.anthropic.com;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 104.18.20.1 -p tcp -m multiport --dports 443,22 -m comment --comment domain=statsig.com;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 35.186.247.156 -p tcp -m multiport --dports 443,22 -m comment --comment domain=sentry.io;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 192.0.2.10 -p tcp -m multiport --dports 443,22 -m comment --comment domain=alpha.example;gen=1700000000 -j ACCEPT
+iptables -A CLAUDE_EGRESS -d 192.0.2.20 -p tcp -m multiport --dports 443,22 -m comment --comment domain=beta.example;gen=1700000000 -j ACCEPT
+iptables -A INPUT -s 10.88.0.1/32 -j ACCEPT
+iptables -A OUTPUT -d 10.88.0.1/32 -j ACCEPT
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT DROP
+iptables -A OUTPUT -j CLAUDE_EGRESS
+iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
+ip6tables -F
+ip6tables -X
+ip6tables -A INPUT -i lo -j ACCEPT
+ip6tables -A OUTPUT -o lo -j ACCEPT
+ip6tables -P INPUT DROP
+ip6tables -P FORWARD DROP
+ip6tables -P OUTPUT DROP
+rc=1

@@ -880,6 +880,7 @@ run_launcher_tests() {
   check "許可ドメインの入力検証とDNS解決前の拒否" bash "${SCRIPT_DIR}/tests/test-allowed-domains.sh"
   check "DNS 応答の除外・継続・エラー処理" bash "${SCRIPT_DIR}/tests/test-refresh-domains.sh"
   check "DNS ルールの更新順序・世代非更新・期限切れ削除" bash "${SCRIPT_DIR}/tests/test-domain-rule-lifecycle.sh"
+  check "ファイアウォール初期化のルールの組み立て（固定入力）" bash "${SCRIPT_DIR}/tests/test-firewall-init-trace.sh"
   log ""
 }
 

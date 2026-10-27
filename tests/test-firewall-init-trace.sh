@@ -6,13 +6,13 @@
 # カーネルのルール適用と実ネットワークは検証しない（tests/test-runtime.sh の範囲）。
 #
 # UPDATE_EXPECTED=1 で、期待値ファイルを持つシナリオの記録を書き出す。
-# EXPECT_EARLY_STOP=1 で、bad-meta・no-default-route がルールを 1 つも変えずに止まることを判定する。
+# bad-meta・no-default-route は、ルールを 1 つも変えずに止まることを判定する（EXPECT_EARLY_STOP=0 で rc だけの判定）。
 set -euo pipefail
 export LC_ALL=C
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FIXTURES="$ROOT/tests/fixtures/firewall-init-trace"
 UPDATE_EXPECTED="${UPDATE_EXPECTED:-0}"
-EXPECT_EARLY_STOP="${EXPECT_EARLY_STOP:-0}"
+EXPECT_EARLY_STOP="${EXPECT_EARLY_STOP:-1}"
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "FAIL: root では走らせない（差し替えが効かないと実ホストのルールを変えるため）" >&2

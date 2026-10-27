@@ -804,7 +804,7 @@ Codex 同梱 bubblewrap の固定リンク（`Dockerfile.claude` の `# >>> c3c 
 
 ## 表記
 
-この repo の文書・スクリプトのメッセージとコメント・tag メッセージ・Release 本文・Issue と PR は**日本語のみ**で書く。v8.2.1 までは README と tag が日英併記だったが、v8.2.1 を最後に英語版を廃止した（既存の tag と Release は書き換えない）。例外として英語のまま残すのは、`ERROR:` / `WARNING:` / `INFO:` / `[OK]` / `[WARN]` / `[FAIL]` の接頭辞（テストと `--check` の集計が照合する機械可読トークン）、`[y/N]`、環境変数名・関数名・コマンド名・URL、`LICENSE` の法文、git や gh が出す文字列と照合する部分。日本語の文中の技術用語（base image、stdio、hash、fail-closed 等）は英語のまま書いてよく、「行にひらがなかカタカナが含まれる」ことを日本語化済みの判定に使う。
+この repo の文書・スクリプトのメッセージとコメント・tag メッセージ・Release 本文・Issue と PR は**日本語のみ**で書く。v8.2.1 までは README と tag が日英併記だったが、v8.2.1 を最後に英語版を廃止した（既存の tag と Release は書き換えない）。例外として英語のまま残すのは、`ERROR:` / `WARNING:` / `INFO:` / `[OK]` / `[WARN]` / `[FAIL]` の接頭辞（テストと `--check` の集計が照合する機械可読トークン）、`[y/N]`、環境変数名・関数名・コマンド名・URL、`LICENSE` と後述「ライセンス」節の法文、git や gh が出す文字列と照合する部分。日本語の文中の技術用語（base image、stdio、hash、fail-closed 等）は英語のまま書いてよく、「行にひらがなかカタカナが含まれる」ことを日本語化済みの判定に使う。
 
 ## バージョニング
 
@@ -829,4 +829,23 @@ gh release create vX.Y.Z -R jj1xgo/c3c --verify-tag --title vX.Y.Z --notes-file 
 
 ## ライセンス
 
-GPL-3.0。このリポジトリの git の履歴の初期の版には、フォーク元の sethjensen1/claude-container（MIT ライセンス）のコードと、Anthropic の devcontainer の例（anthropics/claude-code）を元にしたコードが含まれる。現在の版では書き直されている。詳細は [LICENSE](LICENSE) を参照。
+GNU General Public License v3.0 以降（GPL-3.0-or-later）。全文は [LICENSE](LICENSE)。
+
+```text
+Copyright (C) 2026 JJ1XGO
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+```
+
+このリポジトリの git の履歴の初期の版には、フォーク元の [sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT ライセンス）のコードと、[anthropics/claude-code](https://github.com/anthropics/claude-code) の devcontainer の例を元にしたコードが含まれる。現在の版では書き直されている。

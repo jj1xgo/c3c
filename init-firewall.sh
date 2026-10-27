@@ -393,15 +393,7 @@ load_github_ranges() {
     echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT がないか不正です" >&2
     exit 1
   fi
-  local ranges
-  if ! ranges=$(printf '%s\n' "$meta" | jq -r '(.web + .api + .git)[]' | sort -u); then
-    echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT がないか不正です" >&2
-    exit 1
-  fi
-  GITHUB_CIDRS=()
-  if [ -n "$ranges" ]; then
-    mapfile -t GITHUB_CIDRS <<< "$ranges"
-  fi
+  mapfile -t GITHUB_CIDRS < <(printf '%s\n' "$meta" | jq -r '(.web + .api + .git)[]' | sort -u)
 }
 
 # ホスト側のサービスへは、デフォルトルートのゲートウェイ 1 つだけを通す（/24 全体ではない、#31）。

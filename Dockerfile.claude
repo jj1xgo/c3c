@@ -176,9 +176,9 @@ ENV DEVCONTAINER=true
 RUN groupadd --gid 1000 node \
   && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
 
-# ワークスペースと設定ディレクトリを作成する
-RUN mkdir -p /workspace /home/node/.claude && \
-  chown -R node:node /workspace /home/node/.claude
+# 作業ディレクトリ（実行時にプロジェクトを bind mount する先）と Claude の設定ディレクトリを、
+# node の持ち物（0755）として用意する。
+RUN install -d -o node -g node -m 0755 /workspace /home/node/.claude
 
 # unlink/rename の可否はディレクトリの所有権が決めるため、下の境界スクリプトも
 # それを保持するディレクトリの不変性以上にはならない。上の任意の Node.js tarball が
@@ -334,16 +334,16 @@ RUN set -e; \
     fi
 # <<< c3c codex-requirements
 
-# エグレスファイアウォールのアセット: root 所有にし、node ユーザーが実行時に
-# 許可リストやスクリプト自体を変更できないようにする。node は sudo 経由で
-# このスクリプトのみを実行できる。
+# エグレスファイアウォールのアセット。スクリプトと許可リストは root の持ち物にして、
+# 実行時に node が書き換えられないようにする。node に許す sudo はこのスクリプトの実行だけで、
+# sudoers の断片は root 所有・0440 の空ファイルを先に作ってから 1 行を書き込む。
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY allowed-domains.txt /etc/c3c/allowed-domains.txt
 COPY allowed-ports.txt /etc/c3c/allowed-ports.txt
 RUN chmod 755 /usr/local/bin/init-firewall.sh && \
   chmod 644 /etc/c3c/allowed-domains.txt /etc/c3c/allowed-ports.txt && \
-  echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall
+  install -o root -g root -m 0440 /dev/null /etc/sudoers.d/node-firewall && \
+  printf '%s\n' 'node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh' >> /etc/sudoers.d/node-firewall
 
 # オプトインの git push 配線用の GIT_ASKPASS ヘルパー（entrypoint.sh を参照）。
 # init-firewall.sh と同じパターンで root 所有にし、node ユーザーが実行時に

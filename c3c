@@ -5,10 +5,8 @@ trap 'exit 1' INT
 
 # 入口は通常ファイル `c3c` だけ（旧 `claude-container` は削除済み）。呼出名では分岐せず、
 # 旧名の外部 symlink から呼ばれても同じ parser・CLI 選択の記憶・dir 省略を使う。
-BUILD=0
-CLEAN=0
-CHECK=0
-CLEAN_MISSING=0
+# 起動の種類を決めるフラグ（引数解析が 1 にする）。
+BUILD=0 CLEAN=0 CHECK=0 CLEAN_MISSING=0
 
 # 起動する CLI（c3c 第1段階）。CLI 引数だけから決め、project env・シェル環境の CC_AGENT では
 # 選べない（許可リスト外なので export されず、finalize_agent() で readonly にする）。
@@ -127,79 +125,64 @@ set_agent_option() {
 # 引数を解析する。最初の位置引数の claude / codex だけをサブコマンド（agent の明示指定）にする。
 # `--` 以降はすべて位置引数。未知オプションは exit 2（旧入口の「位置引数として扱う」解釈は削除済み）。
 # 同名ディレクトリは ./codex や -- codex と書く。
-POSITIONAL_ARGS=()
+# 結果は POSITIONAL_ARGS・C3C_SUBCOMMAND と各フラグの変数に置く。引数は配列の添字で順に読む。
+declare -a POSITIONAL_ARGS=()
 C3C_SUBCOMMAND=""
-c3c_after_dashdash=0
-while [[ $# -gt 0 ]]; do
-  if [[ $c3c_after_dashdash -eq 1 ]]; then
-    POSITIONAL_ARGS+=("$1")
-    shift
-    continue
-  fi
-  case $1 in
-    --)
-      c3c_after_dashdash=1
-      shift
-      ;;
-    -b|--build)
-      BUILD=1
-      shift
-      ;;
-    --clean)
-      CLEAN=1
-      shift
-      ;;
-    --check)
-      CHECK=1
-      shift
-      ;;
-    --clean-missing)
-      CLEAN_MISSING=1
-      shift
-      ;;
-    --agent|--agent=*)
-      if [[ "$1" == --agent ]]; then
-        if [[ $# -lt 2 || "$2" == -* ]]; then
+parse_cli_args() {
+  local -a args=("$@")
+  local argc=$# next=0 arg
+  while (( next < argc )); do
+    arg=${args[next]}
+    next=$((next + 1))
+    case $arg in
+      --)
+        POSITIONAL_ARGS+=("${args[@]:next}")
+        return 0
+        ;;
+      -b|--build) BUILD=1 ;;
+      --clean) CLEAN=1 ;;
+      --check) CHECK=1 ;;
+      --clean-missing) CLEAN_MISSING=1 ;;
+      --agent=*) set_agent_option "${arg#--agent=}" ;;
+      --agent)
+        # 値が無い（末尾、または次が別のオプション）ときは、次の引数を値として取らない。
+        if (( next >= argc )) || [[ ${args[next]} == -* ]]; then
           echo "ERROR: --agent には claude または codex を指定してください。" >&2
           exit 2
         fi
-        agent_value="$2"
-        shift 2
-      else
-        agent_value="${1#--agent=}"
-        shift
-      fi
-      set_agent_option "$agent_value"
-      unset agent_value
-      ;;
-    --read-only)
-      if [[ $READ_ONLY_SET -eq 1 ]]; then
-        echo "ERROR: --read-only は 1 回だけ指定してください。" >&2
+        set_agent_option "${args[next]}"
+        next=$((next + 1))
+        ;;
+      --read-only)
+        if [[ $READ_ONLY_SET -eq 1 ]]; then
+          echo "ERROR: --read-only は 1 回だけ指定してください。" >&2
+          exit 2
+        fi
+        READ_ONLY=1
+        READ_ONLY_SET=1
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      -*)
+        echo "ERROR: 不明なオプションです: '$arg'（c3c --help を参照。ディレクトリ名が - で始まる場合は -- の後に書いてください）。" >&2
         exit 2
-      fi
-      READ_ONLY=1
-      READ_ONLY_SET=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    -*)
-      echo "ERROR: 不明なオプションです: '$1'（c3c --help を参照。ディレクトリ名が - で始まる場合は -- の後に書いてください）。" >&2
-      exit 2
-      ;;
-    *)
-      if [[ ${#POSITIONAL_ARGS[@]} -eq 0 && -z "$C3C_SUBCOMMAND" && ( "$1" == claude || "$1" == codex ) ]]; then
-        C3C_SUBCOMMAND="$1"
-      else
-        POSITIONAL_ARGS+=("$1")
-      fi
-      shift
-      ;;
-  esac
-done
-unset c3c_after_dashdash
+        ;;
+      claude|codex)
+        if [[ ${#POSITIONAL_ARGS[@]} -eq 0 && -z "$C3C_SUBCOMMAND" ]]; then
+          C3C_SUBCOMMAND=$arg
+        else
+          POSITIONAL_ARGS+=("$arg")
+        fi
+        ;;
+      *) POSITIONAL_ARGS+=("$arg") ;;
+    esac
+  done
+}
+parse_cli_args "$@"
+# 解析し終えた元の引数は使わない（位置引数は dispatch の前に POSITIONAL_ARGS から入れ直す）。
+set --
 if [[ -n "$C3C_SUBCOMMAND" ]]; then
   if [[ $AGENT_SET -eq 1 ]]; then
     echo "ERROR: サブコマンド $C3C_SUBCOMMAND と --agent は併用できません（同じ値でも不可）。どちらか一方で指定してください。" >&2
@@ -2941,7 +2924,8 @@ for row in data["paths"]:
 # dispatch（トップレベル実行文。相対順序は関数化前と同一に保つ）
 # ============================================================
 
-set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+# 空のときは入れ直さない（$# は解析の後の set -- で 0 のまま）
+(( ${#POSITIONAL_ARGS[@]} == 0 )) || set -- "${POSITIONAL_ARGS[@]}"
 
 # --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
 # （agent 確定はこの経路では選択せず既定の Claude。記憶は読まない・消さない）

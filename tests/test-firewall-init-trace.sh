@@ -5,7 +5,10 @@
 # 読むだけの呼び出し（-L・-S・dig・curl など）の順番と、標準出力・標準エラーは照合しない。
 # カーネルのルール適用と実ネットワークは検証しない（tests/test-runtime.sh の範囲）。
 #
-# UPDATE_EXPECTED=1 で、期待値ファイルを持つシナリオの記録を書き出す。
+# /proc/sys の IPv6 の予備の無効化の結果（disable_ipv6）は、記録の外で expect_ipv6_conf が照合する。
+#
+# UPDATE_EXPECTED=1 で、期待値ファイルを持つシナリオの記録を書き出す（disable_ipv6 の期待は
+# expect_ipv6_conf の引数で、書き出しの対象外）。
 # bad-meta・no-default-route は、ルールを 1 つも変えずに止まることを判定する（EXPECT_EARLY_STOP=0 で rc だけの判定）。
 set -euo pipefail
 export LC_ALL=C
@@ -160,6 +163,8 @@ good_meta='{"web":["192.30.252.0/22","185.199.108.0/22"],"api":["192.30.252.0/22
 
 fail=0
 count=0
+# disable_ipv6 の初期値。0 でも 1 でもない値にし、--ipv6 で「書かない」ことを確かめられるようにする。
+ipv6_conf_unwritten=unwritten
 
 # シナリオ名 期待の種類（full = 期待値ファイルと全体照合、early = ルールを変える前に止まる）
 # の後に、スクリプトの引数と TRACE_* の環境変数を「--」で区切って渡す。
@@ -179,8 +184,8 @@ run_scenario() {
   printf '%s\n' "$resolv" > "$tmp/resolv.conf"
   printf '%s\n' "$meta" > "$tmp/c3c-etc/github-meta.json"
   printf '%s\n' alpha.example beta.example > "$tmp/c3c-etc/allowed-domains.txt"
-  echo 0 > "$tmp/ipv6-conf/all/disable_ipv6"
-  echo 0 > "$tmp/ipv6-conf/default/disable_ipv6"
+  echo "$ipv6_conf_unwritten" > "$tmp/ipv6-conf/all/disable_ipv6"
+  echo "$ipv6_conf_unwritten" > "$tmp/ipv6-conf/default/disable_ipv6"
   local record="$tmp/$name.record" rc
   : > "$record"
   count=$((count + 1))
@@ -223,7 +228,7 @@ run_scenario() {
 no_resolver='nameserver fd00::53'
 
 # 直前のシナリオの後の /proc/sys の IPv6 の予備の無効化の結果（all と default の disable_ipv6）を照合する。
-# 既定のモードは 1 を書き、--ipv6 では書かない。
+# 既定のモードは 1 を書き、--ipv6 では書かない（初期値の $ipv6_conf_unwritten のまま）。
 expect_ipv6_conf() {
   local name="$1" want="$2" got
   got="$(cat "$tmp/ipv6-conf/all/disable_ipv6") $(cat "$tmp/ipv6-conf/default/disable_ipv6")"
@@ -239,7 +244,7 @@ expect_ipv6_conf ipv4-resolver 1
 run_scenario ipv4-no-resolver full -- "TRACE_RESOLV=$no_resolver"
 run_scenario ipv4-no-ip6tables full -- TRACE_IP6_LIST_FAIL=1
 run_scenario ipv6-resolver full --ipv6
-expect_ipv6_conf ipv6-resolver 0
+expect_ipv6_conf ipv6-resolver "$ipv6_conf_unwritten"
 run_scenario ipv6-no-resolver full --ipv6 -- "TRACE_RESOLV=$no_resolver"
 # 途中の失敗の注入（失敗させた呼び出しで記録が終わる）
 run_scenario rule-add-fails full -- \
@@ -258,7 +263,7 @@ run_scenario verify-github80-reachable full -- TRACE_VERIFY=github80-reachable
 run_scenario ipv6-verify-fails full --ipv6 -- TRACE_HELPER_FAIL=verify
 
 if [ "$fail" -ne 0 ]; then
-  echo "FAIL: $fail / $count シナリオ" >&2
+  echo "FAIL: 照合の失敗 $fail 件（$count シナリオ。disable_ipv6 の照合を含む）" >&2
   exit 1
 fi
 echo "OK: $count シナリオ"

@@ -222,11 +222,24 @@ run_scenario() {
 
 no_resolver='nameserver fd00::53'
 
+# 直前のシナリオの後の /proc/sys の IPv6 の予備の無効化の結果（all と default の disable_ipv6）を照合する。
+# 既定のモードは 1 を書き、--ipv6 では書かない。
+expect_ipv6_conf() {
+  local name="$1" want="$2" got
+  got="$(cat "$tmp/ipv6-conf/all/disable_ipv6") $(cat "$tmp/ipv6-conf/default/disable_ipv6")"
+  if [ "$got" != "$want $want" ]; then
+    echo "FAIL: $name: disable_ipv6 が $want $want のはずが $got" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # 成功
 run_scenario ipv4-resolver full
+expect_ipv6_conf ipv4-resolver 1
 run_scenario ipv4-no-resolver full -- "TRACE_RESOLV=$no_resolver"
 run_scenario ipv4-no-ip6tables full -- TRACE_IP6_LIST_FAIL=1
 run_scenario ipv6-resolver full --ipv6
+expect_ipv6_conf ipv6-resolver 0
 run_scenario ipv6-no-resolver full --ipv6 -- "TRACE_RESOLV=$no_resolver"
 # 途中の失敗の注入（失敗させた呼び出しで記録が終わる）
 run_scenario rule-add-fails full -- \

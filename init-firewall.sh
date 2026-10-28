@@ -49,7 +49,7 @@ done
 # IP に対して許可するポート（#31）。init モードと --refresh-domains モードの
 # 両方が同じ値を見るよう、ここで一度だけ読む。DNS リゾルバのルールや full_init() の
 # ホストネットワークのルールには適用されない — それらは CHAIN を完全にバイパスし、
-# 制限なしのままとなる（CHAIN 作成箇所のコメントを参照）。
+# 制限なしのままとなる（allow_dns()・allow_host_gateway() はチェーンを通さずに OUTPUT へ直接入れる）。
 resolve_allowed_ports() {
   local -a ports=()
   local raw lo hi

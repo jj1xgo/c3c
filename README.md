@@ -420,7 +420,7 @@ legacy 変数が設定されたまま起動すると fail-closed で停止し、
 
 **force push 対策**: `GITHUB_MAIN_PAT` はコンテナ内からの `git push --force` 等の強制上書きも素通しするため、対象プロジェクトの `.claude/settings.json` に `permissions.deny` で `Bash(git push --force:*)` を追加するのが一次防御になる。ただしこの deny はコマンド文字列の前方一致で判定されるため、フラグ後置形（`git push origin master --force`）・`git -C <path> push --force`・`+refspec` 形式（例: `git push origin +feature:main`）は素通しする既知の限界がある。`--force-with-lease` は `--force` で始まらない別オプションのため `Bash(git push --force-with-lease:*)` を別途追加する必要がある。この見逃し範囲を deny ルールの列挙だけで完全に塞ぐのは煩雑なため、「force push はユーザーの明示承認後のみ」という CLAUDE.md 等の文書ルールを二重の防波堤として併用することを推奨する（利用側プロジェクトでの実機検証を踏まえた知見）。
 
-**workflow ファイルを含む push（`.github/workflows/`）**: `.github/workflows/` 配下のファイルを作成・更新する push は、トークンに workflow の権限（fine-grained PAT では Repository permissions の `Workflows`。[公式の権限表](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens#repository-permissions-for-workflows)）が無いと、GitHub に次のエラーで拒否される。拒否されたブランチは更新されない。
+**workflow ファイルを含む push（`.github/workflows/`）**: `.github/workflows/` 配下のファイルを作成・更新する push は、トークンに workflow の権限（fine-grained PAT では Repository permissions の `Workflows`。[公式の権限表](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens#repository-permissions-for-workflows)）が無いと、GitHub に次のエラーで拒否されることがある。拒否されたブランチは更新されない。
 
 ```text
 ! [remote rejected] <branch> -> <branch> (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)

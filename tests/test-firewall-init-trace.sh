@@ -66,6 +66,8 @@ cp "$stubs/iptables" "$stubs/ip6tables"
 cat > "$stubs/dig" <<'STUB'
 #!/bin/bash
 if [ "$*" = "+short +time=2 +tries=2 A api.github.com" ]; then
+  [ "${TRACE_VERIFY:-}" = github-dig-empty ] && exit 0
+  [ "${TRACE_VERIFY:-}" = github-dig-fails ] && exit 9
   echo 140.82.112.5
   exit 0
 fi
@@ -298,6 +300,11 @@ run_scenario verify-example-reachable full -- TRACE_VERIFY=example-reachable
 run_scenario verify-github443-blocked full -- TRACE_VERIFY=github443-blocked
 run_scenario verify-anthropic-blocked full -- TRACE_VERIFY=anthropic-blocked
 run_scenario verify-github80-reachable full -- TRACE_VERIFY=github80-reachable
+# api.github.com の解決が空（dig は rc 0）と、dig 自体の失敗（#229）
+run_scenario verify-github-dig-empty full -- TRACE_VERIFY=github-dig-empty
+expect_output verify-github-dig-empty 'ERROR: ファイアウォール検証に失敗しました。api.github.com の IPv4 アドレスを解決できません'
+run_scenario verify-github-dig-fails full -- TRACE_VERIFY=github-dig-fails
+expect_output verify-github-dig-fails 'ERROR: ファイアウォール検証に失敗しました。api.github.com の IPv4 アドレスを解決できません'
 run_scenario ipv6-verify-fails full --ipv6 -- TRACE_HELPER_FAIL=verify
 
 if [ "$fail" -ne 0 ]; then

@@ -344,10 +344,11 @@ verify_ipv4() {
   echo "ファイアウォールのルールを検証しています..."
   # api.github.com は TCP の接続だけを確かめ、HTTP のリクエストは送らない。
   # 起動のたびに未認証の GitHub API のレート制限を使わないため。
+  # 解決の失敗（dig の非 0）も、結果が空のときと同じく ERROR を出して止める（#229）。
   local github_ipv4
-  github_ipv4=$(dig +short +time=2 +tries=2 A api.github.com | awk '/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/ { print; exit }')
+  github_ipv4=$(dig +short +time=2 +tries=2 A api.github.com | awk '/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/ { print; exit }') || github_ipv4=''
   if [ -z "$github_ipv4" ]; then
-    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com:443 へ到達できません" >&2
+    echo "ERROR: ファイアウォール検証に失敗しました。api.github.com の IPv4 アドレスを解決できません" >&2
     exit 1
   fi
 

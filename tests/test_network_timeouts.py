@@ -268,6 +268,24 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
                 if kind == 'launcher':
                     self.assertEqual(own.read_bytes(), WEAK + b'\n')
 
+    def test_failed_copy_of_fallback_snapshot_fails(self):
+        # 検証に通った候補のコピーが失敗したら、成功を返さない（PR 前のレビュー、Sol I1）。
+        (self.bin / 'cp').write_text('''#!/bin/sh
+for last; do :; done
+case "$last" in
+  */github-meta.json) echo "cp: 書き込めません（テスト）" >&2; exit 1 ;;
+esac
+exec "$REAL_CP" "$@"
+''')
+        (self.bin / 'cp').chmod(0o755)
+        self.env['REAL_CP'] = shutil.which('cp')
+        for kind in ('launcher', 'build'):
+            with self.subTest(kind=kind):
+                (self.run_dir / '.build-context' / 'current' / 'github-meta.json').unlink(missing_ok=True)
+                result = self.run_meta(kind, 'invalid', 'sibling')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('書き込めません（テスト）', result.stderr)
+
     def test_connection_refused_without_cache_fails(self):
         # bind 済み・listen していないポートへ実 curl を接続する。
         import socket

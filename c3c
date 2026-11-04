@@ -2455,8 +2455,8 @@ stage_build_context() {
   # GitHub meta スナップショット。init-firewall.sh のファイアウォール許可リストが使う
   # GitHub IP レンジの取得元。未認証 GitHub API のレート制限（60 req/h/IP）を消費するのは
   # ここ1箇所のみ（起動時にはライブ取得しない）。失敗時は (1) このプロジェクトの前回
-  # ステージング分（.build-context/<project>/ は --clean まで永続する）、(2) それも無ければ
-  # 他プロジェクトのスナップショットを新しい順に（GitHub IP レンジは変更頻度が低いため実用上
+  # ステージング分（.build-context/<project>/ は --clean まで永続する）、(2) それも無いか
+  # 検証に通らなければ、他プロジェクトのスナップショットを新しい順に（GitHub IP レンジは変更頻度が低いため実用上
   # 問題ない）見て、警告付きで再利用し、いずれも無ければビルドを止める。取得したものも
   # (1)(2) も、どれも validate-build-input.sh の github-meta の検査（init-firewall.sh の
   # load_github_ranges() と同じ規則、#238）に通るものだけを使う。
@@ -2496,7 +2496,7 @@ stage_build_context() {
     [[ "$sibling" -ef "$BUILD_CONTEXT_DIR/github-meta.json" ]] && continue
     if sh "$BUILD_CONTEXT_DIR/validate-build-input.sh" github-meta "$sibling"; then
       echo "WARNING: 別プロジェクトの GitHub meta スナップショットを再利用します（$sibling）" >&2
-      cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json"
+      cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json" || exit 1
       return 0
     fi
     echo "WARNING: GitHub meta スナップショット $sibling は検証に通らないため使いません" >&2

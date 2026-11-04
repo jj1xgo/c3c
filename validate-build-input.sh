@@ -100,13 +100,16 @@ if [ "$VBI_KIND" = "github-meta" ]; then
                    | ($p[0] | split(".") | all(part(255)))
                      and ($p[1] == null or ($p[1] | part(32)))))
   ' "$VBI_INFILE" >/dev/null 2>&1 || VBI_JQ_RC=$?
-  # jq の終了コード: 0 = 適合、1 = 結果が false・null、2・5 = 入力を解析できない
-  # （jq 1.6 は 2、1.7 以降は 5）。それ以外（3 = 式の誤りなど）は診断不能。
+  # jq の終了コード: 0 = 適合、1 = 結果が false・null、2・4・5 = 入力を解析できない
+  # （-e と組むと jq 1.6 は 4〈結果が 1 つも出ない〉、1.7 以降は 5。2 は -e の無いときの
+  # 1.6 の値）。この式は解析できた入力には必ず真偽値を 1 つ出すので、4 は解析の失敗の
+  # ときにしか出ない（Debian bookworm の jq 1.6 で確かめた）。それ以外（3 = 式の誤り
+  # など）は診断不能。
   case "$VBI_JQ_RC" in
     0)
       exit 0
       ;;
-    1|2|5)
+    1|2|4|5)
       echo "error: $VBI_INFILE は GitHub meta のスナップショットとして不正です" >&2
       exit 1
       ;;

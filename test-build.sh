@@ -2322,7 +2322,7 @@ stage_common_context() {
   for sibling in "${candidates[@]}"; do
     if sh "$dest/validate-build-input.sh" github-meta "$sibling"; then
       echo "WARNING: GitHub meta の取得に失敗しました。$sibling を再利用します" >&2
-      cp "$sibling" "$dest/github-meta.json"
+      cp "$sibling" "$dest/github-meta.json" || return 1
       return 0
     fi
     echo "WARNING: GitHub meta スナップショット $sibling は検証に通らないため使いません" >&2

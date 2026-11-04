@@ -98,7 +98,7 @@ else:
 CURL = '''#!/bin/sh
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --output ]; then
-    printf '%s\\n' '{"web":[],"api":[],"git":[]}' > "$2"
+    printf '%s\\n' '{"web":["192.0.2.0/24"],"api":[],"git":[]}' > "$2"
     exit 0
   fi
   shift

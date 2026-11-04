@@ -350,6 +350,11 @@ run_validator_layer2() {
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: packages validator呼び出しのヒット数=$hits (期待1)"; fi
   hits=$(grep -F 'sh /tmp/validate-build-input.sh requirements' "$logical" | grep -cF '|| exit 1;')
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: requirements validator呼び出しのヒット数=$hits (期待1)"; fi
+  # github-meta の RUN は `|| exit 1` で論理行が終わるので、セミコロンまでは見ない（#238）。
+  hits=$(grep -F 'sh /tmp/validate-build-input.sh github-meta /etc/c3c/github-meta.json' "$logical" | grep -cF '|| exit 1')
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: github-meta validator呼び出しのヒット数=$hits (期待1)"; fi
+  hits=$(grep -cF "jq -e '.web and .api and .git'" "$logical")
+  if [ "$hits" -eq 0 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: github-meta の弱い検査が残っている(ヒット数=$hits)"; fi
 
   # 検査5: COPY が validate-build-input.sh をイメージへ運んでいること
   hits=$(grep -cF 'COPY validate-build-input.sh /tmp/' "$logical")
@@ -656,7 +661,7 @@ printf '%s\\n' "\$*" >> "$root/curl-calls"
 while [ "\$#" -gt 0 ]; do
   if [ "\$1" = --output ]; then
     [ "\$#" -ge 2 ] || exit 2
-    printf '%s\\n' '{"web":[],"api":[],"git":[]}' > "\$2" || exit 1
+    printf '%s\\n' '{"web":["192.0.2.0/24"],"api":[],"git":[]}' > "\$2" || exit 1
     exit 0
   fi
   shift
@@ -2299,7 +2304,7 @@ stage_common_context() {
     timeout --foreground --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
       --retry 2 --retry-connrefused --retry-max-time 60 \
       --output "$gh_meta" https://api.github.com/meta \
-      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1 \
+      && sh "$dest/validate-build-input.sh" github-meta "$gh_meta" \
       && mv "$gh_meta" "$dest/github-meta.json"
   ); then
     return 0
@@ -2307,15 +2312,23 @@ stage_common_context() {
     fetch_rc=$?
   fi
   echo "WARNING: GitHub meta の取得・検証に失敗しました（rc=$fetch_rc、接続10秒・1試行30秒・再試行2回・全体90秒上限）。通信・レート制限・応答形式を確認してください" >&2
+  # c3c の stage_build_context() と同じく、既存のスナップショットを新しい順に
+  # validate-build-input.sh の github-meta の検査にかけ、最初に通ったものを使う（#238）。
+  # 配列に読んで for で回す（ls … | while ではパイプの右側がサブシェルになり、
+  # 中の return が関数に伝わらない）。標準エラーは捨てない（通らない理由を残す）。
+  local -a candidates=()
   # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
-  sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)
-  if [[ -n "$sibling" ]]; then
-    echo "WARNING: GitHub meta の取得に失敗しました。$sibling を再利用します" >&2
-    cp "$sibling" "$dest/github-meta.json"
-  else
-    echo "ERROR: GitHub meta の取得に失敗し、既存スナップショットもありません（通信・未認証 API のレート制限・応答形式を確認してください）" >&2
-    return 77
-  fi
+  mapfile -t candidates < <(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null)
+  for sibling in "${candidates[@]}"; do
+    if sh "$dest/validate-build-input.sh" github-meta "$sibling"; then
+      echo "WARNING: GitHub meta の取得に失敗しました。$sibling を再利用します" >&2
+      cp "$sibling" "$dest/github-meta.json"
+      return 0
+    fi
+    echo "WARNING: GitHub meta スナップショット $sibling は検証に通らないため使いません" >&2
+  done
+  echo "ERROR: GitHub meta の取得に失敗し、検証に通る既存スナップショットもありません（通信・未認証 API のレート制限・応答形式を確認してください）" >&2
+  return 77
 }
 
 log "## ビルド"

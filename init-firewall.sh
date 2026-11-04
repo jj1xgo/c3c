@@ -120,11 +120,15 @@ resolve_allowed_ports() {
 }
 resolve_allowed_ports
 
+# IPv4 の範囲の字面（a.b.c.d と、任意の /n）。値の範囲（0〜255、0〜32）は見ない。
+# add_cidr()・add_cidr_tagged()・load_github_ranges() が使う。
+readonly IPV4_CIDR_RE='^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$'
+
 # 世代タグなしの、素の CIDR ごとの ACCEPT。短い TTL で入れ替わらない範囲
 # （GitHub のビルド時スナップショット）に使い、削除の必要がない。
 add_cidr() {
   local cidr="$1" origin="$2"
-  if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
+  if [[ ! "$cidr" =~ $IPV4_CIDR_RE ]]; then
     echo "$origin の IPv4 以外の範囲をスキップします: $cidr"
     return 0
   fi
@@ -137,7 +141,7 @@ add_cidr() {
 # ルール（どちらも短い TTL では入れ替わらない）には使わない。
 add_cidr_tagged() {
   local cidr="$1" domain="$2" generation="$3"
-  if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
+  if [[ ! "$cidr" =~ $IPV4_CIDR_RE ]]; then
     echo "$domain の IPv4 以外の範囲をスキップします: $cidr"
     return 0
   fi
@@ -384,16 +388,49 @@ verify_ipv4() {
 # GitHub の範囲は起動のたびに API から取らない（未認証のレート制限は IP あたり 60 req/h）。
 # c3c の stage_build_context() がビルド時に 1 回取得して焼き込んだスナップショットを読む。
 # 範囲はめったに変わらないので、古い版でも使える。
+# 形（単一の JSON オブジェクトで、web・api・git が文字列の配列）、展開の成否、IPv4 の値の範囲と
+# 件数まで確かめる。ここで止まれば既存のルールには手を付けない（#228）。
 readonly GITHUB_META_SNAPSHOT=/etc/c3c/github-meta.json
 load_github_ranges() {
-  local meta
+  local meta expanded cidr addr prefix octet ipv4_count=0
+  local -a octets
   echo "ビルド時スナップショットから GitHub の IP 範囲を読み込んでいます..."
   meta=$(cat "$GITHUB_META_SNAPSHOT" 2>/dev/null || true)
-  if ! printf '%s\n' "$meta" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+  if ! printf '%s\n' "$meta" | jq -se 'length == 1 and (.[0] | type == "object") and ([.[0].web, .[0].api, .[0].git] | all(type == "array" and all(.[]; type == "string")))' >/dev/null 2>&1; then
     echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT がないか不正です" >&2
     exit 1
   fi
-  mapfile -t GITHUB_CIDRS < <(printf '%s\n' "$meta" | jq -r '(.web + .api + .git)[]' | sort -u)
+  if ! expanded=$(printf '%s\n' "$meta" | jq -r '(.web + .api + .git)[]' | sort -u); then
+    echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT の範囲を展開できませんでした" >&2
+    exit 1
+  fi
+  GITHUB_CIDRS=()
+  if [ -n "$expanded" ]; then
+    mapfile -t GITHUB_CIDRS <<< "$expanded"
+  fi
+  # IPv4 らしくない値（IPv6 など）は残し、add_cidr() が読み飛ばす。
+  for cidr in "${GITHUB_CIDRS[@]}"; do
+    [[ "$cidr" =~ $IPV4_CIDR_RE ]] || continue
+    addr=${cidr%%/*}
+    prefix=
+    [[ "$cidr" == */* ]] && prefix=${cidr#*/}
+    IFS=. read -r -a octets <<< "$addr"
+    for octet in "${octets[@]}"; do
+      if (( 10#$octet > 255 )); then
+        echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT に不正な IPv4 の範囲があります: $cidr" >&2
+        exit 1
+      fi
+    done
+    if [ -n "$prefix" ] && (( 10#$prefix > 32 )); then
+      echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT に不正な IPv4 の範囲があります: $cidr" >&2
+      exit 1
+    fi
+    ipv4_count=$((ipv4_count + 1))
+  done
+  if [ "$ipv4_count" -eq 0 ]; then
+    echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT に IPv4 の範囲がありません" >&2
+    exit 1
+  fi
 }
 
 # ホスト側のサービスへは、デフォルトルートのゲートウェイ 1 つだけを通す（/24 全体ではない、#31）。

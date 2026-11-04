@@ -266,3 +266,4 @@
 
 区分: 境界 — `init-firewall.sh` はエグレス制限の中心で、`docs/development-invariants.md` の fail-closed の不変条件に触れる。
 推奨実装: Opus — 判定順の 1〜5 に当たらず、c3c の既定では Claude Code 面の Sonnet になるが、セキュリティ境界を含むのでグローバル指示の Opus を推す条件に当たる。Task 1〜3 は逐語に近く設計判断はほぼ残らないが、`set -e` と条件の中の呼び出し、検査の順番を誤ると境界が黙って緩むため。Codex（判定順の 4・5）は当たらないので推さない。実行方法は executing-plans（Task が 5 つと少なく、Task 2 が Task 1 の `expect_output` に依存する）。
+実装: Opus（持ち主指定、2026-11-04。推奨どおり。このセッションの Opus 5.5 で executing-plans）

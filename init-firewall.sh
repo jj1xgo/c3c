@@ -417,13 +417,14 @@ load_github_ranges() {
     prefix=
     [[ "$cidr" == */* ]] && prefix=${cidr#*/}
     IFS=. read -r -a octets <<< "$addr"
+    # 先頭が 0 の 2 桁以上の値は、iptables が八進数として読むので止める（010 は 8 になる）。
     for octet in "${octets[@]}"; do
-      if (( 10#$octet > 255 )); then
+      if [[ "$octet" == 0?* ]] || (( 10#$octet > 255 )); then
         echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT に不正な IPv4 の範囲があります: $cidr" >&2
         exit 1
       fi
     done
-    if [ -n "$prefix" ] && (( 10#$prefix > 32 )); then
+    if [ -n "$prefix" ] && { [[ "$prefix" == 0?* ]] || (( 10#$prefix > 32 )); }; then
       echo "ERROR: GitHub meta のスナップショット $GITHUB_META_SNAPSHOT に不正な IPv4 の範囲があります: $cidr" >&2
       exit 1
     fi

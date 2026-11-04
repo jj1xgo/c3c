@@ -9,7 +9,7 @@
 #
 # UPDATE_EXPECTED=1 で、期待値ファイルを持つシナリオの記録を書き出す（disable_ipv6 の期待は
 # expect_ipv6_conf の引数で、書き出しの対象外）。
-# bad-meta・no-default-route・meta-*（形の崩れた meta の 7 つ）は、ルールを 1 つも変えずに止まることを判定する（EXPECT_EARLY_STOP=0 で rc だけの判定）。
+# bad-meta・no-default-route・meta-*（形の崩れた meta の 9 つ）は、ルールを 1 つも変えずに止まることを判定する（EXPECT_EARLY_STOP=0 で rc だけの判定）。
 set -euo pipefail
 export LC_ALL=C
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -291,6 +291,11 @@ run_scenario meta-bad-octet early -- 'TRACE_META={"web":["300.1.1.1/8"],"api":["
 expect_output meta-bad-octet "$m"; expect_output meta-bad-octet '不正な IPv4 の範囲があります: 300.1.1.1/8'
 run_scenario meta-bad-prefix early -- 'TRACE_META={"web":["1.2.3.4/40"],"api":["140.82.112.0/20"],"git":[]}'
 expect_output meta-bad-prefix "$m"; expect_output meta-bad-prefix '不正な IPv4 の範囲があります: 1.2.3.4/40'
+# 先頭が 0 の値は iptables が八進数として読むので、十進数の検査と食い違う（010 は 8）
+run_scenario meta-leading-zero-octet early -- 'TRACE_META={"web":["010.1.1.1/8"],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-leading-zero-octet "$m"; expect_output meta-leading-zero-octet '不正な IPv4 の範囲があります: 010.1.1.1/8'
+run_scenario meta-leading-zero-prefix early -- 'TRACE_META={"web":["1.2.3.4/08"],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-leading-zero-prefix "$m"; expect_output meta-leading-zero-prefix '不正な IPv4 の範囲があります: 1.2.3.4/08'
 run_scenario meta-no-ipv4 early -- 'TRACE_META={"web":[],"api":["2a0a:a440::/29"],"git":[]}'
 expect_output meta-no-ipv4 "$m"; expect_output meta-no-ipv4 'に IPv4 の範囲がありません'
 run_scenario meta-expand-fails early -- TRACE_JQ_EXPAND_FAIL=1

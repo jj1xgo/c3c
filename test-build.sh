@@ -881,6 +881,7 @@ run_launcher_tests() {
   check "DNS 応答の除外・継続・エラー処理" bash "${SCRIPT_DIR}/tests/test-refresh-domains.sh"
   check "DNS ルールの更新順序・世代非更新・期限切れ削除" bash "${SCRIPT_DIR}/tests/test-domain-rule-lifecycle.sh"
   check "ファイアウォール初期化のルールの組み立て（固定入力）" bash "${SCRIPT_DIR}/tests/test-firewall-init-trace.sh"
+  check "GitHub meta の検査（validate-build-input.sh と init-firewall.sh の判定の一致）" bash "${SCRIPT_DIR}/tests/test-github-meta-agreement.sh"
   log ""
 }
 

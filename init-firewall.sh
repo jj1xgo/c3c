@@ -121,7 +121,8 @@ resolve_allowed_ports() {
 resolve_allowed_ports
 
 # IPv4 の範囲の字面（a.b.c.d と、任意の /n）。値の範囲（0〜255、0〜32）は見ない。
-# add_cidr()・add_cidr_tagged()・load_github_ranges() が使う。
+# add_cidr() と load_github_ranges() が使う。add_cidr_tagged() は tests/ が関数だけを抜き出して
+# 走らせるので、この定数を使わず同じ字面を持つ。
 readonly IPV4_CIDR_RE='^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$'
 
 # 世代タグなしの、素の CIDR ごとの ACCEPT。短い TTL で入れ替わらない範囲
@@ -141,7 +142,7 @@ add_cidr() {
 # ルール（どちらも短い TTL では入れ替わらない）には使わない。
 add_cidr_tagged() {
   local cidr="$1" domain="$2" generation="$3"
-  if [[ ! "$cidr" =~ $IPV4_CIDR_RE ]]; then
+  if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
     echo "$domain の IPv4 以外の範囲をスキップします: $cidr"
     return 0
   fi

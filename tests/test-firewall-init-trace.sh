@@ -9,7 +9,7 @@
 #
 # UPDATE_EXPECTED=1 で、期待値ファイルを持つシナリオの記録を書き出す（disable_ipv6 の期待は
 # expect_ipv6_conf の引数で、書き出しの対象外）。
-# bad-meta・no-default-route は、ルールを 1 つも変えずに止まることを判定する（EXPECT_EARLY_STOP=0 で rc だけの判定）。
+# bad-meta・no-default-route・meta-*（形の崩れた meta の 9 つ）は、ルールを 1 つも変えずに止まることを判定する（EXPECT_EARLY_STOP=0 で rc だけの判定）。
 set -euo pipefail
 export LC_ALL=C
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -66,6 +66,8 @@ cp "$stubs/iptables" "$stubs/ip6tables"
 cat > "$stubs/dig" <<'STUB'
 #!/bin/bash
 if [ "$*" = "+short +time=2 +tries=2 A api.github.com" ]; then
+  [ "${TRACE_VERIFY:-}" = github-dig-empty ] && exit 0
+  [ "${TRACE_VERIFY:-}" = github-dig-fails ] && exit 9
   echo 140.82.112.5
   exit 0
 fi
@@ -93,6 +95,19 @@ echo ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1'
 printf '%s. 60 IN A %s\n' "$domain" "$ip"
 STUB
 chmod +x "$stubs/dig"
+
+# jq: 本物へ渡す。TRACE_JQ_EXPAND_FAIL=1 のときだけ、範囲の展開（-r の呼び出し）を
+# 1 行出した後に失敗させ、展開の終了コードを見ていることを確かめる（#228）。
+real_jq=$(command -v jq)
+cat > "$stubs/jq" <<STUB
+#!/bin/bash
+if [ "\${TRACE_JQ_EXPAND_FAIL:-0}" = 1 ] && [ "\${1:-}" = -r ]; then
+  echo 140.82.112.0/20
+  exit 5
+fi
+exec "$real_jq" "\$@"
+STUB
+chmod +x "$stubs/jq"
 
 # curl: verify_ipv4 の 2 つの呼び出しの形（上限時間を含む）だけを受け付ける。
 cat > "$stubs/curl" <<'STUB'
@@ -238,6 +253,15 @@ expect_ipv6_conf() {
   fi
 }
 
+# 直前のシナリオの標準出力・標準エラーに、固定文字列が含まれることを照合する。
+expect_output() {
+  local name="$1" want="$2"
+  if ! grep -qF -- "$want" "$tmp/$name.out"; then
+    echo "FAIL: $name: 出力に「$want」がありません" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # 成功
 run_scenario ipv4-resolver full
 expect_ipv6_conf ipv4-resolver 1
@@ -255,11 +279,37 @@ run_scenario ipv6-prepare-fails full --ipv6 -- TRACE_HELPER_FAIL=prepare
 # ルールを変える前に止まる
 run_scenario bad-meta early -- 'TRACE_META={"web":[]}'
 run_scenario no-default-route early -- TRACE_NO_DEFAULT_ROUTE=1
+# 形の崩れた meta のスナップショット（#228）。共通の接頭辞と、検査ごとに固有の部分を別々に照合する。
+m='ERROR: GitHub meta のスナップショット'
+run_scenario meta-not-array early -- 'TRACE_META={"web":1,"api":1,"git":1}'
+expect_output meta-not-array "$m"; expect_output meta-not-array 'がないか不正です'
+run_scenario meta-non-string early -- 'TRACE_META={"web":[1],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-non-string "$m"; expect_output meta-non-string 'がないか不正です'
+run_scenario meta-concatenated early -- 'TRACE_META={"web":[1],"api":[],"git":[]} {"web":["192.30.252.0/22"],"api":[],"git":[]}'
+expect_output meta-concatenated "$m"; expect_output meta-concatenated 'がないか不正です'
+run_scenario meta-bad-octet early -- 'TRACE_META={"web":["300.1.1.1/8"],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-bad-octet "$m"; expect_output meta-bad-octet '不正な IPv4 の範囲があります: 300.1.1.1/8'
+run_scenario meta-bad-prefix early -- 'TRACE_META={"web":["1.2.3.4/40"],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-bad-prefix "$m"; expect_output meta-bad-prefix '不正な IPv4 の範囲があります: 1.2.3.4/40'
+# 先頭が 0 の値は iptables が八進数として読むので、十進数の検査と食い違う（010 は 8）
+run_scenario meta-leading-zero-octet early -- 'TRACE_META={"web":["010.1.1.1/8"],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-leading-zero-octet "$m"; expect_output meta-leading-zero-octet '不正な IPv4 の範囲があります: 010.1.1.1/8'
+run_scenario meta-leading-zero-prefix early -- 'TRACE_META={"web":["1.2.3.4/08"],"api":["140.82.112.0/20"],"git":[]}'
+expect_output meta-leading-zero-prefix "$m"; expect_output meta-leading-zero-prefix '不正な IPv4 の範囲があります: 1.2.3.4/08'
+run_scenario meta-no-ipv4 early -- 'TRACE_META={"web":[],"api":["2a0a:a440::/29"],"git":[]}'
+expect_output meta-no-ipv4 "$m"; expect_output meta-no-ipv4 'に IPv4 の範囲がありません'
+run_scenario meta-expand-fails early -- TRACE_JQ_EXPAND_FAIL=1
+expect_output meta-expand-fails "$m"; expect_output meta-expand-fails 'の範囲を展開できませんでした'
 # 自己検証（1 項目だけを期待と逆にする）
 run_scenario verify-example-reachable full -- TRACE_VERIFY=example-reachable
 run_scenario verify-github443-blocked full -- TRACE_VERIFY=github443-blocked
 run_scenario verify-anthropic-blocked full -- TRACE_VERIFY=anthropic-blocked
 run_scenario verify-github80-reachable full -- TRACE_VERIFY=github80-reachable
+# api.github.com の解決が空（dig は rc 0）と、dig 自体の失敗（#229）
+run_scenario verify-github-dig-empty full -- TRACE_VERIFY=github-dig-empty
+expect_output verify-github-dig-empty 'ERROR: ファイアウォール検証に失敗しました。api.github.com の IPv4 アドレスを解決できません'
+run_scenario verify-github-dig-fails full -- TRACE_VERIFY=github-dig-fails
+expect_output verify-github-dig-fails 'ERROR: ファイアウォール検証に失敗しました。api.github.com の IPv4 アドレスを解決できません'
 run_scenario ipv6-verify-fails full --ipv6 -- TRACE_HELPER_FAIL=verify
 
 if [ "$fail" -ne 0 ]; then

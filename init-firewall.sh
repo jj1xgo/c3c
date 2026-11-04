@@ -47,9 +47,9 @@ done
 
 # CHAIN 経由の ACCEPT ルール（下の add_cidr/add_cidr_tagged）が、それ以外は許可された
 # IP に対して許可するポート（#31）。init モードと --refresh-domains モードの
-# 両方が同じ値を見るよう、ここで一度だけ読む。DNS リゾルバのルールや
-# ホストネットワークのルールには適用されない — それらは CHAIN を完全にバイパスし、
-# 制限なしのままとなる（allow_dns()・allow_host_gateway() はチェーンを通さずに OUTPUT・INPUT へ直接入れる）。
+# 両方が同じ値を見るよう、ここで一度だけ読む。DNS リゾルバのルールと
+# ホストネットワークのルールには適用されず、制限なしのままとなる。どちらも CHAIN を
+# 通さずに直接入れる（allow_dns() は OUTPUT だけ、allow_host_gateway() は INPUT と OUTPUT）。
 resolve_allowed_ports() {
   local -a ports=()
   local raw lo hi

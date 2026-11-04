@@ -1,8 +1,9 @@
 #!/bin/bash
 # test-github-meta-agreement.sh — GitHub meta のスナップショットの検査（#238）
 #
-# validate-build-input.sh の kind github-meta（ビルド時の検査）が、表の入力に
-# 期待どおりの rc を返すことを確かめる。
+# validate-build-input.sh の kind github-meta（ビルド時の検査）と、init-firewall.sh の
+# load_github_ranges()（起動時の検査）が、同じ入力に表のとおりの rc を返すことを
+# 確かめる。init の関数は init-firewall.sh から抜き出して走らせる（init は変えない）。
 #
 # 表の 1 行は「名前|検証器の期待 rc|init の期待 rc|ファイルの中身」。中身は
 # 書いてある文字のまま printf '%s\n' で書く（エスケープを展開しない。\n・\u0000 は
@@ -13,6 +14,7 @@ export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VALIDATOR="$SCRIPT_DIR/validate-build-input.sh"
+INIT="$SCRIPT_DIR/init-firewall.sh"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -69,12 +71,31 @@ run_validator() {
   echo "$rc"
 }
 
-while IFS='|' read -r name want_v _want_i content; do
+INIT_FUNCS="$WORK/init-funcs.sh"
+{
+  grep '^readonly IPV4_CIDR_RE=' "$INIT" || true
+  sed -n '/^load_github_ranges() {/,/^}/p' "$INIT"
+} > "$INIT_FUNCS"
+if ! grep -q '^readonly IPV4_CIDR_RE=' "$INIT_FUNCS" || ! grep -q '^load_github_ranges() {' "$INIT_FUNCS"; then
+  echo "FAIL: init-firewall.sh から load_github_ranges を抜き出せません" >&2
+  exit 1
+fi
+
+run_init() {
+  local rc=0
+  GITHUB_META_SNAPSHOT="$1" bash -c 'set -euo pipefail; source "$0"; load_github_ranges' "$INIT_FUNCS" >/dev/null 2>&1 || rc=$?
+  echo "$rc"
+}
+
+while IFS='|' read -r name want_v want_i content; do
   file="$WORK/$name.json"
   printf '%s\n' "$content" > "$file"
   got=$(run_validator github-meta "$file")
   COUNT=$((COUNT + 1))
   [ "$got" = "$want_v" ] || fail "$name: 検証器 rc=$got (期待 $want_v)"
+  got=$(run_init "$file")
+  COUNT=$((COUNT + 1))
+  [ "$got" = "$want_i" ] || fail "$name: init rc=$got (期待 $want_i)"
 done <<< "$CASES"
 
 # 検証器の契約（init の列は使わない）。

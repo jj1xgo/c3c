@@ -19,6 +19,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 META = b'{"web":["192.0.2.0/24"],"api":["192.0.2.0/24"],"git":["192.0.2.0/24"]}'
+# 今の弱い検査（.web and .api and .git）は通るが、init と同じ規則には反する応答（#238）。
+WEAK = b'{"web":[1],"api":[],"git":[]}'
 ASSET_RESOLVER = '''resolve_asset_source() {
   ASSET_PATH="$SOURCE_ROOT/$1"
   if [[ -e "$ASSET_PATH" ]]; then ASSET_ORIGIN=repo; else ASSET_ORIGIN=missing; fi
@@ -73,7 +75,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b'not json' if mode == 'invalid' else META)
+        self.wfile.write({'invalid': b'not json', 'weak': WEAK}.get(mode, META))
 
 
 class NetworkTimeoutTests(unittest.TestCase):
@@ -156,6 +158,15 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
         self.assertLess(time.monotonic() - start, 11, result.stderr)
         return result
 
+    def write_snapshot(self, name, data, mtime=None):
+        dest = self.run_dir / '.build-context' / name
+        dest.mkdir(parents=True, exist_ok=True)
+        path = dest / 'github-meta.json'
+        path.write_bytes(data)
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
     def test_success_stages_valid_snapshot_in_both_callers(self):
         for kind in ('launcher', 'build'):
             with self.subTest(kind=kind):
@@ -213,6 +224,67 @@ os.execv(os.environ['REAL_TIMEOUT'], ['timeout', *args])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('WARNING:', result.stderr)
                 self.assertEqual((self.stage / 'github-meta.json').read_bytes(), META + b'\n')
+
+    def test_weak_response_falls_back_to_sibling_in_both_callers(self):
+        for kind in ('launcher', 'build'):
+            with self.subTest(kind=kind):
+                (self.stage / 'github-meta.json').unlink(missing_ok=True)
+                result = self.run_meta(kind, 'weak', 'sibling')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('WARNING:', result.stderr)
+                self.assertEqual((self.stage / 'github-meta.json').read_bytes(), META + b'\n')
+
+    def test_broken_own_snapshot_is_skipped_for_sibling(self):
+        self.write_snapshot('current', WEAK + b'\n')
+        self.write_snapshot('other', META + b'\n')
+        result = self.run_meta('launcher', 'invalid')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('は検証に通らないため使いません', result.stderr)
+        self.assertEqual((self.stage / 'github-meta.json').read_bytes(), META + b'\n')
+
+    def test_broken_newest_sibling_is_skipped_for_older(self):
+        older = b'{"web":["198.51.100.0/24"],"api":[],"git":[]}\n'
+        for kind in ('launcher', 'build'):
+            with self.subTest(kind=kind):
+                # 前の回の cp が置いた正しいファイルが候補に入ると、崩れた候補を
+                # 飛ばす処理を通らずに当たってしまうので、回ごとに消す。
+                (self.run_dir / '.build-context' / 'current' / 'github-meta.json').unlink(missing_ok=True)
+                (self.root / 'build-stage' / 'github-meta.json').unlink(missing_ok=True)
+                self.write_snapshot('newer', WEAK + b'\n', time.time() + 100)
+                self.write_snapshot('older', older, time.time() - 100)
+                result = self.run_meta(kind, 'invalid')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('は検証に通らないため使いません', result.stderr)
+                self.assertEqual((self.stage / 'github-meta.json').read_bytes(), older)
+
+    def test_all_snapshots_broken_fails(self):
+        for kind, rc in (('launcher', 1), ('build', 77)):
+            with self.subTest(kind=kind):
+                own = self.write_snapshot('current', WEAK + b'\n')
+                self.write_snapshot('other', b'not json\n')
+                result = self.run_meta(kind, 'invalid')
+                self.assertEqual(result.returncode, rc, result.stderr)
+                self.assertIn('ERROR:', result.stderr)
+                if kind == 'launcher':
+                    self.assertEqual(own.read_bytes(), WEAK + b'\n')
+
+    def test_failed_copy_of_fallback_snapshot_fails(self):
+        # 検証に通った候補のコピーが失敗したら、成功を返さない（PR 前のレビュー、Sol I1）。
+        (self.bin / 'cp').write_text('''#!/bin/sh
+for last; do :; done
+case "$last" in
+  */github-meta.json) echo "cp: 書き込めません（テスト）" >&2; exit 1 ;;
+esac
+exec "$REAL_CP" "$@"
+''')
+        (self.bin / 'cp').chmod(0o755)
+        self.env['REAL_CP'] = shutil.which('cp')
+        for kind in ('launcher', 'build'):
+            with self.subTest(kind=kind):
+                (self.run_dir / '.build-context' / 'current' / 'github-meta.json').unlink(missing_ok=True)
+                result = self.run_meta(kind, 'invalid', 'sibling')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('書き込めません（テスト）', result.stderr)
 
     def test_connection_refused_without_cache_fails(self):
         # bind 済み・listen していないポートへ実 curl を接続する。

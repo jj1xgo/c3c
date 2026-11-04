@@ -2455,9 +2455,11 @@ stage_build_context() {
   # GitHub meta スナップショット。init-firewall.sh のファイアウォール許可リストが使う
   # GitHub IP レンジの取得元。未認証 GitHub API のレート制限（60 req/h/IP）を消費するのは
   # ここ1箇所のみ（起動時にはライブ取得しない）。失敗時は (1) このプロジェクトの前回
-  # ステージング分（.build-context/<project>/ は --clean まで永続する）、(2) それも無ければ
-  # 他プロジェクトの最新スナップショット（GitHub IP レンジは変更頻度が低いため実用上問題ない）
-  # を警告付きで再利用し、いずれも無ければビルドを止める。
+  # ステージング分（.build-context/<project>/ は --clean まで永続する）、(2) それも無いか
+  # 検証に通らなければ、他プロジェクトのスナップショットを新しい順に（GitHub IP レンジは変更頻度が低いため実用上
+  # 問題ない）見て、警告付きで再利用し、いずれも無ければビルドを止める。取得したものも
+  # (1)(2) も、どれも validate-build-input.sh の github-meta の検査（init-firewall.sh の
+  # load_github_ranges() と同じ規則、#238）に通るものだけを使う。
   local gh_meta sibling fetch_rc
   gh_meta=$(mktemp "$BUILD_CONTEXT_DIR/github-meta.XXXXXX") || return 1
   # curl の --max-time は試行ごとにリセットされる。Retry-After の待機も含め
@@ -2469,7 +2471,7 @@ stage_build_context() {
     timeout --foreground --kill-after=5 90 curl -q -fsS --connect-timeout 10 --max-time 30 \
       --retry 2 --retry-connrefused --retry-max-time 60 \
       --output "$gh_meta" https://api.github.com/meta \
-      && jq -e '.web and .api and .git' "$gh_meta" >/dev/null 2>&1 \
+      && sh "$BUILD_CONTEXT_DIR/validate-build-input.sh" github-meta "$gh_meta" \
       && mv "$gh_meta" "$BUILD_CONTEXT_DIR/github-meta.json"
   ); then
     return 0
@@ -2477,16 +2479,30 @@ stage_build_context() {
     fetch_rc=$?
   fi
   echo "WARNING: GitHub meta の取得・検証に失敗しました（rc=$fetch_rc、接続10秒・1試行30秒・再試行2回・全体90秒上限）。通信・レート制限・応答形式を確認してください" >&2
-  # shellcheck disable=SC2012 # ls は下の elif のみ。パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
+  # 候補ごとに検証器を呼び、標準エラーは捨てない（通らない理由が WARNING の前に出る）。
   if [[ -f "$BUILD_CONTEXT_DIR/github-meta.json" ]]; then
-    echo "WARNING: 前回ステージングした GitHub meta スナップショットを再利用します" >&2
-  elif sibling=$(ls -t "$RUN_DIR"/.build-context/*/github-meta.json 2>/dev/null | head -1) && [[ -n "$sibling" ]]; then
-    echo "WARNING: GitHub meta の取得に失敗し、このプロジェクトのスナップショットもありません。別プロジェクトのスナップショットを再利用します（$sibling）" >&2
-    cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json"
-  else
-    echo "ERROR: GitHub meta を取得できず、過去のスナップショットもありません。上記の原因を確認して再試行してください" >&2
-    exit 1
+    if sh "$BUILD_CONTEXT_DIR/validate-build-input.sh" github-meta "$BUILD_CONTEXT_DIR/github-meta.json"; then
+      echo "WARNING: 前回ステージングした GitHub meta スナップショットを再利用します" >&2
+      return 0
+    fi
+    echo "WARNING: GitHub meta スナップショット $BUILD_CONTEXT_DIR/github-meta.json は検証に通らないため使いません" >&2
   fi
+  # 配列に読んで for で回す（ls … | while ではパイプの右側がサブシェルになり、
+  # 中の return と exit が関数に伝わらない）。
+  local -a candidates=()
+  # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
+  mapfile -t candidates < <(ls -t "$RUN_DIR"/.build-context/*/github-meta.json 2>/dev/null)
+  for sibling in "${candidates[@]}"; do
+    [[ "$sibling" -ef "$BUILD_CONTEXT_DIR/github-meta.json" ]] && continue
+    if sh "$BUILD_CONTEXT_DIR/validate-build-input.sh" github-meta "$sibling"; then
+      echo "WARNING: 別プロジェクトの GitHub meta スナップショットを再利用します（$sibling）" >&2
+      cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json" || exit 1
+      return 0
+    fi
+    echo "WARNING: GitHub meta スナップショット $sibling は検証に通らないため使いません" >&2
+  done
+  echo "ERROR: GitHub meta を取得できず、検証に通る過去のスナップショットもありません。上記の原因を確認して再試行してください" >&2
+  exit 1
 }
 
 # 境界アセットのドリフト検知（`#30`）。通常起動時・--check の

@@ -355,10 +355,12 @@ RUN chmod 755 /usr/local/bin/git-askpass.sh
 # ビルドコンテキストへ取得する（ここでは取得しないので、このステップ自体は
 # 未認証の GitHub API のレート制限に一切触れない）。init-firewall.sh は実行時に
 # このスナップショットのみを読む — もはや動的な取得はしない。他のファイアウォール
-# アセットと同様に root 所有。
+# アセットと同様に root 所有。c3c と同じ validate-build-input.sh の github-meta の
+# 検査をここでも行う（#238）。
 COPY github-meta.json /etc/c3c/github-meta.json
-RUN chmod 644 /etc/c3c/github-meta.json && \
-  jq -e '.web and .api and .git' /etc/c3c/github-meta.json >/dev/null
+RUN set -e; \
+    chmod 644 /etc/c3c/github-meta.json; \
+    sh /tmp/validate-build-input.sh github-meta /etc/c3c/github-meta.json || exit 1
 
 # 境界アセット（ASSET_HASH_TARGETS に列挙）: init-firewall.sh・git-askpass.sh と
 # 同じ root 所有の /usr/local/bin に置くことで、ファイル自体もそれを保持する

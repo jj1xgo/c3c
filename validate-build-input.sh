@@ -1,8 +1,10 @@
 #!/bin/sh
-# validate-build-input.sh — packages.txt / requirements.txt のビルド時インジェクション対策検証
+# validate-build-input.sh — packages.txt / requirements.txt のビルド時インジェクション対策検証と
+#                           GitHub meta のスナップショットの検査
 #
 # 使い方: validate-build-input.sh <kind> <infile> [outfile]
 #   kind    : packages | requirements
+#             | github-meta（outfile を取らない。GitHub meta のスナップショットの検査、#238）
 #   infile  : 検証対象（正規化前）
 #   outfile : 省略時は正規化結果を書き出さない（--check 用の dry-run）
 #
@@ -16,6 +18,9 @@
 # 責務は正規化と照合のみ。インストール・ネットワークアクセスは行わない。
 # ビルド時（Dockerfile.claude の RUN）・起動前診断（--check）・テスト（test-build.sh）
 # の3者が同じスクリプトを呼ぶ（#34）。
+# github-meta は照合だけで正規化しない。c3c の stage_build_context()・test-build.sh の
+# stage_common_context()・Dockerfile.claude の RUN が呼ぶ。規則は init-firewall.sh の
+# load_github_ranges() と同じで、一致は tests/test-github-meta-agreement.sh が確かめる。
 
 set -e
 export LC_ALL=C
@@ -36,8 +41,14 @@ case "$VBI_KIND" in
   requirements)
     VBI_RE='^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*\])?((==|!=|<=|>=|<|>|~=|===)[A-Za-z0-9.*+!]+(,(==|!=|<=|>=|<|>|~=|===)[A-Za-z0-9.*+!]+)*)?$'
     ;;
+  github-meta)
+    if [ "$#" -eq 3 ]; then
+      echo "error: github-meta は outfile を取りません" >&2
+      exit 2
+    fi
+    ;;
   *)
-    echo "error: 未知の kind です: $VBI_KIND（packages か requirements を想定）" >&2
+    echo "error: 未知の kind です: $VBI_KIND（packages・requirements・github-meta を想定）" >&2
     exit 2
     ;;
 esac
@@ -64,6 +75,49 @@ VBI_NONUL_BYTES=$(wc -c < "$VBI_TMPDIR/nonul") || exit 2
 if [ "$VBI_TOTAL_BYTES" -ne "$VBI_NONUL_BYTES" ]; then
   echo "error: $VBI_INFILE に NUL バイトが含まれています（拒否）" >&2
   exit 1
+fi
+
+if [ "$VBI_KIND" = "github-meta" ]; then
+  # init-firewall.sh の load_github_ranges() の規則を jq に写したもの（#238）。
+  # 単一の JSON オブジェクトで、web・api・git が文字列の配列。IPv4 らしい値は
+  # どれも範囲内（オクテット 0〜255、プレフィックス /0〜/32、2 桁以上で先頭 0 は
+  # 不可）で、1 件以上ある。split("\n") は init がコマンド置換の出力を行に分けるのに
+  # 合わせる。init はコマンド置換で NUL を落として読むので、NUL を含む文字列は
+  # 1 つでも拒否する（落とすと別の値になる値を読み飛ばして init より緩くしない）。
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "error: jq がありません" >&2
+    exit 2
+  fi
+  VBI_JQ_RC=0
+  jq -se '
+    def ipv4: test("^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}(/[0-9]{1,2})?$");
+    def part($max): (length == 1 or (startswith("0") | not)) and (tonumber <= $max);
+    length == 1 and (.[0] | type == "object")
+    and ([.[0].web, .[0].api, .[0].git] | all(type == "array" and all(.[]; type == "string" and (explode | all(. != 0)))))
+    and ([.[0].web[], .[0].api[], .[0].git[] | split("\n")[] | select(ipv4)]
+         | length >= 1
+           and all(split("/") as $p
+                   | ($p[0] | split(".") | all(part(255)))
+                     and ($p[1] == null or ($p[1] | part(32)))))
+  ' "$VBI_INFILE" >/dev/null 2>&1 || VBI_JQ_RC=$?
+  # jq の終了コード: 0 = 適合、1 = 結果が false・null、2・4・5 = 入力を解析できない
+  # （-e と組むと jq 1.6 は 4〈結果が 1 つも出ない〉、1.7 以降は 5。2 は -e の無いときの
+  # 1.6 の値）。この式は解析できた入力には必ず真偽値を 1 つ出すので、4 は解析の失敗の
+  # ときにしか出ない（Debian bookworm の jq 1.6 で確かめた）。それ以外（3 = 式の誤り
+  # など）は診断不能。
+  case "$VBI_JQ_RC" in
+    0)
+      exit 0
+      ;;
+    1|2|4|5)
+      echo "error: $VBI_INFILE は GitHub meta のスナップショットとして不正です" >&2
+      exit 1
+      ;;
+    *)
+      echo "error: GitHub meta の検査に失敗しました（jq rc=$VBI_JQ_RC）" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 VBI_NORM_TMP="$VBI_TMPDIR/norm"

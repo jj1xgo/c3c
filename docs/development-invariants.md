@@ -107,9 +107,10 @@ c3c 本体を変更する開発者（AI エージェントを含む）向けに�
   - PATH の先頭が既に `CODEX_BWRAP_DIR` なら一字も変えない（Codex 経路で entrypoint が渡す PATH を全段で一致させるため）。そうでなければ先頭へ一度加える。export されていない PATH（環境に PATH が無いとき bash が持つ `.` を含む既定値）と空の PATH は未設定として扱い、`CODEX_BWRAP_DIR` だけにする（カレントディレクトリを PATH に入れない）。
   - PATH を変えるのは exec した Codex とその子孫だけ。呼び出し元（Claude 本体など）の PATH は変えない。固定値と文言の一致は `tests/test_codex_launcher.py` が `entrypoint.sh` と照合する。
 - **`validate-build-input.sh`**（`#34`）
-  - `packages.txt`/`requirements.txt` の検証はこのスクリプト**単独が正本**。`Dockerfile.claude`・`--check`・`test-build.sh` は呼び出すだけで、各自が regex・正規化を再実装しない（複製すると3者の判定がドリフトする）。
+  - `packages.txt`/`requirements.txt` と GitHub meta のスナップショット（kind `github-meta`、`#238`）の検証はこのスクリプト**単独が正本**。`Dockerfile.claude`・`--check`・`test-build.sh` は呼び出すだけで、各自が regex・正規化を再実装しない（複製すると3者の判定がドリフトする）。
+  - `init-firewall.sh` の `load_github_ranges()` は起動時の関門として同じ規則を自分で持つ（イメージの中で検証器を呼ばない）。2 つの判定の一致は `tests/test-github-meta-agreement.sh` が確かめ、検証器は init より緩くしない。
   - 終了コード契約 0/1/2（0=適合／1=不適合・outfile 不変／2=診断不能・outfile 不変）と「`outfile` は成功時にのみ確定させる」を変えない。
-  - `#!/bin/sh`・POSIX sh の範囲を維持する（ビルド時はコンテナ内の dash、`--check`・`test-build.sh` はホストの sh で走るため）。
+  - `#!/bin/sh`・POSIX sh の範囲を維持する（ビルド時はコンテナ内の dash、`--check`・`test-build.sh` と `c3c` の staging〈`github-meta`〉はホストの sh で走るため）。
   - `resolve_asset_source()` では `fixed` に置き、利用側の設定ディレクトリ（`.c3c/`）から差し替え可能にしない。
 - **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — c3c 同梱のデフォルト（フォールバック値）。`allowed-ports.txt`・`base-image.txt`（一覧は README「利用側プロジェクトの設定」節）は同梱デフォルトを持たず、未配置でも WARNING を出さない（上記3ファイルとの非対称は既知。経緯は `#7`）。
 - **`node-version.txt`** / **`codex-version.txt`**（c3c 第2b-2段階）— 同梱 default は Node.js が固定版 `24.18.0`、Codex CLI が `latest`（`test-build.sh` は Node.js の固定値と、Codex のインストール済み npm パッケージの版に対して CLI の表示を照合する）。`resolve_asset_source()` では `packages.txt` と同じ overridable（project 優先→`$RUN_DIR` の default）に置き、project 側の**空ファイルを missing と同一視しない**（空の内容がそのままステージ・ハッシュされる明示 opt-out。計画 §8-5: 空を default で埋めると Codex を勝手に導入する）。`stage_build_context()` で「`missing` なら空ファイル生成」の分岐に戻さない。採用元（project / 同梱 default / 空 opt-out）の表示と Node 空＋Codex 有効の WARNING は `guard_build_input_defaults()` が両モードで行い、ここで別の解決規則を持たない（resolver の結果だけを見る）。この WARNING は `guard_warn` に留める — ベースイメージや `packages.txt` で npm が入るかはホスト側では判定できず、fail-closed の判定は Dockerfile.claude の npm 検査が担う。同梱 default の変更は `ASSET_HASH` に入るため、pin していない全利用側でドリフト診断が出る（意図した挙動。旧イメージは自動削除しない）。

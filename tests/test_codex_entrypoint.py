@@ -388,6 +388,56 @@ class ComposeContractTests(EntrypointCase):
         self.assertEqual(len(mounts), 1, result.stdout)
         return mounts[0]
 
+    def compose_config(self, overrides):
+        podman = shutil.which('podman')
+        if podman is None:
+            self.skipTest('podman が無いため compose の実解決を確認できない')
+        home = Path(self.env['HOME'])
+        (home / '.claude').mkdir(parents=True, exist_ok=True)
+        (home / '.claude.json').touch()
+        (home / '.claude' / '.claude.json').touch()
+        env = {'PATH': os.environ['PATH'], 'HOME': self.env['HOME'], 'BUILD_CONTEXT_DIR': str(self.root),
+               'CONTEXT': str(self.workspace), 'C3C_DIR': str(ROOT)}
+        env.update(overrides)
+        result = subprocess.run([podman, 'compose', '-f', str(ROOT / 'compose.yml'), '--env-file', '/dev/null', 'config'],
+                                env=env, cwd=self.root, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    @staticmethod
+    def env_value(config_text, key):
+        for line in config_text.splitlines():
+            match = re.match(r'^\s+' + re.escape(key) + r':\s*(.*?)\s*$', line)
+            if match:
+                value = match.group(1)
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in '\'"':
+                    value = value[1:-1]
+                return value
+        return None
+
+    def test_project_dir_env_and_claude_json_mount(self):
+        # #241: 名前は launcher の C3C_CLAUDE_PROJECT_DIR_NAME から渡す。CLAUDE_CONFIG_DIR は entrypoint.sh が確定し、
+        # compose の environment には書かない（podman-compose がその値で volumes の ${CLAUDE_CONFIG_DIR:-~} を補間するため）。
+        home = Path(self.env['HOME'])
+        cfg = self.root / 'cfg'
+        (cfg / '.claude').mkdir(parents=True)
+        (cfg / '.claude.json').touch()
+        (cfg / '.claude' / '.claude.json').touch()
+        text = self.compose_config({'C3C_CLAUDE_PROJECT_DIR_NAME': 'proj-0123abcd', 'CLAUDE_CONFIG_DIR': str(cfg)})
+        self.assertIsNone(self.env_value(text, 'CLAUDE_CONFIG_DIR'), text)
+        self.assertEqual(self.env_value(text, 'CLAUDE_CODE_PROJECT_DIR_NAME'), 'proj-0123abcd', text)
+        # 重ねマウント: 基点の .claude.json を /home/node/.claude/.claude.json にも rw で載せる（既存の bind は残す）
+        self.assertEqual(volume_mounts(text, '/home/node/.claude/.claude.json'), [(str(cfg / '.claude.json'), False)], text)
+        self.assertEqual(volume_mounts(text, '/home/node/.claude.json'), [(str(cfg / '.claude.json'), False)], text)
+        # 未設定の名前は既定値を作らず空のまま entrypoint の検証に届く（`:-` ではなく `-`）
+        unset = self.compose_config({})
+        self.assertIn(self.env_value(unset, 'CLAUDE_CODE_PROJECT_DIR_NAME'), ('', None), unset)
+        # provider は ~ を展開せずに出すことがある（podman-compose）ので、~ をこの HOME に読み替えて比べる
+        def expand(mounts):
+            return [(str(home) + src[1:] if src and src.startswith('~/') else src, ro) for src, ro in mounts]
+        self.assertEqual(expand(volume_mounts(unset, '/home/node/.claude/.claude.json')), [(str(home / '.claude.json'), False)], unset)
+        self.assertEqual(expand(volume_mounts(unset, '/home/node/.claude')), [(str(home / '.claude'), False)], unset)
+
     def test_volume_mounts_reads_short_and_long_forms(self):
         # podman-compose は短縮形、CI の Docker Compose は長形式で volume を出すので、両方を読めることを固定する。
         short = '    volumes:\n      - /a/b.gitconfig:/home/node/.gitconfig:ro\n      - /x:/workspace\n'

@@ -52,9 +52,23 @@ services:
       # Claude 経路の起動モード（#163）。preflight は project 設定ゲートの検査用コンテナ。launcher が
       # 明示 export する。未設定のときだけ run（空文字を含む不正値は entrypoint が拒否する）。
       CC_CLAUDE_START_MODE: ${CC_CLAUDE_START_MODE-run}
+      # コンテナの中の Claude Code の記録（transcript と auto memory）をプロジェクトごとに分ける（#241）。
+      # Claude Code は CLAUDE_CONFIG_DIR と一緒に設定したときだけ CLAUDE_CODE_PROJECT_DIR_NAME を使い、
+      # <CLAUDE_CONFIG_DIR>/projects/<名前>/ に書く（作業ディレクトリがどれも /workspace なので、無いと全
+      # プロジェクトが projects/-workspace/ を共有する）。名前は launcher が PROJECT_NAME から export した値だけを
+      # 使い、未設定でも既定値を作らない（`-`。`:-` にしない）。entrypoint.sh が検証する。
+      # CLAUDE_CONFIG_DIR=/home/node/.claude はここに書かず、entrypoint.sh が固定値で確定する。podman-compose は
+      # ホストに無い変数を service の environment の値で補間するので、ここに書くと volumes の
+      # ${CLAUDE_CONFIG_DIR:-~} がすべて /home/node/.claude に化ける（podman-compose 1.6.0 で確認。lint.sh が不在を検査）。
+      CLAUDE_CODE_PROJECT_DIR_NAME: ${C3C_CLAUDE_PROJECT_DIR_NAME-}
     volumes:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude.json:/home/node/.claude.json
       - ${CLAUDE_CONFIG_DIR:-~}/.claude:/home/node/.claude
+      # CLAUDE_CONFIG_DIR を設定すると Claude Code は .claude.json を $CLAUDE_CONFIG_DIR/.claude.json から読む
+      # （#241）。同じホストのファイルをそこにも重ね、ログインと設定を今までどおり共有する（rw）。
+      # マウント先 <基点>/.claude/.claude.json は、無いと podman がサブ uid 所有の実体を作るので、
+      # c3c の prepare_claude_json_mountpoint() が起動直前に空で作る（:ro 保護の 13 項目には数えない）。
+      - ${CLAUDE_CONFIG_DIR:-~}/.claude.json:/home/node/.claude/.claude.json
       # ホストの ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、
       # 上の rw マウントの内側に :ro で重ねてコンテナから書き換え不能にする。
       # 侵害されたセッションが hook/skill/plugin 等を書くと、次にホストで Claude Code

@@ -261,6 +261,15 @@ elif command -v podman >/dev/null 2>&1; then
       || { echo "ERROR: compose.yml の environment に CC_CODEX_START_MODE がありません" >&2; status=1; }
     grep -qE '^\s*CC_CLAUDE_START_MODE:' <<<"$base" \
       || { echo "ERROR: compose.yml の environment に CC_CLAUDE_START_MODE がありません" >&2; status=1; }
+    # #241: コンテナの Claude Code の記録の置き場をプロジェクトごとに分ける 2 つの値。
+    # CLAUDE_CONFIG_DIR は entrypoint.sh が確定する。environment に書くと podman-compose が volumes の
+    # ${CLAUDE_CONFIG_DIR:-~} をその値で補間し、ホストの基点が化ける（Docker Compose では起きない）。
+    if grep -qE '^\s*CLAUDE_CONFIG_DIR:' <<<"$base"; then
+      echo "ERROR: compose.yml の environment に CLAUDE_CONFIG_DIR があります（volumes の補間が化けるため、entrypoint.sh で確定してください）" >&2
+      status=1
+    fi
+    grep -qE '^\s*CLAUDE_CODE_PROJECT_DIR_NAME:' <<<"$base" \
+      || { echo "ERROR: compose.yml の environment に CLAUDE_CODE_PROJECT_DIR_NAME がありません" >&2; status=1; }
     # 対照: 基本構成は TTY 有効なので、同じ検査が失敗しなければ検査自体が空振りしている。
     if compose_tty_disabled <<<"$base" 2>/dev/null; then
       echo "ERROR: compose.yml 単体の config に tty: true が無く、compose_tty_disabled の検査が空振りしています" >&2

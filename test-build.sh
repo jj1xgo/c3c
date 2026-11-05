@@ -524,6 +524,9 @@ run_config_ro_tests() {
   cfg="$root/.claude"
   mkdir -p "$cfg/projects"
   echo '{}' > "$root/.claude.json"
+  # .claude.json の重ねマウント先（#241。launcher の prepare_claude_json_mountpoint() と同じく空で用意する。
+  # 無いと podman がサブ uid 所有の実体を作る）
+  : > "$cfg/.claude.json"
   for d in "${CONFIG_RO_DIRS[@]}"; do mkdir -p "$cfg/$d"; echo seed > "$cfg/$d/seed"; done
   for f in "${CONFIG_RO_FILES[@]}"; do echo seed > "$cfg/$f"; done
 
@@ -537,6 +540,18 @@ run_config_ro_tests() {
     CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
     podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
       run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_RO_PROBE"
+  # .claude.json の重ねマウント（#241）: コンテナの /home/node/.claude/.claude.json への書き込みはホストの基点の
+  # .claude.json に届き、マウント先 <基点>/.claude/.claude.json は空のまま。
+  # shellcheck disable=SC2016  # 検証式はコンテナの中で評価する
+  check ".claude.json の重ねマウント経由の書き込みがホストの .claude.json に届く" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c \
+      'printf "%s\n" "{\"probe\":241}" > /home/node/.claude/.claude.json && grep -qF "\"probe\":241" /home/node/.claude.json'
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check ".claude.json の重ねマウント先はホストで空のまま、基点の .claude.json が書き換わる" \
+    bash -c 'grep -qF "\"probe\":241" "$1/.claude.json" && [ ! -s "$1/.claude/.claude.json" ]' _ "$root"
+  echo '{}' > "$root/.claude.json"
   # 別名 override 込みの実構成（#98）。標準パスの保護が override のマージで崩れないことと、
   # 別名パス経由の保護・可読性を、同じ compose.yml + override で起動して確認する。
   check "別名 override 込みでも 13項目へ書けず projects/ へは書ける" env \

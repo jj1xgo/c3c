@@ -2370,6 +2370,23 @@ check "Claude project 設定ゲート helper の起動" podman run --rm --networ
 check "Claude project 設定ゲートの protocol label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-project-audit-protocol\"}}" "$1")" = 1 ]' _ "$IMAGE"
 # shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
 check "コンテナ内の配置 label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.image-layout\"}}" "$1")" = 2 ]' _ "$IMAGE"
+# shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
+check "Claude managed settings label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-managed-settings\"}}" "$1")" = 1 ]' _ "$IMAGE"
+# コンテナの中の /cd を止める managed settings（#243）。配置（root:root、node から書込不可）と内容だけを見る。
+# 効き目（/cd が拒否されること）は認証なしでは確かめられないので、実機の起動で確かめる（README「変更後の確認」）。
+# shellcheck disable=SC2016  # コンテナ内の sh で評価する
+CLAUDE_MANAGED_SETTINGS_PROBE='set -e
+d=/etc/claude-code; f=/etc/claude-code/managed-settings.json
+[ -d "$d" ] && ! [ -L "$d" ] || { echo "/etc/claude-code が symlink でないディレクトリではない"; exit 1; }
+[ "$(stat -c %u:%g:%a "$d")" = 0:0:755 ] || { echo "/etc/claude-code が root:root 0755 ではない: $(stat -c %u:%g:%a "$d")"; exit 1; }
+[ -f "$f" ] && ! [ -L "$f" ] || { echo "managed-settings.json が symlink でない通常ファイルではない"; exit 1; }
+[ "$(stat -c %u:%g:%a "$f")" = 0:0:644 ] || { echo "managed-settings.json が root:root 0644 ではない: $(stat -c %u:%g:%a "$f")"; exit 1; }
+! [ -e /etc/claude-code/managed-settings.d ] && ! [ -L /etc/claude-code/managed-settings.d ] || { echo "managed-settings.d がある"; exit 1; }
+! [ -w "$f" ] && ! [ -w "$d" ] || { echo "managed-settings.json かそのディレクトリが node から書込可"; exit 1; }
+python3 -I -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {\"permissions\": {\"deny\": [\"Cd\"]}} else 1)" "$f" || { echo "managed-settings.json の内容が想定と違う"; cat "$f"; exit 1; }
+[ "$(id -u)" != 0 ]'
+check "Claude managed settings の配置（root:root・node から書込不可・deny Cd だけ）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$CLAUDE_MANAGED_SETTINGS_PROBE"
 check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
@@ -2617,10 +2634,13 @@ if stage_common_context "$OPTOUT_CONTEXT_DIR"; then
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "Codex opt-out: Node は同梱 default のまま入っている" \
     bash -c '[ "$(podman run --rm --network=none "$1" node --version)" = "v$2" ]' _ "$OPTOUT_IMAGE" "$DEFAULT_NODE_VERSION"
+  check "Codex opt-out: Claude managed settings がある" \
+    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c "$CLAUDE_MANAGED_SETTINGS_PROBE"
 else
   check "Codex opt-out: 空の codex-version.txt でビルド成功 (staging failed: see stderr above)" false
   check "Codex opt-out: codex が入っていない（起動口・同梱 bubblewrap・要件ファイルなし）" false
   check "Codex opt-out: Node は同梱 default のまま入っている" false
+  check "Codex opt-out: Claude managed settings がある" false
 fi
 podman rmi "$OPTOUT_IMAGE" 2>/dev/null
 rm -rf "$OPTOUT_CONTEXT_DIR"

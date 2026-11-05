@@ -165,6 +165,13 @@ trust は全プロジェクトで 1 つになる。一度受け入れると、�
 `CC_CLAUDE_START_MODE` は launcher が全経路で明示 export する（`.c3c/env` やシェル環境の値は使わない）。
 c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に書かない。
 
+ゲートが見るのは起動したディレクトリの設定だけなので、コンテナの中で Claude Code の `/cd` を使って別の
+ディレクトリ（別の branch の worktree など）へ移る経路は、イメージの managed settings
+（`/etc/claude-code/managed-settings.json`、root:root 0644、中身は `{"permissions": {"deny": ["Cd"]}}`）で
+`/cd` 全体を拒否して塞ぐ（#243）。base image が managed settings（`managed-settings.json` か
+`managed-settings.d`、symlink を含む）を既に持つか、既存の `/etc/claude-code` が symlink でない root:root 0755 の
+ディレクトリでなければ、ビルドを止める。
+
 **限界・非対象**:
 
 - 本起動の再照合の後（Claude Code が設定を読むまでの間を含む）の変更は検出しない。project 設定は稼働中の
@@ -188,9 +195,16 @@ c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に�
   新しい版が新しい経路を足しても追えない。`CLAUDE_CODE_PLUGIN_*` を止めるのは、project の `env` から plugin の
   読み込み先が変わるかを確認していないための保守的な措置である。
 - `--check` の判定はホスト上での参考実行で、コンテナ内の見え方（symlink 等）と違う場合は起動時の判定が優先する。
+- `/cd` を止める managed settings（#243）の外にある経路: (1) `/workspace` で branch を切り替えたときの
+  project 設定の変化（この節の 1 つ目の限界に当たる）、(2) `EnterWorktree`（2.1.318 では移った先の設定を
+  読み直さなかったが、版で変わりうる）、(3) `/add-dir` で加えたディレクトリのサブディレクトリの skills・
+  commands・subagents の読み込み、(4) Team・Enterprise の server-managed settings がある利用者（既定の
+  `"first-wins"` で server-managed が選ばれ、イメージのファイルは読まれない）、(5) `Cd` 規則に対応していない
+  古い Claude Code（`CLAUDE_CODE_VERSION` で固定したとき。解釈できない項目は読み飛ばされる）。label は
+  焼き込みを示すだけで、効き目は示さない。効き目はビルドの検査では確かめられず、実機の起動で確かめる。
 
 **根拠・検証範囲**: `c3c`（`claude_project_gate_needed()`・`guard_claude_project_image_support()`・
-`run_claude_project_preflight()`・`check_claude_project_approval()`・`--check` の診断）、`entrypoint.sh`、
+`run_claude_project_preflight()`・`check_claude_project_approval()`・`--check` の診断）、`Dockerfile.claude` の `claude-managed-settings` の RUN、`entrypoint.sh`、
 `claude-project-audit.py`、`compose.yml`・`compose.codex-preflight.yml` と `tests/test_claude_project_*.py`。
 実機受入の記録は PR を参照する。
 

@@ -164,7 +164,7 @@ chmod +x "$stubs/date"
 cat > "$tmp/ipv6-helper" <<'STUB'
 #!/bin/bash
 case "${1:-}" in
-  prepare|verify) ;;
+  check|prepare|verify) ;;
   refresh) cat >/dev/null ;;
   *) echo "stub ipv6 helper: 想定外の引数: $*" >&2; exit 99 ;;
 esac
@@ -275,6 +275,7 @@ run_scenario rule-add-fails full -- \
   "TRACE_FAIL_RULE=iptables -A CLAUDE_EGRESS -d 140.82.112.0/20 -p tcp -m multiport --dports 443,22 -j ACCEPT"
 run_scenario ip6-drop-fails full -- "TRACE_FAIL_RULE=ip6tables -P INPUT DROP"
 run_scenario resolve-fails full -- TRACE_DIG_FAIL=alpha.example
+run_scenario ipv6-check-fails full --ipv6 -- TRACE_HELPER_FAIL=check
 run_scenario ipv6-prepare-fails full --ipv6 -- TRACE_HELPER_FAIL=prepare
 # ルールを変える前に止まる
 run_scenario bad-meta early -- 'TRACE_META={"web":[]}'

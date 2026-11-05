@@ -583,6 +583,11 @@ lock_down_ipv6() {
 full_init() {
   load_github_ranges
   detect_host_gateway
+  # --ipv6 の前提（meta の IPv6 の値・許可ポート・既定経路・disable_ipv6・ip6tables）を、
+  # IPv4 のルールを消す前に確かめる（#237）。prepare も同じ検査を通る。
+  if [[ "$IPV6_ENABLED" == 1 ]]; then
+    "$IPV6_HELPER" check --ports "$ALLOWED_PORTS"
+  fi
 
   reset_ipv4_rules
   allow_loopback_and_established

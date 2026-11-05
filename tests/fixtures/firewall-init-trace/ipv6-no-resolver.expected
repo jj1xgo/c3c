@@ -1,3 +1,4 @@
+check --ports 443,22
 iptables -F
 iptables -X
 iptables -t nat -F

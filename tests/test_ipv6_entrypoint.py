@@ -22,7 +22,7 @@ class EntrypointTests(unittest.TestCase):
                 fake = tmp / 'sudo'
                 fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD"\nexit 1\n')
                 fake.chmod(0o755)
-                env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), 'C3C_IPV6': value}
+                env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), 'CLAUDE_CODE_PROJECT_DIR_NAME': 'c3c-ipv6-test', 'C3C_IPV6': value}
                 response = subprocess.run(['bash', str(ROOT / 'entrypoint.sh')], env=env, text=True, capture_output=True)
                 self.assertEqual(response.returncode, 1)
                 self.assertIn('起動を中止', response.stderr)
@@ -50,7 +50,7 @@ class EntrypointTests(unittest.TestCase):
                     fake.write_text(body)
                     fake.chmod(0o755)
                 record = tmp / 'record'
-                env = {'PATH': td + ':' + os.defpath, 'RECORD': str(record),
+                env = {'PATH': td + ':' + os.defpath, 'RECORD': str(record), 'CLAUDE_CODE_PROJECT_DIR_NAME': 'c3c-ipv6-test',
                        'C3C_IPV6': value, 'REFRESH_HELPER': str(tmp / 'helper')}
                 proc = subprocess.Popen(['bash', '-c', source + '\nwait'], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
@@ -76,7 +76,7 @@ class EntrypointTests(unittest.TestCase):
             fake.chmod(0o755)
             record = pathlib.Path(td) / 'record'
             response = subprocess.run(['bash', str(ROOT / 'entrypoint.sh')],
-                                      env={'PATH': td + ':' + os.defpath, 'RECORD': str(record),
+                                      env={'PATH': td + ':' + os.defpath, 'RECORD': str(record), 'CLAUDE_CODE_PROJECT_DIR_NAME': 'c3c-ipv6-test',
                                            'C3C_IPV6': 'true'}, text=True, capture_output=True)
             self.assertEqual(response.returncode, 1)
             self.assertIn('C3C_IPV6', response.stderr)
@@ -95,7 +95,7 @@ class EntrypointTests(unittest.TestCase):
             fake = tmp / 'sudo'
             fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD"\nexit 1\n')
             fake.chmod(0o755)
-            env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), **env_extra}
+            env = {'PATH': td + ':' + os.defpath, 'RECORD': str(tmp / 'record'), 'CLAUDE_CODE_PROJECT_DIR_NAME': 'c3c-ipv6-test', **env_extra}
             response = subprocess.run(['bash', '-c', source], env=env, text=True, capture_output=True,
                                       stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)
             record = (tmp / 'record').read_text().splitlines() if (tmp / 'record').exists() else None

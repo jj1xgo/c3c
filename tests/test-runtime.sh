@@ -26,8 +26,9 @@ for phase in "${phases[@]}"; do outcome[$phase]='not run（未到達）'; done
 phase=environment
 root=""
 compose=()
+# C3C_CLAUDE_PROJECT_DIR_NAME: launcher が PROJECT_NAME から渡す記録の置き場の名前の代わり（#241。entrypoint が検証する）
 clean_env=(env -i "HOME=$HOME" "PATH=$PATH" "TMPDIR=/tmp"
-  "PODMAN_COMPOSE_PROVIDER=${PODMAN_COMPOSE_PROVIDER:-podman-compose}")
+  "PODMAN_COMPOSE_PROVIDER=${PODMAN_COMPOSE_PROVIDER:-podman-compose}" "C3C_CLAUDE_PROJECT_DIR_NAME=c3c-runtime-test")
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then clean_env+=("XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"); fi
 
 # shellcheck disable=SC2317,SC2329 # EXIT trap から間接的に呼び出す（0.10.0 は SC2317、0.11.0 は SC2329 を出す）。
@@ -125,6 +126,8 @@ for directory in hooks skills plugins commands agents workflows rules output-sty
 done
 for file in settings.json CLAUDE.md statusline.sh; do : > "$root/config/.claude/$file"; done
 echo '{}' > "$root/config/.claude.json"
+# .claude.json の重ねマウント先（#241。launcher の prepare_claude_json_mountpoint() の代わり）
+: > "$root/config/.claude/.claude.json"
 cp "$SCRIPT_DIR/tests/runtime-probe.py" "$root/probe/bin/claude"
 chmod 755 "$root/probe/bin/claude"
 clean_env+=("CLAUDE_CONFIG_DIR=$root/config" "CONTEXT=$root/project"

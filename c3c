@@ -27,9 +27,11 @@ readonly CODEX_AUDIT_PROTOCOL_VERSION CODEX_AUDIT_PROTOCOL_LABEL
 CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION=1
 CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL=io.c3c.claude-project-audit-protocol
 readonly CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION CLAUDE_PROJECT_AUDIT_PROTOCOL_LABEL
-# コンテナ内の配置の版（改名 第 2 段）。Dockerfile.claude の LABEL io.c3c.image-layout と一致させる。
+# コンテナ内の配置の版（改名 第 2 段で 2、#241 で 3）。Dockerfile.claude の LABEL io.c3c.image-layout と一致させる。
+# 3: コンテナの中の Claude Code の記録の置き場をプロジェクトごとに分けた（env と .claude.json の mount の配置が変わり、
+# 古いイメージの Claude Code では名前が黙って無視されて共有が続くため、-b を求める）。
 IMAGE_LAYOUT_LABEL=io.c3c.image-layout
-IMAGE_LAYOUT_VERSION=2
+IMAGE_LAYOUT_VERSION=3
 readonly IMAGE_LAYOUT_LABEL IMAGE_LAYOUT_VERSION
 # コンテナの中の /cd を止める managed settings の版（#243）。Dockerfile.claude の LABEL io.c3c.claude-managed-settings と一致させる。
 CLAUDE_MANAGED_SETTINGS_LABEL=io.c3c.claude-managed-settings
@@ -514,6 +516,14 @@ freeze_project_paths() {
   fi
   export CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
   readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
+
+  # コンテナの中の Claude Code の記録（transcript と auto memory）の置き場の名前（#241）。compose.yml が
+  # CLAUDE_CODE_PROJECT_DIR_NAME として渡し、Claude Code は <CLAUDE_CONFIG_DIR>/projects/<名前>/ に書く。
+  # 無条件に代入し（起動するシェルの環境の同名の値を使わない）、load_env_file() より前に readonly にする
+  # （.c3c/env の同名の値も使わない。ENV_FILE_ALLOWED_KEYS には入れない）。
+  C3C_CLAUDE_PROJECT_DIR_NAME="$PROJECT_NAME"
+  export C3C_CLAUDE_PROJECT_DIR_NAME
+  readonly C3C_CLAUDE_PROJECT_DIR_NAME
 }
 
 # プロジェクト設定ディレクトリの選択。起動 checkout 直下の .c3c を採用パスとして PROJECT_CONF_DIR に返してから
@@ -1101,8 +1111,9 @@ guard_codex_image_support() {
   return 0
 }
 
-# コンテナ内の配置の確認（改名 第 2 段）。v16 の compose は承認記録を /etc/c3c/*、秘密を新パスにだけ載せ、
-# v15.1 以前のイメージの entrypoint.sh はそこを読まない。既存イメージの label が対応値でなければ -b を案内して
+# コンテナ内の配置の確認（改名 第 2 段。#241 で版を 3 に上げた）。v16 の compose は承認記録を /etc/c3c/*、秘密を
+# 新パスにだけ載せ、v15.1 以前のイメージの entrypoint.sh はそこを読まない。#241 より前のイメージは記録の置き場の
+# 名前を検証せず、古い Claude Code では名前が黙って無視される。既存イメージの label が対応値でなければ -b を案内して
 # 止める（guard_codex_image_support() と同じ型）。未ビルドなら何もしない（compose の暗黙ビルドが label 付きで
 # 作る）。通常起動の -b は、この後の明示ビルドで作り直すので見ない（guard_ipv6() と同じ）。通常起動ではガード列で
 # 呼び、ホストの MCP 承認の対話・検査用コンテナ・本起動より前に止める。--check では既存イメージの静的診断。
@@ -1129,7 +1140,7 @@ check_image_layout() {
   esac
   layout=$(podman image inspect --format "{{index .Labels \"$IMAGE_LAYOUT_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null || true)
   if [[ "$layout" != "$IMAGE_LAYOUT_VERSION" ]]; then
-    guard_fail "ERROR: イメージ $IMAGE_NAME は c3c v16 のコンテナ内の配置に対応していません（label $IMAGE_LAYOUT_LABEL=${layout:-なし}、必要な値 $IMAGE_LAYOUT_VERSION）。v15 以前にビルドしたイメージは承認記録と秘密を旧パスで読むため、-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+    guard_fail "ERROR: イメージ $IMAGE_NAME は今の c3c のコンテナ内の配置に対応していません（label $IMAGE_LAYOUT_LABEL=${layout:-なし}、必要な値 $IMAGE_LAYOUT_VERSION）。この c3c より前にビルドしたイメージは、コンテナ内のパスや環境変数の配置が違うため、-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
   fi
   [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   イメージの配置: $IMAGE_LAYOUT_LABEL=$layout"
   check_claude_managed_settings || return 1
@@ -1774,6 +1785,8 @@ prepare_claude_config_ro() {
     for name in "${CLAUDE_CONFIG_RO_FILES[@]}"; do
       validate_claude_config_ro_path "$cfg/$name" file || return 1
     done
+    # .claude.json の重ねマウント先（#241。作成は prepare_claude_json_mountpoint()）も、13 項目を作る前に検査する
+    validate_claude_json_mountpoint "$cfg" || return 1
   fi
 
   # 作成の直前にも同じ判定を行う（事前検査の後に置き換えられた場合の防御。作成自体も
@@ -1830,6 +1843,55 @@ prepare_claude_config_ro() {
       guard_warn "WARNING: $other が $cfg_real を含む（または含まれる）ため、別の rw マウント経由で書けます。~/.claude 設定の読み取り専用保護はこの経路には効きません。"
     fi
   done
+  return 0
+}
+
+# .claude.json の重ねマウント先（#241）の型を検査する。ファイルシステムは変更しない。引数: $1=基点の .claude。
+# コンテナでは CLAUDE_CONFIG_DIR=/home/node/.claude を設定するので、Claude Code は .claude.json を
+# /home/node/.claude/.claude.json から読む。compose.yml はそこへホストの基点の .claude.json を重ねるので、
+# マウント先 <基点>/.claude/.claude.json が rw の親マウントの中に要る。
+# 通常ファイル（中身は問わない）と欠落は 0、symlink（dangling を含む）・ディレクトリ・通常ファイル以外は
+# guard_fail して 1 を返す。symlink を拒否する理由は 13 項目と同じ（validate_claude_config_ro_path()）。
+validate_claude_json_mountpoint() {
+  local path="$1/.claude.json" what=""
+  if [[ -L "$path" ]]; then
+    what="symlink です"
+  elif [[ -d "$path" ]]; then
+    what="ディレクトリです"
+  elif [[ -e "$path" && ! -f "$path" ]]; then
+    what="通常ファイルではありません"
+  fi
+  [[ -z "$what" ]] && return 0
+  guard_fail "ERROR: $path は .claude.json の重ねマウント先ですが、${what}。中身を確かめてから取り除いてください。起動を中止します。" || return 1
+  return 1
+}
+
+# .claude.json の重ねマウント先（#241）を用意する。通常起動では prepare_claude_config_ro() の直後に呼び、
+# 無ければ空の通常ファイルを noclobber で作る（13 項目と同じく、無いと podman がサブ uid 所有の実体を作るため。
+# ただしこのファイルは rw で、:ro 保護の 13 項目には数えない）。型の事前検査は prepare_claude_config_ro() の
+# 事前検査ループが済ませているが、作成の直前と直後にも検査する（間の置き換えへの防御）。
+# --check では作らず、無ければ [WARN]、不正な型なら失敗として報告し、記録の置き場を [INFO] で示す。
+# 基点が解決できないときと、基点の .claude が無いときは何も出さずに 0 を返す（診断は
+# prepare_claude_config_ro() に任せる）。
+prepare_claude_json_mountpoint() {
+  local cfg path
+  resolve_claude_config_base || return 0
+  cfg="$CLAUDE_CONFIG_BASE_REAL/.claude"
+  [[ -d "$cfg" ]] || return 0
+  path="$cfg/.claude.json"
+  validate_claude_json_mountpoint "$cfg" || return 1
+  if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+    [[ -f "$path" ]] || guard_warn "[WARN] $path がありません（通常起動時に .claude.json の重ねマウント先として作られます）"
+    echo "[INFO] コンテナの Claude の記録の置き場: $cfg/projects/$PROJECT_NAME/"
+    return 0
+  fi
+  [[ -f "$path" ]] && return 0
+  ( set -C; : > "$path" ) 2>/dev/null || { guard_fail "ERROR: $path を作成できません（同時に作成された可能性があります。再実行してください）。起動を中止します。" || return 1; }
+  validate_claude_json_mountpoint "$cfg" || return 1
+  if [[ ! -f "$path" ]]; then
+    guard_fail "ERROR: $path は .claude.json の重ねマウント先ですが、作成の直後に見つかりません。起動を中止します。" || return 1
+  fi
+  echo "INFO: $path を .claude.json の重ねマウント先として作成しました（中身は空。コンテナの中の Claude Code はここからホストの .claude.json を読みます）" >&2
   return 0
 }
 
@@ -2642,6 +2704,7 @@ check_one_project() {
   guard_ipv6 || true
   guard_claude_json || true
   prepare_claude_config_ro || true
+  prepare_claude_json_mountpoint || true
   guard_plugins_alias || true
 
   local file
@@ -3067,6 +3130,7 @@ fi
 # Codex 経路では同じ mount を使う検査のため、placeholder・必要な build が承認より先行する。
 # Codex 承認を拒否しても、これらや native CLI による専用 home への書込みは残りうる。
 prepare_claude_config_ro
+prepare_claude_json_mountpoint
 guard_plugins_alias
 prepare_codex_host_plugins
 

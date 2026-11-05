@@ -12,6 +12,20 @@ case "${CC_AGENT-claude}" in
     ;;
 esac
 readonly CC_AGENT
+# コンテナの中の Claude Code の記録の置き場（#241）。Claude Code は CLAUDE_CONFIG_DIR と一緒に設定したときだけ
+# CLAUDE_CODE_PROJECT_DIR_NAME を使い、<CLAUDE_CONFIG_DIR>/projects/<名前>/ に transcript と auto memory を書く
+# （作業ディレクトリがどれも /workspace なので、無いと全プロジェクトが projects/-workspace/ を共有する）。
+# 名前は launcher が PROJECT_NAME から渡す値で、Claude Code が受け付ける形（1〜64 字の [a-z0-9_-]。ほかの値は
+# 黙って無視される）でなければ止める。CLAUDE_CONFIG_DIR は入ってきた値を使わず固定値で確定する（compose.yml の
+# environment に書くと podman-compose が volumes の補間にその値を使うため、ここで決める。CODEX_HOME と同じ型）。
+# どちらも秘密の export より前に readonly にするので、secrets/export/ の同名の値では差し替えられない。
+if ! [[ "${CLAUDE_CODE_PROJECT_DIR_NAME-}" =~ ^[a-z0-9_-]{1,64}$ ]]; then
+  echo "ERROR: CLAUDE_CODE_PROJECT_DIR_NAME が不正です（1〜64 字の英小文字・数字・-・_）: '${CLAUDE_CODE_PROJECT_DIR_NAME-}'。c3c で起動してください。起動を中止します" >&2
+  exit 1
+fi
+export CLAUDE_CONFIG_DIR=/home/node/.claude
+export CLAUDE_CODE_PROJECT_DIR_NAME
+readonly CLAUDE_CONFIG_DIR CLAUDE_CODE_PROJECT_DIR_NAME
 # Claude 経路の起動モード（#163）。preflight は project 設定ゲートの検査用コンテナで、stdout を protocol の
 # JSON 1 文書専用にする（Codex の preflight と同じく、元の stdout を fd3 へ確保して以後のログを stderr へ）。
 CLAUDE_START_MODE=""

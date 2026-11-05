@@ -67,7 +67,7 @@ elif head == 'image inspect':
         sys.exit(125)
     fmt = args[args.index('--format') + 1] if '--format' in args else ''
     if 'io.c3c.image-layout' in fmt:
-        print(state.get('layout', '2'))
+        print(state.get('layout', '3'))
     elif 'io.c3c.claude-managed-settings' in fmt:
         if state.get('managed_inspect_rc'):
             sys.exit(state['managed_inspect_rc'])
@@ -88,7 +88,7 @@ elif args[:1] == ['compose']:
             sys.exit(rc)
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
-        state['layout'] = state.get('build_layout', '2')
+        state['layout'] = state.get('build_layout', '3')
         state['managed'] = state.get('build_managed', '1')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
@@ -560,6 +560,8 @@ class CheckMigrationInfoTests(LaunchCase):
             (self.home / '.claude' / name).mkdir()
         for name in ('settings.json', 'CLAUDE.md', 'statusline.sh'):
             (self.home / '.claude' / name).write_text('')
+        # .claude.json の重ねマウント先（#241。無いと --check が WARN にする）
+        (self.home / '.claude' / '.claude.json').write_text('')
         self.state['image_exists'] = False
         self.set_pref('codex')
         self.approve_codex()
@@ -720,7 +722,7 @@ jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTE
 case "${1:-} ${2:-}" in
   "images --all") echo '[]' ;;
   "image exists") exit 0 ;;
-  "image inspect") case "$*" in *io.c3c.image-layout*) echo 2 ;; *io.c3c.claude-managed-settings*) echo 1 ;; *) echo '' ;; esac ;;
+  "image inspect") case "$*" in *io.c3c.image-layout*) echo 3 ;; *io.c3c.claude-managed-settings*) echo 1 ;; *) echo '' ;; esac ;;
 esac
 exit 0
 '''
@@ -1080,7 +1082,7 @@ class LegacyStateLaunchTests(LaunchCase):
 
 
 class ImageLayoutGateTests(LaunchCase):
-    """改名 第 2 段: io.c3c.image-layout が 2 でない既存イメージでは compose を 1 回も呼ばずに止まる。
+    """改名 第 2 段（#241 で 3 に上げた）: io.c3c.image-layout が 3 でない既存イメージでは compose を 1 回も呼ばずに止まる。
     v15.1 以前のイメージは承認記録と秘密を旧パスで読むため、新 compose で本起動させない。"""
 
     def use_old_image(self):
@@ -1124,6 +1126,23 @@ class ImageLayoutGateTests(LaunchCase):
         self.state['image_exists'] = False
         result = self.run_c3c('claude', str(self.proj))
         self.assert_single_run(result, 'claude')
+
+    def test_layout_2_image_is_rejected_with_rebuild_hint(self):
+        # #241: 記録の置き場を分ける前（label 2）のイメージは古い Claude Code で名前が黙って無視されるので止める
+        self.state['image_exists'] = True
+        self.state['layout'] = '2'
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('今の c3c のコンテナ内の配置に対応していません', result.stderr)
+        self.assertIn('必要な値 3', result.stderr)
+        self.assertIn('-b で再ビルド', result.stderr)
+        self.assertEqual(self.compose_calls(), [])
+        check = self.run_c3c('--check', str(self.proj))
+        self.assertNotEqual(check.returncode, 0)
+        self.assertIn('結果: FAIL', check.stdout)
+        self.assertIn('-b で再ビルド', check.stdout + check.stderr)
+        rebuilt = self.run_c3c('claude', '-b', str(self.proj))
+        self.assert_single_run(rebuilt, 'claude')
 
     def test_check_reports_fail_without_writing(self):
         self.use_old_image()

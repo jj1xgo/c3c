@@ -249,7 +249,27 @@ class IPv6Tests(unittest.TestCase):
     def test_main_prepare_rejects_bad_meta_before_flush(self):
         with patch.object(sys, 'argv', ['ipv6-firewall.py', 'prepare', '--ports', '443,22']), \
              patch.object(fw, 'load_github_networks', side_effect=fw.FirewallError('IPv6 許可範囲外の CIDR です: ::/0')), \
-             patch.object(fw, 'command', self.healthy_system):
+             patch.object(fw, 'command', self.healthy_system), \
+             patch.object(pathlib.Path, 'read_text', return_value='0\n'):
+            # 環境の検査は通る形に固定する（IPv6 が無効な環境で、順が戻っても緑になるのを防ぐ）
+            self.assertEqual(fw.main(), 1)
+        self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
+
+    def test_main_check_rejects_bad_meta(self):
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'check', '--ports', '443,22']), \
+             patch.object(fw, 'load_github_networks', side_effect=fw.FirewallError('IPv6 許可範囲外の CIDR です: ::/0')), \
+             patch.object(fw, 'command', self.healthy_system), \
+             patch.object(pathlib.Path, 'read_text', return_value='0\n'):
+            self.assertEqual(fw.main(), 1)
+        self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
+
+    def test_main_check_rejects_missing_default_route(self):
+        def no_route(args):
+            self.calls.append(args)
+            return '[]' if args[0] == 'ip' else ''
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'check', '--ports', '443,22']), \
+             patch.object(fw, 'load_github_networks', return_value=[]), \
+             patch.object(fw, 'command', no_route):
             self.assertEqual(fw.main(), 1)
         self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
 

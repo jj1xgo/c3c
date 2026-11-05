@@ -28,6 +28,8 @@ REPO = Path(__file__).resolve().parents[1]
 SUPPORTED = '0.156.0'
 PREFLIGHT_OVERRIDE = 'compose.codex-preflight.yml'
 HASH_A = 'a' * 64
+# Claude の通常起動（既存イメージ、-b なし）で c3c が podman image exists を呼ぶ回数。変更前の c3c（8cd1b5e）で数えた値。
+IMAGE_EXISTS_CALLS_CLAUDE_LAUNCH = 3
 
 # 実 Podman の代わり。状態ファイルで image の有無・label・preflight の応答・本 run と build の終了コードを
 # 切り替え、全呼び出しを記録する（旧 suite の fake に run_rc / build_rc を足したもの）。
@@ -65,6 +67,10 @@ elif head == 'image inspect':
     fmt = args[args.index('--format') + 1] if '--format' in args else ''
     if 'io.c3c.image-layout' in fmt:
         print(state.get('layout', '2'))
+    elif 'io.c3c.claude-managed-settings' in fmt:
+        if state.get('managed_inspect_rc'):
+            sys.exit(state['managed_inspect_rc'])
+        print(state.get('managed', '1'))
     elif 'io.c3c.codex-audit-protocol' in fmt:
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
@@ -82,6 +88,7 @@ elif args[:1] == ['compose']:
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
         state['layout'] = state.get('build_layout', '2')
+        state['managed'] = state.get('build_managed', '1')
         save()
     elif verb == 'run' and any(a.endswith('compose.codex-preflight.yml') for a in args):
         spec = state.get('preflight', {})
@@ -712,7 +719,7 @@ jq -cn --argjson args "$args_json" --arg agent "${CC_AGENT-}" --arg ctx "${CONTE
 case "${1:-} ${2:-}" in
   "images --all") echo '[]' ;;
   "image exists") exit 0 ;;
-  "image inspect") case "$*" in *io.c3c.image-layout*) echo 2 ;; *) echo '' ;; esac ;;
+  "image inspect") case "$*" in *io.c3c.image-layout*) echo 2 ;; *io.c3c.claude-managed-settings*) echo 1 ;; *) echo '' ;; esac ;;
 esac
 exit 0
 '''
@@ -1125,6 +1132,80 @@ class ImageLayoutGateTests(LaunchCase):
         self.assertIn('io.c3c.image-layout', result.stdout + result.stderr)
         self.assertIn('結果: FAIL', result.stdout)
         self.assertEqual(self.snapshot(self.home), before)
+
+
+
+class ClaudeManagedSettingsGateTests(LaunchCase):
+    """#243: Claude 経路では、/cd を止める managed settings の label（io.c3c.claude-managed-settings=1）が無い
+    既存イメージで compose を 1 回も呼ばずに止まる。Codex 経路・-b・未ビルドは止めない。"""
+
+    def use_image_without_managed_settings(self):
+        self.state['image_exists'] = True
+        self.state['managed'] = ''
+
+    def image_exists_calls(self):
+        return [c for c in self.calls if c['args'][:2] == ['image', 'exists']]
+
+    def test_managed_settings_label_missing_stops_before_compose(self):
+        self.use_image_without_managed_settings()
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('io.c3c.claude-managed-settings', result.stderr)
+        self.assertIn('-b', result.stderr)
+        self.assertEqual(self.compose_calls(), [])
+
+    def test_managed_settings_label_present_proceeds(self):
+        self.state['managed'] = '1'
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+
+    def test_managed_settings_build_flag_skips(self):
+        self.use_image_without_managed_settings()
+        result = self.run_c3c('claude', '-b', str(self.proj))
+        self.assertNotIn('io.c3c.claude-managed-settings', result.stderr)
+        self.assert_single_run(result, 'claude')
+        self.assertEqual(len(self.compose_calls('build')), 1)
+
+    def test_managed_settings_image_absent_skips(self):
+        self.state['image_exists'] = False
+        self.state['managed'] = ''
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotIn('io.c3c.claude-managed-settings', result.stderr)
+        self.assert_single_run(result, 'claude')
+
+    def test_managed_settings_codex_path_not_checked(self):
+        self.use_image_without_managed_settings()
+        self.approve_codex()
+        result = self.run_c3c('codex', str(self.proj))
+        self.assertNotIn('io.c3c.claude-managed-settings', result.stdout + result.stderr)
+        self.assert_single_run(result, 'codex')
+
+    def test_managed_settings_inspect_failure_stops(self):
+        self.state['managed_inspect_rc'] = 125
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('managed settings への対応を確認できません', result.stderr)
+        self.assertEqual(self.compose_calls(), [])
+
+    def test_check_reports_managed_settings(self):
+        self.use_image_without_managed_settings()
+        result = self.run_c3c('--check', str(self.proj))
+        out = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, out)
+        self.assertIn('io.c3c.claude-managed-settings', out)
+        self.assertTrue('[FAIL]' in out or 'ERROR' in out, out)
+        self.assertEqual(self.compose_calls(), [])
+        self.state['managed'] = '1'
+        (self.root / 'calls').unlink()
+        result = self.run_c3c('--check', str(self.proj))
+        self.assertIn('[OK]   Claude managed settings: io.c3c.claude-managed-settings=1', result.stdout)
+
+    def test_managed_settings_no_extra_image_exists(self):
+        # 判定は guard_image_layout() が取った podman image exists の rc を使い、呼び直さない（LY-7）。
+        # 回数は変更前の c3c（8cd1b5e）で数えた値。
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertEqual(len(self.image_exists_calls()), IMAGE_EXISTS_CALLS_CLAUDE_LAUNCH)
 
 
 if __name__ == '__main__':

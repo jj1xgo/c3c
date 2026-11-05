@@ -630,6 +630,7 @@ case "\$1 \$2" in
     exit "\${TEST_IMAGE_EXISTS_RC-0}" ;;
   "image inspect")
     if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-2}"; fi
+    if [[ "\$*" == *io.c3c.claude-managed-settings* ]]; then printf '%s\n' "\${TEST_CLAUDE_MANAGED_SETTINGS-1}"; fi
     if [[ "\$*" == *claude-container.* ]]; then printf '%s\n' "\$*" >> "$root/legacy-label-reads"; fi
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
     if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH-}"; fi
@@ -1749,6 +1750,16 @@ run_ipv6_launcher_tests() {
   check "LY-7: --check は最初の検査失敗を再検査の結果で消さない（rc=$rc）" \
     bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"の有無を確認できません"* ]]' _ "$rc" "$out"
   rm -f "$root/image-exists-called"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # MS 系（#243）: Claude 経路では、/cd を止める managed settings の label が 1 でない既存イメージで compose を呼ばずに止まる。
+  run_launcher TEST_CLAUDE_MANAGED_SETTINGS=
+  check "MS-1: managed settings の label の無い既存イメージは -b を案内して起動を止める（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"io.c3c.claude-managed-settings"* && "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
+  run_launcher TEST_CLAUDE_MANAGED_SETTINGS=1
+  check "MS-2: managed settings の label が 1 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
+  run_launcher_check TEST_CLAUDE_MANAGED_SETTINGS=
+  check "MS-3: --check は managed settings の label の不一致を FAIL にする（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"io.c3c.claude-managed-settings"* ]]' _ "$rc" "$out"
   printf '%s\n' "$out" >> "$LOG_FILE"
   # L2 系（改名 第 2 段）: 単独の label は io.c3c.* だけを読み、旧 label へ fallback しない。
   rm -f "$proj/.c3c/env" "$root/legacy-label-reads"

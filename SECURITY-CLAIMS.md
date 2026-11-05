@@ -168,7 +168,8 @@ c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に�
 ゲートが見るのは起動したディレクトリの設定だけなので、コンテナの中で Claude Code の `/cd` を使って別の
 ディレクトリ（別の branch の worktree など）へ移る経路は、イメージの managed settings
 （`/etc/claude-code/managed-settings.json`、root:root 0644、中身は `{"permissions": {"deny": ["Cd"]}}`）で
-`/cd` 全体を拒否して塞ぐ（#243）。base image が managed settings（`managed-settings.json` か
+`/cd` 全体を拒否して塞ぐ（#243）。launcher は Claude 経路で、既存イメージの label
+`io.c3c.claude-managed-settings` が対応値でなければ `-b` を案内して止める（Codex 経路・`-b`・未ビルドは見ない）。base image が managed settings（`managed-settings.json` か
 `managed-settings.d`、symlink を含む）を既に持つか、既存の `/etc/claude-code` が symlink でない root:root 0755 の
 ディレクトリでなければ、ビルドを止める。
 
@@ -204,7 +205,7 @@ c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に�
   焼き込みを示すだけで、効き目は示さない。効き目はビルドの検査では確かめられず、実機の起動で確かめる。
 
 **根拠・検証範囲**: `c3c`（`claude_project_gate_needed()`・`guard_claude_project_image_support()`・
-`run_claude_project_preflight()`・`check_claude_project_approval()`・`--check` の診断）、`Dockerfile.claude` の `claude-managed-settings` の RUN、`entrypoint.sh`、
+`run_claude_project_preflight()`・`check_claude_project_approval()`・`check_claude_managed_settings()`・`--check` の診断）、`Dockerfile.claude` の `claude-managed-settings` の RUN、`entrypoint.sh`、
 `claude-project-audit.py`、`compose.yml`・`compose.codex-preflight.yml` と `tests/test_claude_project_*.py`。
 実機受入の記録は PR を参照する。
 

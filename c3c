@@ -514,6 +514,14 @@ freeze_project_paths() {
   fi
   export CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
   readonly CC_PROJECT_METADATA CC_PROJECT_PATH CC_PROJECT_NAME
+
+  # コンテナの中の Claude Code の記録（transcript と auto memory）の置き場の名前（#241）。compose.yml が
+  # CLAUDE_CODE_PROJECT_DIR_NAME として渡し、Claude Code は <CLAUDE_CONFIG_DIR>/projects/<名前>/ に書く。
+  # 無条件に代入し（起動するシェルの環境の同名の値を使わない）、load_env_file() より前に readonly にする
+  # （.c3c/env の同名の値も使わない。ENV_FILE_ALLOWED_KEYS には入れない）。
+  C3C_CLAUDE_PROJECT_DIR_NAME="$PROJECT_NAME"
+  export C3C_CLAUDE_PROJECT_DIR_NAME
+  readonly C3C_CLAUDE_PROJECT_DIR_NAME
 }
 
 # プロジェクト設定ディレクトリの選択。起動 checkout 直下の .c3c を採用パスとして PROJECT_CONF_DIR に返してから
@@ -1774,6 +1782,8 @@ prepare_claude_config_ro() {
     for name in "${CLAUDE_CONFIG_RO_FILES[@]}"; do
       validate_claude_config_ro_path "$cfg/$name" file || return 1
     done
+    # .claude.json の重ねマウント先（#241。作成は prepare_claude_json_mountpoint()）も、13 項目を作る前に検査する
+    validate_claude_json_mountpoint "$cfg" || return 1
   fi
 
   # 作成の直前にも同じ判定を行う（事前検査の後に置き換えられた場合の防御。作成自体も
@@ -1830,6 +1840,55 @@ prepare_claude_config_ro() {
       guard_warn "WARNING: $other が $cfg_real を含む（または含まれる）ため、別の rw マウント経由で書けます。~/.claude 設定の読み取り専用保護はこの経路には効きません。"
     fi
   done
+  return 0
+}
+
+# .claude.json の重ねマウント先（#241）の型を検査する。ファイルシステムは変更しない。引数: $1=基点の .claude。
+# コンテナでは CLAUDE_CONFIG_DIR=/home/node/.claude を設定するので、Claude Code は .claude.json を
+# /home/node/.claude/.claude.json から読む。compose.yml はそこへホストの基点の .claude.json を重ねるので、
+# マウント先 <基点>/.claude/.claude.json が rw の親マウントの中に要る。
+# 通常ファイル（中身は問わない）と欠落は 0、symlink（dangling を含む）・ディレクトリ・通常ファイル以外は
+# guard_fail して 1 を返す。symlink を拒否する理由は 13 項目と同じ（validate_claude_config_ro_path()）。
+validate_claude_json_mountpoint() {
+  local path="$1/.claude.json" what=""
+  if [[ -L "$path" ]]; then
+    what="symlink です"
+  elif [[ -d "$path" ]]; then
+    what="ディレクトリです"
+  elif [[ -e "$path" && ! -f "$path" ]]; then
+    what="通常ファイルではありません"
+  fi
+  [[ -z "$what" ]] && return 0
+  guard_fail "ERROR: $path は .claude.json の重ねマウント先ですが、${what}。中身を確かめてから取り除いてください。起動を中止します。" || return 1
+  return 1
+}
+
+# .claude.json の重ねマウント先（#241）を用意する。通常起動では prepare_claude_config_ro() の直後に呼び、
+# 無ければ空の通常ファイルを noclobber で作る（13 項目と同じく、無いと podman がサブ uid 所有の実体を作るため。
+# ただしこのファイルは rw で、:ro 保護の 13 項目には数えない）。型の事前検査は prepare_claude_config_ro() の
+# 事前検査ループが済ませているが、作成の直前と直後にも検査する（間の置き換えへの防御）。
+# --check では作らず、無ければ [WARN]、不正な型なら失敗として報告し、記録の置き場を [INFO] で示す。
+# 基点が解決できないときと、基点の .claude が無いときは何も出さずに 0 を返す（診断は
+# prepare_claude_config_ro() に任せる）。
+prepare_claude_json_mountpoint() {
+  local cfg path
+  resolve_claude_config_base || return 0
+  cfg="$CLAUDE_CONFIG_BASE_REAL/.claude"
+  [[ -d "$cfg" ]] || return 0
+  path="$cfg/.claude.json"
+  validate_claude_json_mountpoint "$cfg" || return 1
+  if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+    [[ -f "$path" ]] || guard_warn "[WARN] $path がありません（通常起動時に .claude.json の重ねマウント先として作られます）"
+    echo "[INFO] コンテナの Claude の記録の置き場: $cfg/projects/$PROJECT_NAME/"
+    return 0
+  fi
+  [[ -f "$path" ]] && return 0
+  ( set -C; : > "$path" ) 2>/dev/null || { guard_fail "ERROR: $path を作成できません（同時に作成された可能性があります。再実行してください）。起動を中止します。" || return 1; }
+  validate_claude_json_mountpoint "$cfg" || return 1
+  if [[ ! -f "$path" ]]; then
+    guard_fail "ERROR: $path は .claude.json の重ねマウント先ですが、作成の直後に見つかりません。起動を中止します。" || return 1
+  fi
+  echo "INFO: $path を .claude.json の重ねマウント先として作成しました（中身は空。コンテナの中の Claude Code はここからホストの .claude.json を読みます）" >&2
   return 0
 }
 
@@ -2642,6 +2701,7 @@ check_one_project() {
   guard_ipv6 || true
   guard_claude_json || true
   prepare_claude_config_ro || true
+  prepare_claude_json_mountpoint || true
   guard_plugins_alias || true
 
   local file
@@ -3067,6 +3127,7 @@ fi
 # Codex 経路では同じ mount を使う検査のため、placeholder・必要な build が承認より先行する。
 # Codex 承認を拒否しても、これらや native CLI による専用 home への書込みは残りうる。
 prepare_claude_config_ro
+prepare_claude_json_mountpoint
 guard_plugins_alias
 prepare_codex_host_plugins
 

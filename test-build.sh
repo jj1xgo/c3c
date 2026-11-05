@@ -848,6 +848,154 @@ JCASES
   launcher_sandbox_cleanup
 }
 
+# コンテナの中の Claude Code の記録の置き場をプロジェクトごとに分ける（#241）。launcher は PROJECT_NAME を
+# C3C_CLAUDE_PROJECT_DIR_NAME として compose に渡し（.c3c/env とシェル環境の同名の値は使わない）、
+# CLAUDE_CONFIG_DIR を設定したコンテナの Claude Code が .claude.json を読む重ねマウント先
+# <基点>/.claude/.claude.json を用意する。不正な型なら 13 項目を作る前に止め、--check は作らない。
+# shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
+run_project_dir_launcher_tests() {
+  local root bin home proj out rc before_ctx
+  launcher_sandbox_init
+  local n_name n_base="$root/pd" n_case n_kind n_mode n_snap_ok
+
+  # N1: 渡る名前は launcher が出す PROJECT_NAME（<basename>-<8 字>）と同じ
+  run_launcher
+  n_name=$(printf '%s\n' "$out" | sed -n 's/^PROJECT: //p')
+  check "N1: compose に C3C_CLAUDE_PROJECT_DIR_NAME=PROJECT_NAME が渡る（rc=$rc、$n_name）" \
+    bash -c '[ "$1" -eq 0 ] && [[ "$2" =~ ^proj-[0-9a-f]{8}$ ]] && grep -qxF "C3C_CLAUDE_PROJECT_DIR_NAME=$2" "$3/compose-env"' \
+      _ "$rc" "$n_name" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N2: .c3c/env とシェル環境の同名の値は使わない
+  mkdir -p "$proj/.c3c"
+  printf 'C3C_CLAUDE_PROJECT_DIR_NAME=evil\n' > "$proj/.c3c/env"
+  run_launcher
+  check "N2: .c3c/env の C3C_CLAUDE_PROJECT_DIR_NAME を使わない（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && grep -qxF "C3C_CLAUDE_PROJECT_DIR_NAME=$2" "$3/compose-env"' _ "$rc" "$n_name" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  rm -rf "$proj/.c3c"
+  run_launcher C3C_CLAUDE_PROJECT_DIR_NAME=evil
+  check "N2: シェル環境の C3C_CLAUDE_PROJECT_DIR_NAME を使わない（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && grep -qxF "C3C_CLAUDE_PROJECT_DIR_NAME=$2" "$3/compose-env"' _ "$rc" "$n_name" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N3: マウント先が無ければ空の通常ファイルを作り、作成を INFO で示す（既定の基点 = HOME）
+  rm -f "$home/.claude/.claude.json"
+  run_launcher
+  check "N3: 既定の基点にマウント先を空で作る（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ -f "$2/.claude/.claude.json" ] && [ ! -L "$2/.claude/.claude.json" ] && [ ! -s "$2/.claude/.claude.json" ] \
+      && printf "%s" "$3" | grep -F "INFO" | grep -qF "$2/.claude/.claude.json を .claude.json の重ねマウント先として作成しました"' \
+      _ "$rc" "$home" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+  # 既にある通常ファイルの中身は変えず、作成の INFO も出さない
+  printf 'keep\n' > "$home/.claude/.claude.json"
+  run_launcher
+  check "N3: 既存のマウント先の中身を変えず、作成の INFO を出さない（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ "$(cat "$2/.claude/.claude.json")" = keep ] && ! printf "%s" "$3" | grep -qF "重ねマウント先として作成しました"' \
+      _ "$rc" "$home" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N4: CLAUDE_CONFIG_DIR を設定した基点でも、その基点の .claude/.claude.json を作る
+  rm -rf "$n_base"; mkdir -p "$n_base/.claude"; printf '{}\n' > "$n_base/.claude.json"
+  run_launcher CLAUDE_CONFIG_DIR="$n_base"
+  check "N4: CLAUDE_CONFIG_DIR の基点にマウント先を作る（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && [ -f "$2/.claude/.claude.json" ] && [ ! -s "$2/.claude/.claude.json" ]' _ "$rc" "$n_base"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N5: 不正な型は 13 項目を作る前に止まり、compose を呼ばない。--check も失敗し、書き込まない
+  while IFS='|' read -r n_case n_kind; do
+    for n_mode in run check; do
+      rm -rf "$n_base"; mkdir -p "$n_base/.claude"; printf '{}\n' > "$n_base/.claude.json"
+      case "$n_kind" in
+        link) printf '{}\n' > "$n_base/link-target.json" && ln -s ../link-target.json "$n_base/.claude/.claude.json" ;;
+        dangling) ln -s ../missing-target.json "$n_base/.claude/.claude.json" ;;
+        dir) mkdir "$n_base/.claude/.claude.json" ;;
+        fifo) mkfifo "$n_base/.claude/.claude.json" ;;
+      esac
+      n_snap_ok=1
+      snapshot_config_ro_targets "$n_base/.claude" > "$root/n-before" 2>> "$LOG_FILE" || n_snap_ok=0
+      launcher_sandbox_reset_records
+      if [[ "$n_mode" == run ]]; then
+        run_launcher CLAUDE_CONFIG_DIR="$n_base"
+      else
+        run_launcher_check CLAUDE_CONFIG_DIR="$n_base"
+      fi
+      snapshot_config_ro_targets "$n_base/.claude" > "$root/n-after" 2>> "$LOG_FILE" || n_snap_ok=0
+      check "N5: $n_case は ERROR で止まる（$n_mode、rc=$rc）" \
+        bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -F "ERROR" | grep -F ".claude/.claude.json" | grep -qF "重ねマウント先"' _ "$rc" "$out"
+      check "N5: $n_case は compose を呼ばない（$n_mode）" [ ! -e "$root/compose-calls" ]
+      check "N5: $n_case は基点の .claude を変えない（13 項目も作らない、$n_mode）" \
+        bash -c '[ "$1" -eq 1 ] && cmp -s "$2" "$3"' _ "$n_snap_ok" "$root/n-before" "$root/n-after"
+      if [[ "$n_mode" == check ]]; then
+        check "N5: $n_case は --check の結果を FAIL にする" bash -c 'printf "%s" "$1" | grep -qF "→ 結果: FAIL"' _ "$out"
+      fi
+      printf '%s\n' "$out" >> "$LOG_FILE"
+    done
+  done <<'NCASES'
+N5a 有効な symlink|link
+N5b dangling symlink|dangling
+N5c ディレクトリ|dir
+N5d FIFO|fifo
+NCASES
+
+  # N6: --check はマウント先を作らずに WARN し、記録の置き場を INFO で示す
+  rm -rf "$n_base"; mkdir -p "$n_base/.claude"; printf '{}\n' > "$n_base/.claude.json"
+  n_snap_ok=1
+  snapshot_config_ro_targets "$n_base/.claude" > "$root/n-before" 2>> "$LOG_FILE" || n_snap_ok=0
+  run_launcher_check CLAUDE_CONFIG_DIR="$n_base"
+  snapshot_config_ro_targets "$n_base/.claude" > "$root/n-after" 2>> "$LOG_FILE" || n_snap_ok=0
+  check "N6: --check は無いマウント先を WARN する（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && printf "%s" "$2" | grep -F "[WARN]" | grep -qF "$3/.claude/.claude.json がありません（通常起動時に .claude.json の重ねマウント先として作られます）"' \
+      _ "$rc" "$out" "$n_base"
+  check "N6: --check はマウント先を作らない" bash -c '[ "$1" -eq 1 ] && cmp -s "$2" "$3" && [ ! -e "$4/.claude/.claude.json" ]' \
+    _ "$n_snap_ok" "$root/n-before" "$root/n-after" "$n_base"
+  check "N6: --check は記録の置き場を INFO で示す" \
+    bash -c 'printf "%s" "$1" | grep -qxF "[INFO] コンテナの Claude の記録の置き場: $2/.claude/projects/$3/"' _ "$out" "$n_base" "$n_name"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N7: 基点の .claude 自体が無いときの --check は、新しい WARN も置き場の INFO も出さない
+  rm -rf "$n_base"; mkdir -p "$n_base"; printf '{}\n' > "$n_base/.claude.json"
+  run_launcher_check CLAUDE_CONFIG_DIR="$n_base"
+  check "N7: .claude が無い基点の --check は新しい WARN と置き場の INFO を出さない（rc=$rc）" \
+    bash -c '[ "$1" -eq 0 ] && ! printf "%s" "$2" | grep -qF "重ねマウント先" && ! printf "%s" "$2" | grep -qF "記録の置き場" && [ ! -e "$3/.claude" ]' \
+      _ "$rc" "$out" "$n_base"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N8: Codex 経路も同じ compose サービスを使うので、同じマウント先を用意する
+  rm -rf "$n_base"; mkdir -p "$n_base/.claude" "$root/codex-home" "$proj/.c3c"; printf '{}\n' > "$n_base/.claude.json"
+  printf 'CODEX_DIR=%s\n' "$root/codex-home" > "$proj/.c3c/env"
+  launcher_sandbox_reset_records
+  # 未ビルド扱い（TEST_IMAGE_EXISTS_RC=1）にして、Codex の label guard より先の compose の build まで進める
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" CLAUDE_CONFIG_DIR="$n_base" TEST_IMAGE_EXISTS_RC=1 "${SCRIPT_DIR}/c3c" codex "$proj" 2>&1) && rc=0 || rc=$?
+  rm -rf "$proj/.c3c"
+  check "N8: Codex 経路もマウント先を作り、名前を compose に渡す（rc=$rc）" \
+    bash -c '[ -f "$1/.claude/.claude.json" ] && [ -e "$2/compose-calls" ] && grep -qxF "C3C_CLAUDE_PROJECT_DIR_NAME=$3" "$2/compose-env.1"' \
+      _ "$n_base" "$root" "$n_name"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  # N9: 作成の直後にもう一度型を検査する（作成と検査の間の置き換えへの防御）。関数を抽出し、
+  # 型検査を「作成の後は不正」と答える stub に替えて、作成の前後で 2 回呼ばれ、後の失敗で止まることを見る。
+  local fn n_got
+  fn=$(sed -n '/^prepare_claude_json_mountpoint()/,/^}/p' "${SCRIPT_DIR}/c3c")
+  check "N9: prepare_claude_json_mountpoint() を抽出できる" [ -n "$fn" ]
+  rm -rf "$n_base"; mkdir -p "$n_base/.claude"
+  n_got=$(bash -uo pipefail -c "$fn"'
+CHECK_MODE=0; PROJECT_NAME=x; CLAUDE_CONFIG_BASE_REAL="$1"
+guard_fail() { printf "%s\n" "$@" >&2; exit 1; }
+guard_warn() { :; }
+resolve_claude_config_base() { return 0; }
+validate_claude_json_mountpoint() {
+  if [[ -e "$1/.claude.json" ]]; then echo after; return 1; fi
+  echo before; return 0
+}
+prepare_claude_json_mountpoint; echo "rc=$?"' _ "$n_base" 2>/dev/null) || true
+  check "N9: 作成の前後で型を検査し、作成の後の不正で止まる（$(printf '%s' "$n_got" | tr '\n' ' ')）" \
+    [ "$(printf '%s' "$n_got" | tr '\n' ' ')" = "before after rc=1" ]
+
+  rm -rf "$n_base"
+  launcher_sandbox_cleanup
+}
+
 # ランチャーテストの実行入口。通常実行と --launcher-only の双方がこの関数をちょうど
 # 1 回呼ぶ（個別テスト関数を直接呼ばない。呼び出しがここに一本化されていないと、
 # 入口を増やしたときに一方からだけ新テストが漏れる）。
@@ -855,6 +1003,7 @@ run_launcher_tests() {
   log "## ランチャー（c3c）のガード検証（ダミー podman、実 podman 不要）"
   run_config_ro_launcher_tests
   run_claude_json_launcher_tests
+  run_project_dir_launcher_tests
   run_plugins_alias_launcher_tests
   run_instruction_mount_launcher_tests
   run_ipv6_launcher_tests

@@ -560,6 +560,8 @@ class CheckMigrationInfoTests(LaunchCase):
             (self.home / '.claude' / name).mkdir()
         for name in ('settings.json', 'CLAUDE.md', 'statusline.sh'):
             (self.home / '.claude' / name).write_text('')
+        # .claude.json の重ねマウント先（#241。無いと --check が WARN にする）
+        (self.home / '.claude' / '.claude.json').write_text('')
         self.state['image_exists'] = False
         self.set_pref('codex')
         self.approve_codex()

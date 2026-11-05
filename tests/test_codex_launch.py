@@ -62,7 +62,7 @@ elif head == 'image inspect':
         sys.exit(125)
     fmt = args[args.index('--format') + 1] if '--format' in args else ''
     if 'io.c3c.image-layout' in fmt:
-        print(state.get('layout', '2'))
+        print(state.get('layout', '3'))
     elif 'io.c3c.claude-managed-settings' in fmt:
         print(state.get('managed', '1'))
     elif 'io.c3c.claude-project-audit-protocol' in fmt:
@@ -80,7 +80,7 @@ elif args[:1] == ['compose']:
     if verb == 'build':
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
-        state['layout'] = state.get('build_layout', '2')
+        state['layout'] = state.get('build_layout', '3')
         state['managed'] = state.get('build_managed', '1')
         state['claude_label'] = state.get('build_claude_label', '1')
         save()

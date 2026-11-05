@@ -644,7 +644,7 @@ case "\$1 \$2" in
     fi
     exit "\${TEST_IMAGE_EXISTS_RC-0}" ;;
   "image inspect")
-    if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-2}"; fi
+    if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-3}"; fi
     if [[ "\$*" == *io.c3c.claude-managed-settings* ]]; then printf '%s\n' "\${TEST_CLAUDE_MANAGED_SETTINGS-1}"; fi
     if [[ "\$*" == *claude-container.* ]]; then printf '%s\n' "\$*" >> "$root/legacy-label-reads"; fi
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
@@ -1889,7 +1889,7 @@ run_ipv6_launcher_tests() {
   check "IPv6=1 の build と run は同じ override を使う" \
     bash -c '[ "$1" -eq 0 ] && [ "$(grep -cxF "$2/compose.ipv6.yml" "$3/compose-args")" -eq 2 ] && grep -qF "https://api.github.com/meta" "$3/curl-calls"' _ "$rc" "$SCRIPT_DIR" "$root"
   printf '%s\n' "$out" >> "$LOG_FILE"
-  # LY 系（改名 第 2 段）: io.c3c.image-layout が 2 でない既存イメージは compose を呼ばずに止まる。
+  # LY 系（改名 第 2 段、#241 で 3 に上げた）: io.c3c.image-layout が 3 でない既存イメージは compose を呼ばずに止まる。
   rm -f "$proj/.c3c/env"
   run_launcher TEST_IMAGE_LAYOUT=
   check "LY-1: 配置 label の無い既存イメージは -b を案内して起動を止める（rc=$rc）" \
@@ -1901,7 +1901,17 @@ run_ipv6_launcher_tests() {
   check "LY-3: --check は配置 label の不一致を FAIL にする（rc=$rc）" \
     bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"コンテナ内の配置に対応していません"* ]]' _ "$rc" "$out"
   run_launcher
-  check "LY-4: 配置 label が 2 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
+  check "LY-4: 配置 label が 3 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
+  # LY-8〜10（#241）: 配置 label が 2（記録の置き場を分ける前）のイメージは、通常起動と --check で止まり -b を案内する。-b なら通る。
+  run_launcher TEST_IMAGE_LAYOUT=2
+  check "LY-8: 配置 label が 2 の既存イメージは -b を案内して起動を止める（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && printf "%s" "$3" | grep -F "ERROR" | grep -F "今の c3c のコンテナ内の配置に対応していません" | grep -F "必要な値 3" | grep -qF -- "-b で再ビルド"' _ "$rc" "$root" "$out"
+  run_launcher_check TEST_IMAGE_LAYOUT=2
+  check "LY-9: --check は配置 label が 2 の既存イメージを FAIL にし -b を案内する（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && printf "%s" "$2" | grep -F "今の c3c のコンテナ内の配置に対応していません" | grep -qF -- "-b で再ビルド"' _ "$rc" "$out"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" TEST_IMAGE_LAYOUT=2 "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "LY-10: -b なら配置 label が 2 でも止まらない（rc=$rc）" bash -c '[ "$1" -eq 0 ] && grep -qx build "$2/compose-args.1"' _ "$rc" "$root"
   # LY-5・6: image exists の不在（rc 1）以外の失敗（rc 125 等）は未ビルドと扱わず止める（PR #186 の Codex 指摘）。
   run_launcher TEST_IMAGE_EXISTS_RC=125
   check "LY-5: イメージの有無を確認できなければ compose を呼ばずに止める（rc=$rc）" \
@@ -2544,7 +2554,7 @@ check "Claude project 設定ゲート helper の起動" podman run --rm --networ
 # shellcheck disable=SC2016  # bash -c の検証式は親で展開せず、位置引数を子シェル内で評価する
 check "Claude project 設定ゲートの protocol label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-project-audit-protocol\"}}" "$1")" = 1 ]' _ "$IMAGE"
 # shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
-check "コンテナ内の配置 label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.image-layout\"}}" "$1")" = 2 ]' _ "$IMAGE"
+check "コンテナ内の配置 label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.image-layout\"}}" "$1")" = 3 ]' _ "$IMAGE"
 # shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
 check "Claude managed settings label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-managed-settings\"}}" "$1")" = 1 ]' _ "$IMAGE"
 # コンテナの中の /cd を止める managed settings（#243）。配置（root:root、node から書込不可）と内容だけを見る。

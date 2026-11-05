@@ -454,11 +454,13 @@ LABEL io.c3c.ipv6-support="1"
 # label 欠落では preflight 自体を起動しない）。protocol の内容は codex-mcp-audit.py と entrypoint.sh。
 # 上と同じく CACHEBUST を消費する RUN より後に置く。
 LABEL io.c3c.codex-audit-protocol="2"
-# コンテナ内の配置の版（改名 第 2 段、v16）。launcher の guard_image_layout() は、この label が対応値（2）の
-# イメージでだけ本起動・検査用コンテナを起動する。v15.1 以前のイメージは承認記録と秘密を旧パスで読むため、
+# コンテナ内の配置の版。launcher の guard_image_layout() は、この label が対応値（3）のイメージでだけ
+# 本起動・検査用コンテナを起動する。2（改名 第 2 段、v16）: v15.1 以前のイメージは承認記録と秘密を旧パスで読むため、
 # v16 の compose（/etc/c3c/* と ~/.config/c3c/secrets だけにマウント）では承認や秘密が黙って欠ける。
+# 3（#241）: entrypoint.sh が CLAUDE_CONFIG_DIR と CLAUDE_CODE_PROJECT_DIR_NAME を確定し、compose が .claude.json を
+# /home/node/.claude/.claude.json にも重ねる。古いイメージの Claude Code では名前が黙って無視されて記録の共有が続く。
 # コンテナ内のパスや env の配置を変えたら値を上げ、c3c の IMAGE_LAYOUT_VERSION も揃える。
-LABEL io.c3c.image-layout="2"
+LABEL io.c3c.image-layout="3"
 # コンテナの中の /cd を止める managed settings（#243、上の claude-managed-settings の RUN）の版。launcher の
 # check_claude_managed_settings() は、Claude 経路でこの label が対応値（1）のイメージでだけ起動する。
 LABEL io.c3c.claude-managed-settings="1"

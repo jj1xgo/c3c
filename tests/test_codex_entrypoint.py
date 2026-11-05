@@ -43,7 +43,8 @@ args = sys.argv[1:]
 kind = 'version' if args == ['--version'] else 'list' if 'mcp' in args and 'list' in args else 'exec'
 with open(state['calls'], 'a') as out:
     out.write(json.dumps({'kind': kind, 'args': args, 'argv0': sys.argv[0], 'cwd': os.getcwd(),
-                          'env': {k: os.environ.get(k) for k in ('CODEX_HOME', 'HOME', 'PATH', 'MCP_TOKEN', 'CC_AGENT')}}) + '\\n')
+                          'env': {k: os.environ.get(k) for k in ('CODEX_HOME', 'HOME', 'PATH', 'MCP_TOKEN', 'CC_AGENT',
+                                                  'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PROJECT_DIR_NAME')}}) + '\\n')
 if kind == 'version':
     sys.stdout.write(state.get('version', 'codex-cli 0.156.0\\n'))
 elif kind == 'list':
@@ -62,6 +63,10 @@ exit 0
 STDIO_ALPHA = ('[mcp_servers.alpha]\ncommand = "python3"\nargs = ["server.py"]\ncwd = "/workspace"\n'
                'env_vars = ["HOME"]\nenv = { API_KEY = "v" }\n')
 HELPER_HTTP = '[mcp_servers.remote]\nurl = "https://mcp.example/mcp"\nhttp_headers_helper = "/bin/x"\n'
+
+
+VALID_PROJECT_DIR_NAME = 'proj-0123abcd'
+FIXED_CLAUDE_CONFIG_DIR = '/home/node/.claude'
 
 
 class EntrypointCase(unittest.TestCase):
@@ -90,7 +95,7 @@ class EntrypointCase(unittest.TestCase):
         self.codex = self.root / 'codex'
         self.codex.write_text(CODEX % str(self.state_path))
         self.codex.chmod(0o755)
-        for name, extra in (('sudo', 'echo "firewall stdout noise"'), ('refresh', ''), ('claude', 'printf "claude-env MCP_TOKEN=%s CODEX_HOME=%s PATH=%s\\n" "${MCP_TOKEN-unset}" "${CODEX_HOME-unset}" "$PATH" >> "$RECORD"')):
+        for name, extra in (('sudo', 'echo "firewall stdout noise"'), ('refresh', ''), ('claude', 'printf "claude-env MCP_TOKEN=%s CODEX_HOME=%s CLAUDE_CONFIG_DIR=%s CLAUDE_CODE_PROJECT_DIR_NAME=%s PATH=%s\\n" "${MCP_TOKEN-unset}" "${CODEX_HOME-unset}" "${CLAUDE_CONFIG_DIR-unset}" "${CLAUDE_CODE_PROJECT_DIR_NAME-unset}" "$PATH" >> "$RECORD"')):
             path = self.bin / name
             path.write_text(RECORDER.format(name=name, extra=extra))
             path.chmod(0o755)
@@ -120,8 +125,9 @@ class EntrypointCase(unittest.TestCase):
                   .replace('cd -- /workspace', 'cd -- ' + str(self.workspace)))
         self.entrypoint = self.root / 'entrypoint.sh'
         self.entrypoint.write_text(source)
+        # CLAUDE_CODE_PROJECT_DIR_NAME は compose が launcher の値から渡す（#241。entrypoint が検証する）
         self.env = {'PATH': str(self.bin) + ':' + os.defpath, 'RECORD': str(self.record), 'HOME': str(self.root / 'home'),
-                    'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8'}
+                    'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8', 'CLAUDE_CODE_PROJECT_DIR_NAME': VALID_PROJECT_DIR_NAME}
 
     def write_project_config(self, text):
         self.config_text = text
@@ -177,6 +183,73 @@ class ClaudePathTests(EntrypointCase):
         self.assertIn('TTY', result.stderr)
         self.assertFalse(any(r.startswith('claude') for r in self.records))
         self.assertNotIn('/dev/tty:', result.stderr)
+
+
+class ProjectDirEnvTests(EntrypointCase):
+    """#241: 記録の置き場の名前を検証し、CLAUDE_CONFIG_DIR を固定値で確定してから CLI に渡す（秘密の export より前）。"""
+
+    def claude_env(self):
+        line = next(r for r in self.records if r.startswith('claude-env'))
+        return dict(item.split('=', 1) for item in line.split()[1:] if '=' in item)
+
+    def run_agent(self, agent):
+        if agent == 'codex':
+            self.approve_from_preflight()
+            result = self.run_entrypoint('codex', 'run', '0')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return next(c for c in self.codex_calls if c['kind'] == 'exec')['env']
+        result = self.run_entrypoint('claude')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return self.claude_env()
+
+    def test_valid_name_and_fixed_config_dir_reach_cli(self):
+        for agent in ('claude', 'codex'):
+            with self.subTest(agent=agent):
+                env = self.run_agent(agent)
+                self.assertEqual(env['CLAUDE_CODE_PROJECT_DIR_NAME'], VALID_PROJECT_DIR_NAME)
+                self.assertEqual(env['CLAUDE_CONFIG_DIR'], FIXED_CLAUDE_CONFIG_DIR)
+
+    def test_invalid_name_is_rejected_before_firewall(self):
+        for agent in ('claude', 'codex'):
+            for name in (None, '', 'a' * 65, '../x', 'Proj-0123abcd', 'a b', 'a/b'):
+                with self.subTest(agent=agent, name=name):
+                    if name is None:
+                        self.env.pop('CLAUDE_CODE_PROJECT_DIR_NAME', None)
+                    else:
+                        self.env['CLAUDE_CODE_PROJECT_DIR_NAME'] = name
+                    result = self.run_entrypoint(agent, 'run' if agent == 'codex' else None, '0' if agent == 'codex' else None)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn('ERROR', result.stderr)
+                    self.assertIn('CLAUDE_CODE_PROJECT_DIR_NAME', result.stderr)
+                    self.assertEqual(self.records, [])
+                    self.assertEqual(self.codex_calls, [])
+        self.env['CLAUDE_CODE_PROJECT_DIR_NAME'] = 'a' * 64
+        self.assertEqual(self.run_entrypoint('claude').returncode, 0)
+
+    def test_incoming_config_dir_is_overwritten_with_fixed_value(self):
+        # 持ち主の判断（2026-11-05）: 入ってきた値が何でも、CLI には固定値だけが届く
+        for agent in ('claude', 'codex'):
+            for value in (None, '/home/node/.claude/', '/tmp/other', ''):
+                with self.subTest(agent=agent, value=value):
+                    if value is None:
+                        self.env.pop('CLAUDE_CONFIG_DIR', None)
+                    else:
+                        self.env['CLAUDE_CONFIG_DIR'] = value
+                    env = self.run_agent(agent)
+                    self.assertEqual(env['CLAUDE_CONFIG_DIR'], FIXED_CLAUDE_CONFIG_DIR)
+
+    def test_secrets_export_cannot_replace_the_values(self):
+        export = self.fixture_mount_dir / 'export'
+        (export / 'CLAUDE_CONFIG_DIR').write_text('/tmp/evil\n')
+        (export / 'CLAUDE_CODE_PROJECT_DIR_NAME').write_text('evil\n')
+        for agent in ('claude', 'codex'):
+            with self.subTest(agent=agent):
+                env = self.run_agent(agent)
+                self.assertEqual(env['CLAUDE_CONFIG_DIR'], FIXED_CLAUDE_CONFIG_DIR)
+                self.assertEqual(env['CLAUDE_CODE_PROJECT_DIR_NAME'], VALID_PROJECT_DIR_NAME)
+        result = self.run_entrypoint('claude')
+        for name in ('CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PROJECT_DIR_NAME'):
+            self.assertIn(f"secrets/export: '{name}' は既に環境変数に設定されています", result.stderr)
 
 
 class AgentValidationTests(EntrypointCase):

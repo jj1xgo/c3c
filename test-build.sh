@@ -1754,7 +1754,7 @@ run_ipv6_launcher_tests() {
   # MS 系（#243）: Claude 経路では、/cd を止める managed settings の label が 1 でない既存イメージで compose を呼ばずに止まる。
   run_launcher TEST_CLAUDE_MANAGED_SETTINGS=
   check "MS-1: managed settings の label の無い既存イメージは -b を案内して起動を止める（rc=$rc）" \
-    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"io.c3c.claude-managed-settings"* && "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"io.c3c.claude-managed-settings"* && "$3" == *"-b で再ビルドしてください（#243）"* ]]' _ "$rc" "$root" "$out"
   run_launcher TEST_CLAUDE_MANAGED_SETTINGS=1
   check "MS-2: managed settings の label が 1 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
   run_launcher_check TEST_CLAUDE_MANAGED_SETTINGS=

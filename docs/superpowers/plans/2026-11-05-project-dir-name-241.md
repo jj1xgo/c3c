@@ -163,6 +163,14 @@
 - [ ] 持ち主が確かめた後、各プロジェクトの新しい置き場（`c3c --check <dir>` の INFO）の `memory/` へ写し、`MEMORY.md` に行を足す。元の `-workspace/memory/` は消さない。
 - [ ] 振り分けの結果を handover に書く。
 
+## 実装時の変更（2026-11-05、持ち主決定）
+
+`CLAUDE_CONFIG_DIR` の固定値は `compose.yml` に書かず、`entrypoint.sh` が無条件に `/home/node/.claude` で export して readonly にする形に変えた（Codex 経路の `CODEX_HOME` と同じ型）。podman-compose 1.6.0 は、ホストに無い変数を service の `environment` の値で補間するので、計画どおりに書くと volumes の `${CLAUDE_CONFIG_DIR:-~}` がすべて `/home/node/.claude` に化けた（最小例と `ComposeContractTests` で実測。Docker Compose では起きない）。これに伴い、次の記述は置き換わった。
+- Global Constraints の「`CLAUDE_CONFIG_DIR` は `compose.yml` に固定値 `/home/node/.claude` で書く」と、entrypoint の「`CLAUDE_CONFIG_DIR` がちょうど `/home/node/.claude`」の検証 → entrypoint が入ってきた値を使わず固定値で上書きする（検証はしない）。`CLAUDE_CODE_PROJECT_DIR_NAME` の検証はそのまま。
+- Task 2 の compose の environment の `CLAUDE_CONFIG_DIR` と、`lint.sh` の存在の検査 → `lint.sh` は compose の environment にこの名前が**無い**ことを検査する。
+- Task 2 のテストの Expected（`environment` に `CLAUDE_CONFIG_DIR: /home/node/.claude` がある）→ 無いこと、ホストで未設定のときも bind の source が HOME の下に解決されること。
+- Task 3 の `ProjectDirEnvTests` の (c)（未設定・`/home/node/.claude/`・別のパスなら `ERROR` で rc 1）→ どの値が来ても CLI には固定値が届く。
+
 ## 計画レビューの記録
 
 - Self-Review: 判断を委ねる記述 1 件（entrypoint のテストの置き場 → `tests/test_codex_entrypoint.py` の `ProjectDirEnvTests` に確定）、名前の欠け 1 件（ランチャーの検査の関数名 `run_project_dir_launcher_tests` を明記）、検証の漏れ 2 件（`run_config_ro_tests` の fixture にマウント先が要る、`tests/test-runtime.sh` は通常の entrypoint を通る）、スキルの指定の漏れ 1 件（Task 5 の receiving-code-review）を修正

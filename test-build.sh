@@ -630,6 +630,7 @@ case "\$1 \$2" in
     exit "\${TEST_IMAGE_EXISTS_RC-0}" ;;
   "image inspect")
     if [[ "\$*" == *io.c3c.image-layout* ]]; then printf '%s\n' "\${TEST_IMAGE_LAYOUT-2}"; fi
+    if [[ "\$*" == *io.c3c.claude-managed-settings* ]]; then printf '%s\n' "\${TEST_CLAUDE_MANAGED_SETTINGS-1}"; fi
     if [[ "\$*" == *claude-container.* ]]; then printf '%s\n' "\$*" >> "$root/legacy-label-reads"; fi
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
     if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH-}"; fi
@@ -1750,6 +1751,16 @@ run_ipv6_launcher_tests() {
     bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"の有無を確認できません"* ]]' _ "$rc" "$out"
   rm -f "$root/image-exists-called"
   printf '%s\n' "$out" >> "$LOG_FILE"
+  # MS 系（#243）: Claude 経路では、/cd を止める managed settings の label が 1 でない既存イメージで compose を呼ばずに止まる。
+  run_launcher TEST_CLAUDE_MANAGED_SETTINGS=
+  check "MS-1: managed settings の label の無い既存イメージは -b を案内して起動を止める（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && [ ! -e "$2/compose-args" ] && [[ "$3" == *"io.c3c.claude-managed-settings"* && "$3" == *"-b"* ]]' _ "$rc" "$root" "$out"
+  run_launcher TEST_CLAUDE_MANAGED_SETTINGS=1
+  check "MS-2: managed settings の label が 1 なら起動する（rc=$rc）" bash -c '[ "$1" -eq 0 ]' _ "$rc"
+  run_launcher_check TEST_CLAUDE_MANAGED_SETTINGS=
+  check "MS-3: --check は managed settings の label の不一致を FAIL にする（rc=$rc）" \
+    bash -c '[ "$1" -ne 0 ] && printf "%s" "$2" | grep -q "結果: FAIL" && [[ "$2" == *"io.c3c.claude-managed-settings"* ]]' _ "$rc" "$out"
+  printf '%s\n' "$out" >> "$LOG_FILE"
   # L2 系（改名 第 2 段）: 単独の label は io.c3c.* だけを読み、旧 label へ fallback しない。
   rm -f "$proj/.c3c/env" "$root/legacy-label-reads"
   run_launcher
@@ -2370,6 +2381,23 @@ check "Claude project 設定ゲート helper の起動" podman run --rm --networ
 check "Claude project 設定ゲートの protocol label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-project-audit-protocol\"}}" "$1")" = 1 ]' _ "$IMAGE"
 # shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
 check "コンテナ内の配置 label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.image-layout\"}}" "$1")" = 2 ]' _ "$IMAGE"
+# shellcheck disable=SC2016  # 同上（位置引数を子シェル内で評価する）
+check "Claude managed settings label" bash -c '[ "$(podman image inspect --format "{{index .Labels \"io.c3c.claude-managed-settings\"}}" "$1")" = 1 ]' _ "$IMAGE"
+# コンテナの中の /cd を止める managed settings（#243）。配置（root:root、node から書込不可）と内容だけを見る。
+# 効き目（/cd が拒否されること）は認証なしでは確かめられないので、実機の起動で確かめる（README「変更後の確認」）。
+# shellcheck disable=SC2016  # コンテナ内の sh で評価する
+CLAUDE_MANAGED_SETTINGS_PROBE='set -e
+d=/etc/claude-code; f=/etc/claude-code/managed-settings.json
+[ -d "$d" ] && ! [ -L "$d" ] || { echo "/etc/claude-code が symlink でないディレクトリではない"; exit 1; }
+[ "$(stat -c %u:%g:%a "$d")" = 0:0:755 ] || { echo "/etc/claude-code が root:root 0755 ではない: $(stat -c %u:%g:%a "$d")"; exit 1; }
+[ -f "$f" ] && ! [ -L "$f" ] || { echo "managed-settings.json が symlink でない通常ファイルではない"; exit 1; }
+[ "$(stat -c %u:%g:%a "$f")" = 0:0:644 ] || { echo "managed-settings.json が root:root 0644 ではない: $(stat -c %u:%g:%a "$f")"; exit 1; }
+! [ -e /etc/claude-code/managed-settings.d ] && ! [ -L /etc/claude-code/managed-settings.d ] || { echo "managed-settings.d がある"; exit 1; }
+! [ -w "$f" ] && ! [ -w "$d" ] || { echo "managed-settings.json かそのディレクトリが node から書込可"; exit 1; }
+python3 -I -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {\"permissions\": {\"deny\": [\"Cd\"]}} else 1)" "$f" || { echo "managed-settings.json の内容が想定と違う"; cat "$f"; exit 1; }
+[ "$(id -u)" != 0 ]'
+check "Claude managed settings の配置（root:root・node から書込不可・deny Cd だけ）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$CLAUDE_MANAGED_SETTINGS_PROBE"
 check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version
@@ -2617,10 +2645,13 @@ if stage_common_context "$OPTOUT_CONTEXT_DIR"; then
   # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
   check "Codex opt-out: Node は同梱 default のまま入っている" \
     bash -c '[ "$(podman run --rm --network=none "$1" node --version)" = "v$2" ]' _ "$OPTOUT_IMAGE" "$DEFAULT_NODE_VERSION"
+  check "Codex opt-out: Claude managed settings がある" \
+    podman run --rm --network=none "$OPTOUT_IMAGE" sh -c "$CLAUDE_MANAGED_SETTINGS_PROBE"
 else
   check "Codex opt-out: 空の codex-version.txt でビルド成功 (staging failed: see stderr above)" false
   check "Codex opt-out: codex が入っていない（起動口・同梱 bubblewrap・要件ファイルなし）" false
   check "Codex opt-out: Node は同梱 default のまま入っている" false
+  check "Codex opt-out: Claude managed settings がある" false
 fi
 podman rmi "$OPTOUT_IMAGE" 2>/dev/null
 rm -rf "$OPTOUT_CONTEXT_DIR"

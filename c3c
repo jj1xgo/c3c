@@ -31,6 +31,10 @@ readonly CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION CLAUDE_PROJECT_AUDIT_PROTOCOL_LAB
 IMAGE_LAYOUT_LABEL=io.c3c.image-layout
 IMAGE_LAYOUT_VERSION=2
 readonly IMAGE_LAYOUT_LABEL IMAGE_LAYOUT_VERSION
+# コンテナの中の /cd を止める managed settings の版（#243）。Dockerfile.claude の LABEL io.c3c.claude-managed-settings と一致させる。
+CLAUDE_MANAGED_SETTINGS_LABEL=io.c3c.claude-managed-settings
+CLAUDE_MANAGED_SETTINGS_VERSION=1
+readonly CLAUDE_MANAGED_SETTINGS_LABEL CLAUDE_MANAGED_SETTINGS_VERSION
 
 # --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
@@ -1128,6 +1132,24 @@ check_image_layout() {
     guard_fail "ERROR: イメージ $IMAGE_NAME は c3c v16 のコンテナ内の配置に対応していません（label $IMAGE_LAYOUT_LABEL=${layout:-なし}、必要な値 $IMAGE_LAYOUT_VERSION）。v15 以前にビルドしたイメージは承認記録と秘密を旧パスで読むため、-b で再ビルドしてください。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
   fi
   [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   イメージの配置: $IMAGE_LAYOUT_LABEL=$layout"
+  check_claude_managed_settings || return 1
+  return 0
+}
+
+# コンテナの中の /cd を止める managed settings（#243）を持つイメージかを label で確かめる。check_image_layout() が
+# イメージの存在（rc 0）と配置を確かめた後にだけ呼ぶので、podman image exists は呼び直さない。Codex 経路は
+# Claude Code の /cd を使わないので見ない（止めると Codex の利用者に不要な -b を強いる）。--check は agent 無指定
+# なら Claude の診断なので、ここも判定する。
+check_claude_managed_settings() {
+  [[ "$AGENT" == claude ]] || return 0
+  local v
+  if ! v=$(podman image inspect --format "{{index .Labels \"$CLAUDE_MANAGED_SETTINGS_LABEL\"}}" "$IMAGE_NAME" 2>/dev/null); then
+    guard_fail "ERROR: イメージ $IMAGE_NAME を inspect できないため、managed settings への対応を確認できません。起動を中止します。" || return 1
+  fi
+  if [[ "$v" != "$CLAUDE_MANAGED_SETTINGS_VERSION" ]]; then
+    guard_fail "ERROR: イメージ $IMAGE_NAME はコンテナの中の /cd を止める managed settings を持っていません（label $CLAUDE_MANAGED_SETTINGS_LABEL=${v:-なし}、必要な値 $CLAUDE_MANAGED_SETTINGS_VERSION）。-b で再ビルドしてください（#243）。起動を中止します。" ${AGENT_RESELECT_HINT:+"$AGENT_RESELECT_HINT"} || return 1
+  fi
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[OK]   Claude managed settings: $CLAUDE_MANAGED_SETTINGS_LABEL=$v"
   return 0
 }
 

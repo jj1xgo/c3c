@@ -88,6 +88,37 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
     apt-get install -y --no-install-recommends gh && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# >>> c3c claude-managed-settings
+# コンテナの中の Claude Code の /cd を止める（#243）。/cd で移った先（別の branch の worktree など）の
+# .claude/settings.json の hook は、起動時の project 設定ゲートを通らずに確認なしで動くため。managed settings
+# （Linux は /etc/claude-code/managed-settings.json）は user・project・local・--settings のどれからも上書き
+# できず、規則に Cd とだけ書いた deny は /cd 全体を止める。claude.ai から配る server-managed settings がある
+# 環境では、そちらが優先されてこのファイルは読まれない（README「セキュリティモデル」節の /cd の項）。
+# Codex の版指定（opt-out を含む）やほかのビルド入力に関わらず常に作る。次の場合はビルドを止める（上書き・
+# 追記・chmod で直さない）: base image が managed-settings.json か managed-settings.d を持つ（symlink を含む。
+# 管理ポリシーを黙って消さない・混ぜない）、既存の /etc/claude-code が symlink でない root:root 0755 の
+# ディレクトリでない。検査をすべて終えてから書き込む（止めたときに base image の中身を変えない）。
+RUN set -e; \
+    d=/etc/claude-code; f=/etc/claude-code/managed-settings.json; dd=/etc/claude-code/managed-settings.d; \
+    if [ -e "$f" ] || [ -L "$f" ]; then \
+      echo "ERROR: $f が既にあります（base image の管理ポリシー）。c3c は上書きしません" >&2; exit 1; \
+    fi; \
+    if [ -e "$dd" ] || [ -L "$dd" ]; then \
+      echo "ERROR: $dd が既にあります（base image の管理ポリシー）。c3c は混ぜません" >&2; exit 1; \
+    fi; \
+    make_dir=1; \
+    if [ -e "$d" ] || [ -L "$d" ]; then \
+      { [ -d "$d" ] && ! [ -L "$d" ]; } || { echo "ERROR: $d が symlink でないディレクトリではありません" >&2; exit 1; }; \
+      mode="$(stat -c %u:%g:%a "$d")" || { echo "ERROR: $d の所有者・mode を検査できません" >&2; exit 1; }; \
+      [ "$mode" = 0:0:755 ] || { echo "ERROR: $d が root:root（0:0）0755 ではありません（$mode）" >&2; exit 1; }; \
+      make_dir=0; \
+    fi; \
+    if [ "$make_dir" = 1 ]; then install -d -o root -g root -m 0755 "$d"; fi; \
+    printf '%s\n' '{"permissions": {"deny": ["Cd"]}}' > "$f"; \
+    chown root:root "$f"; chmod 0644 "$f"; \
+    echo "INFO: コンテナの中の /cd を止める managed settings: $f"
+# <<< c3c claude-managed-settings
+
 # プロジェクト固有の apt パッケージをインストールする。各行は apt-get へ渡す前に
 # validate-build-input.sh で検証される（素の Debian パッケージ名のみ、バージョン
 # 固定なし、先頭の "-" なし。許可リストの全体はスクリプトを参照）ため、
@@ -428,6 +459,9 @@ LABEL io.c3c.codex-audit-protocol="2"
 # v16 の compose（/etc/c3c/* と ~/.config/c3c/secrets だけにマウント）では承認や秘密が黙って欠ける。
 # コンテナ内のパスや env の配置を変えたら値を上げ、c3c の IMAGE_LAYOUT_VERSION も揃える。
 LABEL io.c3c.image-layout="2"
+# コンテナの中の /cd を止める managed settings（#243、上の claude-managed-settings の RUN）の版。launcher の
+# check_claude_managed_settings() は、Claude 経路でこの label が対応値（1）のイメージでだけ起動する。
+LABEL io.c3c.claude-managed-settings="1"
 # Claude 経路の project 設定ゲートの protocol（#163）。launcher は、.claude か .mcp.json を持つ repo では
 # この label が対応 protocol（1）と一致するイメージでだけ検査用コンテナと本起動を行う。
 LABEL io.c3c.claude-project-audit-protocol="1"

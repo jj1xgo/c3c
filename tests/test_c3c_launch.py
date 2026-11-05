@@ -29,6 +29,7 @@ SUPPORTED = '0.156.0'
 PREFLIGHT_OVERRIDE = 'compose.codex-preflight.yml'
 HASH_A = 'a' * 64
 # Claude の通常起動（既存イメージ、-b なし）で c3c が podman image exists を呼ぶ回数。変更前の c3c（8cd1b5e）で数えた値。
+# 別のガードの変更で回数が変わったら、ここも数え直す（#243 の判定が呼び直していないことを見るための値）。
 IMAGE_EXISTS_CALLS_CLAUDE_LAUNCH = 3
 
 # 実 Podman の代わり。状態ファイルで image の有無・label・preflight の応答・本 run と build の終了コードを
@@ -1151,7 +1152,7 @@ class ClaudeManagedSettingsGateTests(LaunchCase):
         result = self.run_c3c('claude', str(self.proj))
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('io.c3c.claude-managed-settings', result.stderr)
-        self.assertIn('-b', result.stderr)
+        self.assertIn('-b で再ビルドしてください（#243）', result.stderr)
         self.assertEqual(self.compose_calls(), [])
 
     def test_managed_settings_label_present_proceeds(self):
@@ -1193,12 +1194,22 @@ class ClaudeManagedSettingsGateTests(LaunchCase):
         out = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, out)
         self.assertIn('io.c3c.claude-managed-settings', out)
-        self.assertTrue('[FAIL]' in out or 'ERROR' in out, out)
+        self.assertIn('ERROR', out)
+        self.assertIn('結果: FAIL', result.stdout)
         self.assertEqual(self.compose_calls(), [])
         self.state['managed'] = '1'
         (self.root / 'calls').unlink()
         result = self.run_c3c('--check', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('[OK]   Claude managed settings: io.c3c.claude-managed-settings=1', result.stdout)
+
+    def test_codex_check_does_not_report_managed_settings(self):
+        # README: c3c codex --check <dir> では managed settings の ERROR を出さない（Codex の診断は対象外）。
+        self.use_image_without_managed_settings()
+        self.approve_codex()
+        result = self.run_c3c('codex', '--check', str(self.proj))
+        self.assertNotIn('io.c3c.claude-managed-settings', result.stdout + result.stderr)
+        self.assertEqual(self.compose_calls(), [])
 
     def test_managed_settings_no_extra_image_exists(self):
         # 判定は guard_image_layout() が取った podman image exists の rc を使い、呼び直さない（LY-7）。

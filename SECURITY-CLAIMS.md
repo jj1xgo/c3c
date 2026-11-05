@@ -169,7 +169,8 @@ c3c は対象 repo で git を実行せず、ホストの `~/.claude.json` に�
 ディレクトリ（別の branch の worktree など）へ移る経路は、イメージの managed settings
 （`/etc/claude-code/managed-settings.json`、root:root 0644、中身は `{"permissions": {"deny": ["Cd"]}}`）で
 `/cd` 全体を拒否して塞ぐ（#243）。launcher は Claude 経路で、既存イメージの label
-`io.c3c.claude-managed-settings` が対応値でなければ `-b` を案内して止める（Codex 経路・`-b`・未ビルドは見ない）。base image が managed settings（`managed-settings.json` か
+`io.c3c.claude-managed-settings` が対応値でなければ `-b` を案内して止める（Codex 経路・`-b`・
+未ビルドは見ない）。base image が managed settings（`managed-settings.json` か
 `managed-settings.d`、symlink を含む）を既に持つか、既存の `/etc/claude-code` が symlink でない root:root 0755 の
 ディレクトリでなければ、ビルドを止める。
 

@@ -95,7 +95,7 @@
 ### Task 2: 既存イメージの label を照合するガード
 
 **Files:**
-- Modify: `c3c`（定数は `IMAGE_LAYOUT_LABEL` の近く。判定関数 `check_claude_managed_settings()` は `check_image_layout()` の後。呼び出しは 2 か所: `guard_image_layout()` の中と、`--check` のイメージ節）
+- Modify: `c3c`（定数は `IMAGE_LAYOUT_LABEL` の近く。判定関数 `check_claude_managed_settings()` は `check_image_layout()` の後。呼び出しは `check_image_layout()` の中の 1 か所で、通常起動と `--check` が共有する。下の Interfaces の「呼び出し」が正。計画レビューの M1 の反映で 2 か所から変えた）
 - Test: `tests/test_c3c_launch.py`（`io.c3c.image-layout` の既存テストに並べる）、`test-build.sh` の `--launcher-only` の LY 系に並べた MS 系
 - Modify（fake の更新）: fake podman が label を返す箇所と、`compose build` のときに label の状態を更新する箇所の両方。少なくとも次を変える（ほかに `grep -rn 'io.c3c.image-layout\|build_layout' tests test-build.sh` で当たる所があればそれも）:
   - `tests/test_c3c_launch.py` の Python の `PODMAN`: `image inspect` の分岐に `io.c3c.claude-managed-settings` → `state.get('managed', '1')`、`compose build` の分岐に `state['managed'] = state.get('build_managed', '1')`

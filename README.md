@@ -204,7 +204,7 @@ C3C_IPV6=1
 
 初回は `./c3c claude -b /path/to/project` で新しい境界アセットを含むイメージを作る。対応ラベルのない旧イメージでの有効化は、起動と `--check` で再ビルドを案内して停止する。その後の0/1の切り替えはランタイム設定なので、コンテナを終了して起動し直せば反映される。IPv4/IPv6 で `allowed-domains.txt` と `allowed-ports.txt` を共用し、IPv6 でも未許可の宛先・ポートを遮断する。IPv6-only ホストは初期対応の対象外で、IPv4 も使用できることが前提。
 
-有効時は launcher が固定の `compose.ipv6.yml` を追加し、単独 pasta と仮想 IPv6 ゲートウェイ `fe80::1` を使う。Podman/pasta、ホストの IPv6 外向き通信と、ip6tables の hop-limit / REJECT 機能を使えるカーネルが必要。これらが使えない場合は初期化を失敗として停止する。今回確認した環境は rootless Podman 5.8.6 / podman-compose 1.6.0。ホストに IPv6 があっても rootless bridge の外側へ経路が渡らない場合があるため、コンテナ単位に閉じた pasta を使う。ホスト・ルーター・WARP の設定は自動変更しない。起動時には経路、IPv6 有効状態、ip6tables、`api.anthropic.com` の IPv6 HTTPS 接続と禁止先の遮断を検査し、失敗したら起動を止める。`--check` は設定値だけを検査し、ネットワーク作成や実疎通は行わない。
+有効時は launcher が固定の `compose.ipv6.yml` を追加し、単独 pasta と仮想 IPv6 ゲートウェイ `fe80::1` を使う。Podman/pasta、ホストの IPv6 外向き通信と、ip6tables の hop-limit / REJECT 機能を使えるカーネルが必要。これらが使えない場合は初期化を失敗として停止する。今回確認した環境は rootless Podman 5.8.6 / podman-compose 1.6.0。ホストに IPv6 があっても rootless bridge の外側へ経路が渡らない場合があるため、コンテナ単位に閉じた pasta を使う。ホスト・ルーター・WARP の設定は自動変更しない。起動時には経路、IPv6 有効状態、ip6tables、`api.anthropic.com` の IPv6 HTTPS 接続と禁止先の遮断を検査し、失敗したら起動を止める。このうち経路・IPv6 有効状態・ip6tables と、GitHub meta の IPv6 の範囲・許可ポートは、IPv4 のルールを作り直す前に確かめる（#237）。`--check` は設定値だけを検査し、ネットワーク作成や実疎通は行わない。
 
 既定の IPv4 モードは既存 bridge のまま。有効時は共有 bridge を再利用せず、pasta はコンテナ終了時に片付く。過去の bridge は必要なら既存の `--clean <project>` で整理する。pasta で検出する IPv4 ゲートウェイは物理側ルーターの場合があり、bridge のゲートウェイと同じホストサービスの別名ではない。Podman は既定で `--no-map-gw` を指定し、ゲートウェイからホスト loopback への写像を無効にする（[Podman のネットワーク仕様](https://docs.podman.io/en/v5.8.0/markdown/podman-run.1.html#network-mode-net)）。IPv6 ゲートウェイへの TCP/UDP 全許可は追加しない。ホスト側サービスへの接続があるプロジェクトは切り替え時に確認する。
 
@@ -595,7 +595,7 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 
 ### GitHub meta スナップショット
 
-`init-firewall.sh` の許可リストが使う GitHub IP レンジは `https://api.github.com/meta` から取得する。未認証 GitHub API のレート制限（60 req/h/IP）を避けるため、取得は `c3c` のビルドコンテキスト準備時（`-b` のたび通常1リクエスト、一時エラー時は最大3試行）に1箇所だけで行い、`Dockerfile.claude` がその結果をイメージへ焼き込む。コンテナ起動のたびのライブ取得は行わないため、何度再起動してもレート制限は消費しない。取得か検証に失敗した場合は (1) このプロジェクトの前回ステージング分（`.build-context/<PROJECT_NAME>/` に残っている）、(2) それも無いか検証に通らなければ他プロジェクトのスナップショットの新しいもの（GitHub の IP レンジは変更頻度が低いため実用上問題ない）のうち、検証に通るものを警告付きで再利用し、いずれも無い場合のみビルドを中断する。コンテナ起動時の `init-firewall.sh` は、スナップショットが単一の JSON オブジェクトで `web`・`api`・`git` が文字列の配列であること、IPv4 の範囲の値が正しく 1 件以上あることを、既存のルールを消す前に確かめ、満たさなければ起動を止める。ビルド時も同じ規則で、取得したものと再利用するものの両方を `validate-build-input.sh`（kind `github-meta`）が確かめ、`Dockerfile.claude` もビルドの中で同じ検査を行う（#238）。
+`init-firewall.sh` の許可リストが使う GitHub IP レンジは `https://api.github.com/meta` から取得する。未認証 GitHub API のレート制限（60 req/h/IP）を避けるため、取得は `c3c` のビルドコンテキスト準備時（`-b` のたび通常1リクエスト、一時エラー時は最大3試行）に1箇所だけで行い、`Dockerfile.claude` がその結果をイメージへ焼き込む。コンテナ起動のたびのライブ取得は行わないため、何度再起動してもレート制限は消費しない。取得か検証に失敗した場合は (1) このプロジェクトの前回ステージング分（`.build-context/<PROJECT_NAME>/` に残っている）、(2) それも無いか検証に通らなければ他プロジェクトのスナップショットの新しいもの（GitHub の IP レンジは変更頻度が低いため実用上問題ない）のうち、検証に通るものを警告付きで再利用し、いずれも無い場合のみビルドを中断する。コンテナ起動時の `init-firewall.sh` は、スナップショットが単一の JSON オブジェクトで `web`・`api`・`git` が文字列の配列であること、IPv4 の範囲の値が正しく 1 件以上あることを、既存のルールを消す前に確かめ、満たさなければ起動を止める。`--ipv6` のときは、IPv6 の範囲の値（`2000::/3`・`fc00::/7` の中の CIDR。ゾーン付きは不可）も消す前に確かめる（#237）。ビルド時も同じ規則で、取得したものと再利用するものの両方を `validate-build-input.sh`（kind `github-meta`）が確かめ、`Dockerfile.claude` もビルドの中で同じ検査を行う（#238）。ただし IPv6 の値の検査は `--ipv6` の起動時だけで、ビルド時の `validate-build-input.sh` は IPv6 の値を見ない（#237 の範囲外）。
 
 ### 起動・ビルド準備の通信待ち時間
 

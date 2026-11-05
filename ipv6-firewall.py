@@ -53,6 +53,23 @@ def validate_domains(domains):
             raise FirewallError(f'不正な IPv6 許可ホスト名です: {domain!r}')
 
 
+def load_github_networks(path=pathlib.Path('/etc/c3c/github-meta.json')):
+    """meta の IPv6 の値を重複なく並べ、ルールを変える前に CIDR と許可範囲を検査する。"""
+    meta = json.loads(path.read_text())
+    values = sorted({value for key in ('web', 'api', 'git') for value in meta[key] if ':' in value})
+    for value in values:
+        try:
+            # ゾーン付きは normalize_target と揃えて拒む（ipaddress は受け付けるため）。
+            if '%' in value:
+                raise ValueError('ゾーン付きの値')
+            network = ipaddress.IPv6Network(value, strict=False)
+        except ValueError as exc:
+            raise FirewallError(f'不正な IPv6 の CIDR です: {value!r}') from exc
+        if not any(network.subnet_of(allowed) for allowed in TARGET_RANGES):
+            raise FirewallError(f'IPv6 許可範囲外の CIDR です: {value}')
+    return values
+
+
 class IPv6Firewall:
     def __init__(self, ports):
         self.ports = ports
@@ -75,7 +92,8 @@ class IPv6Firewall:
     def table(self, *args):
         return command(['ip6tables', *args])
 
-    def prepare(self):
+    def check_environment(self):
+        """ルールを変えずに、既定経路・IPv6 の有効状態・ip6tables の利用可否を確かめる。"""
         routes = json.loads(command(['ip', '-j', '-6', 'route', 'show', 'default']))
         if not routes:
             raise FirewallError('IPv6 の既定経路がありません。Podman/pasta の設定を確認してください')
@@ -84,6 +102,10 @@ class IPv6Firewall:
             if value != '0':
                 raise FirewallError(f'IPv6 が無効です: {name}。IPv6 用 Compose 構成を確認してください')
         self.table('-L')
+
+    def prepare(self):
+        # check と同じ検査を通り直す（check の後に状態が変わったときも止めるため）。
+        self.check_environment()
         self.table('-F')
         self.table('-X')
         for chain in ('INPUT', 'OUTPUT', 'FORWARD'):
@@ -205,15 +227,18 @@ class IPv6Firewall:
 
 def main():
     parser = argparse.ArgumentParser(description='IPv6 許可リストの初期化・更新・検証')
-    parser.add_argument('mode', choices=('prepare', 'refresh', 'verify'))
+    parser.add_argument('mode', choices=('check', 'prepare', 'refresh', 'verify'))
     parser.add_argument('--ports', required=True)
     parser.add_argument('--generation', type=int)
     args = parser.parse_args()
     try:
         firewall = IPv6Firewall(args.ports)
-        if args.mode == 'prepare':
-            meta = json.loads(pathlib.Path('/etc/c3c/github-meta.json').read_text())
-            networks = sorted({value for key in ('web', 'api', 'git') for value in meta[key] if ':' in value})
+        if args.mode == 'check':
+            # ルールを変えずに prepare と同じ前提を確かめる（init が IPv4 のルールを消す前に呼ぶ）。
+            load_github_networks()
+            firewall.check_environment()
+        elif args.mode == 'prepare':
+            networks = load_github_networks()
             firewall.prepare()
             for network in networks:
                 firewall.add_network(network)

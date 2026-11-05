@@ -90,6 +90,7 @@ c3c 本体を変更する開発者（AI エージェントを含む）向けに�
   - Codex 経路の PATH（#145）: 固定 `CODEX_HOME`・`CODEX_CLI` と同じ分岐（秘密 export より前）で `CODEX_BWRAP_DIR=/usr/local/libexec/c3c/codex-bwrap` を `readonly` にし、PATH の先頭へ一度だけ加える。snapshot・verify・本起動には entrypoint が同じ PATH を渡す（Codex 内部の `shell_environment_policy` による環境の再構成までは保証しない）。PATH 用の秘密上書き可能な変数を作らない。CLI の存在検査の直後、審査より前に固定リンクの `-f`/`-x` を検査し、欠落なら再探索・再生成せずに停止する（上流の PATH 探索は存在しない・実行できない候補を飛ばして次の候補のシステム版を選ぶため、この検査が Codex 経路でシステム版への黙った fallback を防ぐ歯止め。外さない。起動口も同じ検査を持つが、審査より前に止める役割はこちらにある）。Claude 経路の PATH は変えない（`tests/test_codex_entrypoint.py` が全段の PATH 一致と Claude の不変を検査）。Claude 経路などから名前で呼ぶ `codex` の bwrap 選択は、PATH ではなく起動口 `codex-launcher.sh` が担う。
 - **`init-firewall.sh`**
   - ipset は使わない（rootless podman で `ip_set` カーネルモジュールを autoload できないため素の iptables で代替）。
+  - `full_init()` は `--ipv6` のとき `reset_ipv4_rules` より前に `ipv6-firewall.py check` を呼ぶ。`check` はルールを変えず、`prepare` と同じ検査関数（`load_github_networks()`・`check_environment()`）を通る。検査を `prepare` の中だけに戻さない（#237）。
   - GitHub IP レンジはビルド時スナップショットの読み込みのみ、ランタイムでのライブ取得を追加しない（詳細は「GitHub meta スナップショット」節を参照）。
   - ドメイン IP の追従は「CDN IP ローテーション追従」節を参照。
   - `refresh_domains()` のNXDOMAIN判定（一時的な解決失敗とは区別し、恒久的にドメイン自体が存在しない場合のみ `had_errors` をセットしない）を壊さない — ハードコード済み許可ドメインが恒久的にNXDOMAIN化すると起動そのものがfail-closedで止まり続ける（`statsig.anthropic.com`、2026-07-06）。
@@ -108,7 +109,7 @@ c3c 本体を変更する開発者（AI エージェントを含む）向けに�
   - PATH を変えるのは exec した Codex とその子孫だけ。呼び出し元（Claude 本体など）の PATH は変えない。固定値と文言の一致は `tests/test_codex_launcher.py` が `entrypoint.sh` と照合する。
 - **`validate-build-input.sh`**（`#34`）
   - `packages.txt`/`requirements.txt` と GitHub meta のスナップショット（kind `github-meta`、`#238`）の検証はこのスクリプト**単独が正本**。`Dockerfile.claude`・`--check`・`test-build.sh` は呼び出すだけで、各自が regex・正規化を再実装しない（複製すると3者の判定がドリフトする）。
-  - `init-firewall.sh` の `load_github_ranges()` は起動時の関門として同じ規則を自分で持つ（イメージの中で検証器を呼ばない）。2 つの判定の一致は `tests/test-github-meta-agreement.sh` が確かめ、検証器は init より緩くしない。
+  - `init-firewall.sh` の `load_github_ranges()` は起動時の関門として同じ規則を自分で持つ（イメージの中で検証器を呼ばない）。2 つの判定の一致は `tests/test-github-meta-agreement.sh` が確かめ、検証器は init より緩くしない。`ipv6-firewall.py check` の IPv6 の値の検査は、この一致の対象外（検証器は IPv6 の値を見ない。#237 で意図したずれ）。
   - 終了コード契約 0/1/2（0=適合／1=不適合・outfile 不変／2=診断不能・outfile 不変）と「`outfile` は成功時にのみ確定させる」を変えない。
   - `#!/bin/sh`・POSIX sh の範囲を維持する（ビルド時はコンテナ内の dash、`--check`・`test-build.sh` と `c3c` の staging〈`github-meta`〉はホストの sh で走るため）。
   - `resolve_asset_source()` では `fixed` に置き、利用側の設定ディレクトリ（`.c3c/`）から差し替え可能にしない。

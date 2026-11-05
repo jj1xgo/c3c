@@ -1,0 +1,2 @@
+check --ports 443,22
+rc=1

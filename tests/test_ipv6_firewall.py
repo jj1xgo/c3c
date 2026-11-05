@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """IPv6 の実処理を検査する。DNS とカーネルコマンドだけを固定する。"""
 import importlib.util
+import json
 import pathlib
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -183,6 +186,92 @@ class IPv6Tests(unittest.TestCase):
         self.assertEqual(len(dns), 2)
         self.assertTrue(all('2001:db8::53' in c for c in dns))
         self.assertTrue(any('REJECT' in c for c in self.calls))
+
+    def write_meta(self, meta):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = pathlib.Path(d.name, 'github-meta.json')
+        path.write_text(json.dumps(meta))
+        return path
+
+    def healthy_system(self, args):
+        # check_environment が通る形: ip の既定経路あり、ほかは空で成功
+        self.calls.append(args)
+        if args[0] == 'ip':
+            return '[{"gateway":"fe80::1","dev":"eth0"}]'
+        return ''
+
+    def test_load_github_networks_rejects_bad_values(self):
+        for value in ['2001:::/32', '::/0', 'fe80::/10', '1.2.3.4:5', '2606:50c0::%eth0/32']:
+            with self.subTest(value=value):
+                path = self.write_meta({'web': [value], 'api': ['140.82.112.0/20'], 'git': []})
+                with self.assertRaises(fw.FirewallError):
+                    fw.load_github_networks(path)
+
+    def test_load_github_networks_accepts_meta_without_ipv6(self):
+        path = self.write_meta({'web': ['192.30.252.0/22'], 'api': [], 'git': []})
+        self.assertEqual(fw.load_github_networks(path), [])
+
+    def test_load_github_networks_dedups_and_sorts(self):
+        path = self.write_meta({'web': ['2a0a:a440::/29'], 'api': ['2606:50c0::/32'], 'git': ['2a0a:a440::/29']})
+        self.assertEqual(fw.load_github_networks(path), ['2606:50c0::/32', '2a0a:a440::/29'])
+
+    def test_check_environment_makes_no_rule_changes(self):
+        with patch.object(fw, 'command', self.healthy_system), patch.object(pathlib.Path, 'read_text', return_value='0\n'):
+            self.firewall.check_environment()
+        self.assertEqual([c for c in self.calls if c[0] == 'ip6tables'], [['ip6tables', '-L']])
+
+    def test_check_environment_rejects_disabled_ipv6(self):
+        # all=0・default=1 の両方の位置で止まることを確かめる
+        for values in (['1\n', '0\n'], ['0\n', '1\n']):
+            with self.subTest(values=values):
+                self.calls = []
+                with patch.object(fw, 'command', self.healthy_system), \
+                     patch.object(pathlib.Path, 'read_text', side_effect=values):
+                    with self.assertRaisesRegex(fw.FirewallError, 'IPv6 が無効です'):
+                        self.firewall.check_environment()
+                self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
+
+    def test_main_check_rejects_bad_ports_before_any_command(self):
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'check', '--ports', '443,80']):
+            self.assertEqual(fw.main(), 1)
+        self.assertEqual(self.calls, [])
+
+    def test_main_check_runs_no_mutation(self):
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'check', '--ports', '443,22']), \
+             patch.object(fw, 'load_github_networks', return_value=['2606:50c0::/32']), \
+             patch.object(fw, 'command', self.healthy_system), \
+             patch.object(pathlib.Path, 'read_text', return_value='0\n'):
+            self.assertEqual(fw.main(), 0)
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse(any(c[:2] in (['ip6tables', '-F'], ['ip6tables', '-X'], ['ip6tables', '-P']) for c in self.calls))
+
+    def test_main_prepare_rejects_bad_meta_before_flush(self):
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'prepare', '--ports', '443,22']), \
+             patch.object(fw, 'load_github_networks', side_effect=fw.FirewallError('IPv6 許可範囲外の CIDR です: ::/0')), \
+             patch.object(fw, 'command', self.healthy_system), \
+             patch.object(pathlib.Path, 'read_text', return_value='0\n'):
+            # 環境の検査は通る形に固定する（IPv6 が無効な環境で、順が戻っても緑になるのを防ぐ）
+            self.assertEqual(fw.main(), 1)
+        self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
+
+    def test_main_check_rejects_bad_meta(self):
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'check', '--ports', '443,22']), \
+             patch.object(fw, 'load_github_networks', side_effect=fw.FirewallError('IPv6 許可範囲外の CIDR です: ::/0')), \
+             patch.object(fw, 'command', self.healthy_system), \
+             patch.object(pathlib.Path, 'read_text', return_value='0\n'):
+            self.assertEqual(fw.main(), 1)
+        self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
+
+    def test_main_check_rejects_missing_default_route(self):
+        def no_route(args):
+            self.calls.append(args)
+            return '[]' if args[0] == 'ip' else ''
+        with patch.object(sys, 'argv', ['ipv6-firewall.py', 'check', '--ports', '443,22']), \
+             patch.object(fw, 'load_github_networks', return_value=[]), \
+             patch.object(fw, 'command', no_route):
+            self.assertEqual(fw.main(), 1)
+        self.assertFalse(any(c[0] == 'ip6tables' for c in self.calls))
 
 
 if __name__ == '__main__':

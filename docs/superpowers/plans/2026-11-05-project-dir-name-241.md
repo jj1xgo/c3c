@@ -29,6 +29,7 @@
 3. 古い `-workspace/`（と `-workspace--claude-worktrees-*`）の記録は移さず残す。変更後の `/resume` の一覧には初めは出ない（`Ctrl+A` で全プロジェクトを出せば見える）。
 4. シェル環境の `CLAUDE_CODE_VERSION` で v2.1.234 より古い版を固定して `-b` したイメージでは、`CLAUDE_CODE_PROJECT_DIR_NAME` が無視され、`-workspace/` に戻る（共有も戻る）。c3c は Claude Code の版を検査しない。
 5. ホストの `<基点>/.claude/.claude.json` は c3c が作る空のマウント先。ホストで Claude Code 自身の `CLAUDE_CONFIG_DIR` を `<基点>/.claude` に向けて使う構成では、このファイルが設定として読まれる（c3c の `CLAUDE_CONFIG_DIR` は `.claude.json` と `.claude/` を含む基点を指し、Claude Code の同名の変数とは意味が違う）。
+6. 名前は checkout の絶対パスから作るので、フォルダを移す・名前を変える・別の場所に 2 つ目の checkout を作ると、別の置き場になり、memory と `/resume` の一覧は空から始まる（古い置き場は残る。続けて使うには手で写す。ホストの Claude Code も、別の場所の clone は別の置き場にする。共有するのは同じリポジトリの worktree とサブディレクトリ）。
 
 ## Global Constraints
 
@@ -108,7 +109,7 @@
 - [ ] 既存の entrypoint を起動するテスト（`grep -ln 'entrypoint.sh' tests/*.py tests/*.sh` で探す。少なくとも `tests/test_codex_entrypoint.py`・`tests/test_claude_project_entrypoint.py`・`tests/test_ipv6_entrypoint.py`）の環境に 2 つの正しい値を足す。`tests/test_ipv6_entrypoint.py` は環境の辞書をテストごとに作っているので、全部の箇所に足す。
 - [ ] `tests/test-runtime.sh`: `clean_env` 配列に `C3C_CLAUDE_PROJECT_DIR_NAME=<固定の正しい値。例 c3c-runtime-test>` を足し、テスト用の基点（`$root` の下の設定ディレクトリ）に空の `.claude/.claude.json` を作る。
 - [ ] 実装: `entrypoint.sh` の検証（Global Constraints のとおり）。`c3c` の `IMAGE_LAYOUT_VERSION=3`、`Dockerfile.claude` の label、`guard_image_layout()` の文言。
-- [ ] 同じ commit で文書を直す: README「セキュリティモデル」の #163 の段落の後に #241 の段落を足す（何が分かれるか、名前の決まり方、Context の「範囲の外」の 5 項、古いイメージは `-b` まで起動が止まること、古い記録の移し方: `c3c --check <dir>` の INFO で置き場を知り、残したい memory のファイルを `memory/` へ写して `MEMORY.md` の行を足す）。README の配置の版（`io.c3c.image-layout`）を説明している箇所（`grep -n 'image-layout' README.md`。「--check」の検査項目の「v15 以前のイメージは `ERROR` 行で `-b` を案内し」など）を、配置が変わったイメージ一般の書き方に直す。`docs/development-invariants.md` の `entrypoint.sh` 節に検証を、`Dockerfile.claude` 節の `guard_image_layout()` の項に、3 に上げた理由（コンテナ内の env と mount の配置が変わり、古い Claude Code では分離が黙って効かないため）を書く。
+- [ ] 同じ commit で文書を直す: README「セキュリティモデル」の #163 の段落の後に #241 の段落を足す（何が分かれるか、名前の決まり方、Context の「範囲の外」の 6 項、古いイメージは `-b` まで起動が止まること、古い記録の移し方: `c3c --check <dir>` の INFO で置き場を知り、残したい memory のファイルを `memory/` へ写して `MEMORY.md` の行を足す）。README の配置の版（`io.c3c.image-layout`）を説明している箇所（`grep -n 'image-layout' README.md`。「--check」の検査項目の「v15 以前のイメージは `ERROR` 行で `-b` を案内し」など）を、配置が変わったイメージ一般の書き方に直す。`docs/development-invariants.md` の `entrypoint.sh` 節に検証を、`Dockerfile.claude` 節の `guard_image_layout()` の項に、3 に上げた理由（コンテナ内の env と mount の配置が変わり、古い Claude Code では分離が黙って効かないため）を書く。
 
 **REQUIRED SUB-SKILL:** Use superpowers:verification-before-completion
 

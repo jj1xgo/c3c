@@ -28,7 +28,7 @@ HASH_B = 'b' * 64
 
 # 実 Podman の代わり。状態ファイルで image の有無・label・preflight の応答を切り替え、全呼び出しを記録する。
 PODMAN = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 state_path = %r
 root = os.path.dirname(state_path)
 with open(state_path) as handle:
@@ -71,6 +71,9 @@ elif head == 'image inspect':
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
         print('1')
+    elif 'io.c3c.build-epoch' in fmt:
+        # #248: 既定は呼ばれた時点（新しいイメージ）。state['build_epoch'] で古さを作る。
+        print(state.get('build_epoch', int(time.time())))
     else:
         print('')
 elif head.startswith('ps '):
@@ -82,6 +85,7 @@ elif args[:1] == ['compose']:
     if verb == 'build':
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
+        state['build_epoch'] = int(time.time())
         state['layout'] = state.get('build_layout', '3')
         state['managed'] = state.get('build_managed', '1')
         state['claude_label'] = state.get('build_claude_label', '1')

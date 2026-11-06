@@ -35,7 +35,7 @@ IMAGE_EXISTS_CALLS_CLAUDE_LAUNCH = 3
 # 実 Podman の代わり。状態ファイルで image の有無・label・preflight の応答・本 run と build の終了コードを
 # 切り替え、全呼び出しを記録する（旧 suite の fake に run_rc / build_rc を足したもの）。
 PODMAN = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 state_path = %r
 root = os.path.dirname(state_path)
 with open(state_path) as handle:
@@ -76,6 +76,9 @@ elif head == 'image inspect':
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
         print('1')
+    elif 'io.c3c.build-epoch' in fmt:
+        # #248: 既定は呼ばれた時点（新しいイメージ）。state['build_epoch'] で古さを作る。
+        print(state.get('build_epoch', int(time.time())))
     elif 'io.c3c.base-image' in fmt:
         print(state.get('base_image_label', ''))
     else:
@@ -92,6 +95,7 @@ elif args[:1] == ['compose']:
             sys.exit(rc)
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
+        state['build_epoch'] = int(time.time())
         state['layout'] = state.get('build_layout', '3')
         state['managed'] = state.get('build_managed', '1')
         save()
@@ -1339,6 +1343,63 @@ class BaseImageRefreshTests(LaunchCase):
         self.assert_single_run(result, 'claude')
         self.assertEqual(self.pull_calls(), [])
         self.assertEqual(self.compose_calls('build'), [])
+
+
+
+class ImageAgeWarningTests(LaunchCase):
+    """#248: io.c3c.build-epoch から 30 日を過ぎたイメージでは、起動のときと --check で -b を案内する WARNING を出す。
+    起動は止めない。label が読めない値・未来の時刻なら何も出さない（境界アセットのドリフトの WARNING が案内する）。"""
+
+    AGE = 'にビルドされました'
+
+    def test_old_image_warns(self):
+        self.state['build_epoch'] = int(time.time()) - 31 * 86400
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertIn('は 31 日前にビルドされました', result.stderr)
+        self.assertIn('-b で再ビルド', result.stderr)
+
+    def test_boundary(self):
+        now = int(time.time())
+        self.state['build_epoch'] = now - 30 * 86400 + 60
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertNotIn(self.AGE, result.stderr)
+        self.state['build_epoch'] = now - 30 * 86400 - 60
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertIn('は 30 日前にビルドされました', result.stderr)
+
+    def test_fresh_image_does_not_warn(self):
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertNotIn(self.AGE, result.stderr)
+
+    def test_missing_or_unknown_label_is_silent(self):
+        for value in ('', 'unknown', 'abc', '09', '99999999999999999999', str(int(time.time()) + 86400)):
+            with self.subTest(value=value):
+                self.state['build_epoch'] = value
+                result = self.run_c3c('claude', str(self.proj))
+                self.assert_single_run(result, 'claude')
+                self.assertNotIn(self.AGE, result.stderr)
+
+    def test_rebuild_does_not_warn(self):
+        self.state['build_epoch'] = int(time.time()) - 400 * 86400
+        result = self.run_c3c('claude', '-b', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertNotIn(self.AGE, result.stdout + result.stderr)
+
+    def test_check_reports_old_image(self):
+        self.state['build_epoch'] = int(time.time()) - 45 * 86400
+        before = self.snapshot(self.root / 'proj')
+        result = self.run_c3c('--check', str(self.proj))
+        self.assertIn('は 45 日前にビルドされました', result.stdout + result.stderr)
+        self.assertIn('→ 結果: WARN', result.stdout)
+        self.assertEqual(self.compose_calls(), [])
+        self.assertEqual(self.snapshot(self.root / 'proj'), before)
+        self.state['build_epoch'] = int(time.time())
+        result = self.run_c3c('--check', str(self.proj))
+        self.assertNotIn(self.AGE, result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

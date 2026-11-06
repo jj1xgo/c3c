@@ -477,6 +477,10 @@ LABEL io.c3c.claude-project-audit-protocol="1"
 # FROM 前の値を自動的に引き継ぐ）。
 ARG BASE_IMAGE
 LABEL io.c3c.base-image="${BASE_IMAGE}"
+# ビルドの時刻（#248）。c3c の run_explicit_build() が CACHEBUST に渡すエポック秒をそのまま記録し、
+# guard_asset_drift() が IMAGE_MAX_AGE_DAYS を過ぎたイメージで -b を案内する。ASSET_HASH と同じく、
+# CACHEBUST を消費する RUN より後に置く（-b のたびに値が変わっても、追加のキャッシュ無効化は生まない）。
+LABEL io.c3c.build-epoch="${CACHEBUST}"
 
 # compose.yml は init-firewall.sh が iptables を設定できるよう NET_ADMIN/NET_RAW
 # （cap_add）を追加する。userns_mode: keep-id を伴う rootless podman では、

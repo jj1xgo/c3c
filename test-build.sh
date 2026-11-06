@@ -650,6 +650,8 @@ case "\$1 \$2" in
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
     if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH-}"; fi
     if [[ "\$*" == *io.c3c.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE-}"; fi
+    # #248: 空（既定）なら古さを判定しないので、既存の検査の出力は変わらない。
+    if [[ "\$*" == *io.c3c.build-epoch* ]]; then printf '%s\n' "\${TEST_BUILD_EPOCH-}"; fi
     # Claude の project 設定ゲート（#163）: 作業ディレクトリに .claude がある場合（F の \$HOME 等）に照合される。
     if [[ "\$*" == *io.c3c.claude-project-audit-protocol* ]]; then printf '%s\n' 1; fi
     exit 0 ;;

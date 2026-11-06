@@ -33,6 +33,9 @@ readonly CLAUDE_PROJECT_AUDIT_PROTOCOL_VERSION CLAUDE_PROJECT_AUDIT_PROTOCOL_LAB
 IMAGE_LAYOUT_LABEL=io.c3c.image-layout
 IMAGE_LAYOUT_VERSION=3
 readonly IMAGE_LAYOUT_LABEL IMAGE_LAYOUT_VERSION
+# イメージの古さの目安（#248）。io.c3c.build-epoch（ビルドの時刻のエポック秒）からこの日数を過ぎたら、
+# 起動のときと --check で -b の再ビルドを案内する WARNING を出す（止めない）。
+readonly IMAGE_MAX_AGE_DAYS=30
 # コンテナの中の /cd を止める managed settings の版（#243）。Dockerfile.claude の LABEL io.c3c.claude-managed-settings と一致させる。
 CLAUDE_MANAGED_SETTINGS_LABEL=io.c3c.claude-managed-settings
 CLAUDE_MANAGED_SETTINGS_VERSION=1
@@ -2631,9 +2634,10 @@ guard_asset_drift() {
   if ! podman image exists "$IMAGE_NAME" 2>/dev/null; then
     return 0
   fi
-  local recorded_hash recorded_base_image
+  local recorded_hash recorded_base_image build_epoch
   recorded_hash=$(image_label asset-hash)
   recorded_base_image=$(image_label base-image)
+  build_epoch=$(image_label build-epoch)
   if ! compute_asset_hash; then
     guard_warn "WARNING: 境界アセットのハッシュ計算に失敗したため、ドリフト確認をスキップしました。"
     return 0
@@ -2656,6 +2660,22 @@ guard_asset_drift() {
   fi
   if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_ref" != "$current_ref" ]]; then
     guard_warn "WARNING: ベースイメージの設定（$BASE_IMAGE）が、イメージの実ビルド値（$recorded_base_image）と異なります。-b でのリビルドを推奨します。"
+  fi
+  # イメージの古さ（#248）。-b で作り直すときは見ない（guard_ipv6() と同じ）。ネットワークも date -d も使わず、
+  # label の整数と今の時刻だけで比べる。label が無い・読めない値（空・unknown・先頭の 0・13 桁以上）や未来の
+  # 時刻なら何も出さない。正規表現で絞ってから算術に渡す（09 は 8 進数のエラーになり、20 桁は 64 ビットであふれる）。
+  # #248 より前のイメージは label を持たないが、Dockerfile.claude が ASSET_HASH_TARGETS にあるので、上の
+  # 境界アセットのドリフトの WARNING がすでに -b を案内する（二重に出さない）。
+  if [[ "${BUILD:-0}" == 1 && "${CHECK_MODE:-0}" == 0 ]]; then
+    return 0
+  fi
+  local now age
+  if [[ "$build_epoch" =~ ^[1-9][0-9]{0,11}$ ]]; then
+    now=$(date +%s)
+    age=$(( now - build_epoch ))
+    if (( age > IMAGE_MAX_AGE_DAYS * 86400 )); then
+      guard_warn "WARNING: イメージ $IMAGE_NAME は $(( age / 86400 )) 日前にビルドされました。Debian のセキュリティ更新を入れるには -b で再ビルドしてください。"
+    fi
   fi
   return 0
 }

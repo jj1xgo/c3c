@@ -1259,7 +1259,10 @@ run_codex_preflight() {
   export CC_CODEX_START_MODE
   # 検査と本起動で同じ mount・working directory・固定引数を使う。preflight 専用 override は
   # tty/stdin_open だけを上書きし、-T と </dev/null でホスト側の TTY も要求しない。
-  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+  # BASE_IMAGE は build と本起動と同じ完全名にそろえる（run_main_compose() と同じ。#248）。
+  local ref
+  ref=$(base_image_pull_ref) || exit 1
+  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
     run --rm -T claude-auth-workspace </dev/null >"$CODEX_PREFLIGHT_TMP/protocol" || rc=$?
   if [[ $rc -ne 0 ]]; then
@@ -1490,7 +1493,10 @@ run_claude_project_preflight() {
   echo "INFO: Claude project 設定ゲート: リポジトリの .claude/settings*.json を検査用コンテナで読みます（Claude Code は起動しません）" >&2
   CC_CLAUDE_START_MODE=preflight
   export CC_CLAUDE_START_MODE
-  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+  # BASE_IMAGE は build と本起動と同じ完全名にそろえる（run_main_compose() と同じ。#248）。
+  local ref
+  ref=$(base_image_pull_ref) || exit 1
+  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -f "$override" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null \
     run --rm -T claude-auth-workspace </dev/null >"$CLAUDE_PROJECT_PREFLIGHT_TMP/protocol" || rc=$?
   if [[ $rc -ne 0 ]]; then

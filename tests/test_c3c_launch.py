@@ -1338,6 +1338,15 @@ class BaseImageRefreshTests(LaunchCase):
         self.assertIn('をレジストリから取り直せませんでした', result.stderr)
         self.assertEqual(self.compose_calls(), [])
 
+    def test_preflight_gets_the_same_full_name(self):
+        # 検査用コンテナ（compose run）にも、build と本起動と同じ完全名を渡す（docs/development-invariants.md）。
+        (self.conf / 'base-image.txt').write_text('debian:testing\n')
+        self.approve_codex()
+        result = self.run_c3c('codex', str(self.proj))
+        self.assert_single_run(result, 'codex')
+        (preflight,) = self.preflight_calls()
+        self.assertEqual(preflight['env']['BASE_IMAGE'], 'docker.io/library/debian:testing')
+
     def test_existing_image_without_rebuild_does_not_pull(self):
         result = self.run_c3c('claude', str(self.proj))
         self.assert_single_run(result, 'claude')

@@ -68,6 +68,9 @@ elif args[:2] == ['rmi', '--no-prune'] and len(args) == 3:
         (root / 'state').write_text(json.dumps(state))
 elif args[:2] == ['image', 'exists']:
     sys.exit(0 if any(i['Id'] == args[-1] or args[-1] in (i.get('Names') or []) for i in state['images']) else 1)
+elif args[:1] == ['pull']:
+    # #248: -b とイメージが無いときのビルドは、build の前にベースを取り直す。
+    pass
 elif args[:1] == ['compose']:
     with (root / 'compose-metadata').open('a') as out:
         out.write(json.dumps({k: os.environ.get(k) for k in ('CC_PROJECT_METADATA', 'CC_PROJECT_PATH', 'CC_PROJECT_NAME')}) + '\\n')
@@ -590,7 +593,9 @@ exit 2
         curl.chmod(0o755)
         expected = {'CC_PROJECT_METADATA': '1', 'CC_PROJECT_PATH': self.live,
                     'CC_PROJECT_NAME': reference_key(self.live)}
-        for extra, count in (([], 1), (['-b'], 2)):
+        # 偽 podman の image exists は名前に :latest が付かないと不在を返すので、-b なしでもイメージが無い扱いになり、
+        # build と run の 2 回になる（#248 から、イメージが無いときも compose の暗黙ビルドでなく明示ビルドするため）。
+        for extra, count in (([], 2), (['-b'], 2)):
             with self.subTest(extra=extra):
                 log = self.root / 'compose-metadata'
                 log.write_text('')

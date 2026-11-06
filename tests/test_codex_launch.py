@@ -28,7 +28,7 @@ HASH_B = 'b' * 64
 
 # 実 Podman の代わり。状態ファイルで image の有無・label・preflight の応答を切り替え、全呼び出しを記録する。
 PODMAN = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 state_path = %r
 root = os.path.dirname(state_path)
 with open(state_path) as handle:
@@ -71,15 +71,21 @@ elif head == 'image inspect':
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
         print('1')
+    elif 'io.c3c.build-epoch' in fmt:
+        # #248: 既定は呼ばれた時点（新しいイメージ）。state['build_epoch'] で古さを作る。
+        print(state.get('build_epoch', int(time.time())))
     else:
         print('')
 elif head.startswith('ps '):
     print('[]')
+elif args[:1] == ['pull']:
+    sys.exit(state.get('pull_rc', 0))
 elif args[:1] == ['compose']:
     verb = next((a for a in args if a in ('build', 'run')), None)
     if verb == 'build':
         state['image_exists'] = True
         state['label'] = state.get('build_label', '2')
+        state['build_epoch'] = int(time.time())
         state['layout'] = state.get('build_layout', '3')
         state['managed'] = state.get('build_managed', '1')
         state['claude_label'] = state.get('build_claude_label', '1')
@@ -367,6 +373,17 @@ class ImageLabelTests(LaunchCase):
                                 min(i for i, o in enumerate(order) if o == 'run'))
                 if expect_builds:
                     self.assertLess(order.index('build'), max(i for i, o in enumerate(order) if o == 'inspect'))
+
+    def test_absent_image_pulls_base_once_and_builds_once(self):
+        # #248: Codex の経路でも、イメージが無いときは compose の build の前にベースを 1 回だけ取り直す。
+        self.approve()
+        self.state = {'image_exists': False, 'label': '2', 'build_label': '2', 'preflight': {'stdout': protocol()}}
+        result = self.run_launcher('--agent', 'codex', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        pulls = [c for c in self.calls if c['args'][:1] == ['pull']]
+        self.assertEqual([c['args'] for c in pulls], [['pull', 'docker.io/library/debian:stable']])
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        self.assertEqual(len(self.main_runs()), 1)
 
     def test_missing_or_unknown_label_blocks_preflight_and_run(self):
         for label in ('', '1', 'yes'):

@@ -650,9 +650,13 @@ case "\$1 \$2" in
     if [[ "\$*" == *io.c3c.ipv6-support* ]]; then printf '%s\n' "\${TEST_IPV6_SUPPORT-1}"; fi
     if [[ "\$*" == *io.c3c.asset-hash* ]]; then printf '%s\n' "\${TEST_ASSET_HASH-}"; fi
     if [[ "\$*" == *io.c3c.base-image* ]]; then printf '%s\n' "\${TEST_BASE_IMAGE-}"; fi
+    # #248: 空（既定）なら古さを判定しないので、既存の検査の出力は変わらない。
+    if [[ "\$*" == *io.c3c.build-epoch* ]]; then printf '%s\n' "\${TEST_BUILD_EPOCH-}"; fi
     # Claude の project 設定ゲート（#163）: 作業ディレクトリに .claude がある場合（F の \$HOME 等）に照合される。
     if [[ "\$*" == *io.c3c.claude-project-audit-protocol* ]]; then printf '%s\n' 1; fi
     exit 0 ;;
+  # ベースの取り直し（#248）: 引数を pull-calls に残し、TEST_PULL_RC で失敗を作る。
+  pull\ *) printf '%s\n' "\$*" >> "$root/pull-calls"; exit "\${TEST_PULL_RC-0}" ;;
 esac
 if [[ "\$1" == "compose" ]]; then
   n=\$(( \$(cat "$root/compose-calls" 2>/dev/null || echo 0) + 1 ))
@@ -693,7 +697,7 @@ CURL
 # CLAUDE_CONFIG_DIR・SECRETS_DIR 等が export されていても実環境へ波及させない）。
 # 引数は KEY=VALUE でランチャーへ渡す環境変数。結果は out（出力）と rc（終了コード）。
 launcher_sandbox_reset_records() {
-  rm -f "$root/compose-env" "$root/compose-args" "$root/compose-calls" "$root"/compose-env.* "$root"/compose-args.* "$root/curl-calls"
+  rm -f "$root/compose-env" "$root/compose-args" "$root/compose-calls" "$root"/compose-env.* "$root"/compose-args.* "$root/curl-calls" "$root/pull-calls"
 }
 
 run_launcher() {
@@ -1792,11 +1796,13 @@ run_base_image_launcher_tests() {
   local label
 
   # G1: 空ファイル / G2: コメントのみ → 既定値 debian:stable で起動が進む
+  # compose に渡る BASE_IMAGE は完全名（base_image_pull_ref()。pull と FROM に同じ値を渡すため。#248）。
+  # 書いた値そのものは --check の [INFO] で確かめる。
   for label in "G1: 空の base-image.txt" "G2: コメントのみの base-image.txt"; do
     if [[ "$label" == G1* ]]; then : > "$conf/base-image.txt"; else printf '# only a comment\n\n' > "$conf/base-image.txt"; fi
     run_launcher
     check "$label は既定値で通常起動が進む（rc=$rc）" \
-      bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:stable' '$root/compose-env'"
+      bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=docker.io/library/debian:stable' '$root/compose-env'"
     printf '%s\n' "$out" >> "$LOG_FILE"
     run_launcher_check
     check "$label を --check は既定値として報告する（rc=$rc）" \
@@ -1809,7 +1815,7 @@ run_base_image_launcher_tests() {
   { echo debian:stable; yes debian:testing | head -200000; } > "$conf/base-image.txt"
   run_launcher
   check "G3: 有効行 20 万行でも先頭行で通常起動が進む（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:stable' '$root/compose-env'"
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=docker.io/library/debian:stable' '$root/compose-env'"
   printf '%s\n' "$out" >> "$LOG_FILE"
   run_launcher_check
   check "G3: 有効行 20 万行を --check は先頭行で報告する（rc=$rc）" \
@@ -1834,10 +1840,10 @@ run_base_image_launcher_tests() {
   fi
   chmod 644 "$conf/base-image.txt"
 
-  # G5: 有効値は compose へそのまま渡る（対照）
+  # G5: 有効値は完全名にして compose へ渡る（対照。#248）
   run_launcher
-  check "G5: debian:testing が compose へ渡る（rc=$rc）" \
-    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=debian:testing' '$root/compose-env'"
+  check "G5: debian:testing が完全名で compose へ渡る（rc=$rc）" \
+    bash -c "[ $rc -eq 0 ] && grep -qxF 'BASE_IMAGE=docker.io/library/debian:testing' '$root/compose-env'"
   printf '%s\n' "$out" >> "$LOG_FILE"
 
   # G6: 許容範囲外の値は ERROR（既存挙動の固定）

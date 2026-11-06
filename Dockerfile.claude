@@ -22,13 +22,16 @@ RUN apt-get update && \
 
 # ca-certificates を導入したので、apt ソースを HTTPS へ切り替える。見つかった
 # http:// の URI を（固定の deb.debian.org ホスト名決め打ちではなく）全て
-# 書き換えるので、異なるミラーに対しても黙って no-op にならない。下の機能検証
-# レイヤーが http:// の URI が残っていないことを確認するため、想定外の
-# 書き換え失敗はビルドを大声で失敗させ、堅牢化が未適用のまま残ることを防ぐ。
+# 書き換えるので、異なるミラーに対しても黙って no-op にならない。書き換えの直後に
+# http:// の URI が残っていないことを確かめ、想定外の書き換え失敗はビルドを大声で
+# 失敗させる（この後の apt の取得を HTTP で行わないため）。最終のイメージに対しては、
+# 下の upgrade の層の後の機能検証レイヤーがもう一度確かめる。
 RUN set -e; \
     files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
     [ -n "$files" ] || { echo "ERROR: /etc/apt 配下に apt ソースが見つかりません" >&2; exit 1; }; \
-    sed -i 's|http://|https://|g' $files
+    sed -i 's|http://|https://|g' $files; \
+    if grep -HE '^[^#]*http://' $files; then \
+      echo "ERROR: apt ソースに http:// が残っています（HTTPS への書き換えに失敗）" >&2; exit 1; fi
 
 # Claude Code の依存関係をインストールする（curl/jq はネイティブインストーラ用、
 # 残りは開発時の利便性のため）
@@ -57,21 +60,6 @@ RUN apt-get update && \
       curl git jq fzf unzip procps tzdata \
       iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
-# 成功したことにして実行時に静かに壊れる（setpriv 不在）か堅牢化が未適用のまま
-# 残る（apt ソースが HTTP のまま）のではなく、ビルドを大声で失敗させる。これは
-# 正直な壊れ方しか検知できない — これらのコマンドを悪意を持って偽装して
-# チェックを通過するベースイメージは検知できない。その限界については README の
-# セキュリティモデル節を参照。
-RUN set -e; \
-    [ -x /usr/bin/setpriv ] || { echo "ERROR: /usr/bin/setpriv がありません（ENTRYPOINT がこの絶対パスを必要とします）" >&2; exit 1; }; \
-    [ -x /usr/bin/tini ]    || { echo "ERROR: /usr/bin/tini がありません（PID1 として使います）" >&2; exit 1; }; \
-    /usr/bin/setpriv --ambient-caps=-all --inh-caps=-all /bin/true \
-      || { echo "ERROR: setpriv が --ambient-caps/--inh-caps を受け付けません" >&2; exit 1; }; \
-    files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
-    if grep -HE '^[^#]*http://' $files; then \
-      echo "ERROR: apt ソースに http:// が残っています（HTTPS への書き換えに失敗）" >&2; exit 1; fi
 
 # gh は Debian のものではなく GitHub の公式 apt リポジトリからインストールする。
 # Debian trixie が同梱する gh 2.46.0 は upstream から 46 リリース遅れており、
@@ -418,6 +406,42 @@ RUN chmod 755 /usr/local/bin/codex-mcp-audit.py
 COPY claude-project-audit.py /usr/local/bin/claude-project-audit.py
 RUN chmod 755 /usr/local/bin/claude-project-audit.py
 
+# キャッシュ破棄用マーカー: c3c の -b（とイメージが無いときのビルド）のたびに値が変わるので、
+# このすぐ下の upgrade のレイヤー（およびそれ以降。機能検証・Claude Code の導入・label）は
+# キャッシュから再利用されない。宣言だけでは効かないので、下の RUN で参照する。root の
+# upgrade を走らせるため USER node より前に置き、毎回作り直す範囲を後ろの小さな層に限るため
+# 固定のパッケージや境界アセットの層より後に置く（#248）。
+ARG CACHEBUST=unknown
+
+# Debian パッケージの更新を当てる（#248）。上の固定の apt の層や packages.txt の層は、
+# Dockerfile の行と入力が変わらなければビルドキャッシュを使うので、ベースに入っていた
+# パッケージや前回の取得の版が残る。ここで毎回 upgrade して、ビルドの時点のセキュリティ修正を
+# 入れる。--error-on=any は、security など一部のソースの取得だけが一時的に失敗したときも
+# 止める（無いと apt-get update は rc 0 で終わりうるので、更新が欠けたまま upgrade が成功する）。
+# full-upgrade は使わない（パッケージを消すことがあり、固定の層や packages.txt のものが消えても
+# 下の検証では気づけない）。消さないと上がらないもの（kept back）は残る。
+RUN echo "cachebust=${CACHEBUST}" \
+  && apt-get update --error-on=any \
+  && apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+       upgrade --with-new-pkgs --no-install-recommends \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
+# 成功したことにして実行時に静かに壊れる（setpriv 不在）か堅牢化が未適用のまま
+# 残る（apt ソースが HTTP のまま）のではなく、ビルドを大声で失敗させる。上の upgrade の
+# 後に置き、最終のイメージ（root の層の最後）に対して確かめる（upgrade で setpriv や
+# apt sources が変わっても気づくため。#248）。これは正直な壊れ方しか検知できない —
+# これらのコマンドを悪意を持って偽装してチェックを通過するベースイメージは検知できない。
+# その限界については README のセキュリティモデル節を参照。
+RUN set -e; \
+    [ -x /usr/bin/setpriv ] || { echo "ERROR: /usr/bin/setpriv がありません（ENTRYPOINT がこの絶対パスを必要とします）" >&2; exit 1; }; \
+    [ -x /usr/bin/tini ]    || { echo "ERROR: /usr/bin/tini がありません（PID1 として使います）" >&2; exit 1; }; \
+    /usr/bin/setpriv --ambient-caps=-all --inh-caps=-all /bin/true \
+      || { echo "ERROR: setpriv が --ambient-caps/--inh-caps を受け付けません" >&2; exit 1; }; \
+    files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
+    if grep -HE '^[^#]*http://' $files; then \
+      echo "ERROR: apt ソースに http:// が残っています（HTTPS への書き換えに失敗）" >&2; exit 1; fi
+
 WORKDIR /workspace
 USER node
 
@@ -425,11 +449,8 @@ USER node
 RUN echo "export PROMPT_COMMAND='mkdir -p /workspace/.claude && history -a'" >> /home/node/.bashrc \
   && echo "export HISTFILE=/workspace/.claude/bash_history" >> /home/node/.bashrc
 
-# キャッシュ破棄用マーカー: `-b` 実行のたびに値が変わるので、このレイヤー
-# （およびそれ以降）は決してキャッシュから再利用されず、常に最新の Claude Code が
-# 取得される。
-ARG CACHEBUST=unknown
-
+# 上の ARG CACHEBUST（upgrade の層の前）を参照するので、この層も -b のたびに作り直され、
+# 常に最新の Claude Code が取得される。
 # 公式ネイティブインストーラ経由で Claude Code をインストールする（推奨方式）
 # ~/.local/bin/claude（symlink）と ~/.local/share/claude（本体）にインストールされる
 # コンテナが --rm のため、自動更新は settings.json で無効化されている
@@ -477,6 +498,10 @@ LABEL io.c3c.claude-project-audit-protocol="1"
 # FROM 前の値を自動的に引き継ぐ）。
 ARG BASE_IMAGE
 LABEL io.c3c.base-image="${BASE_IMAGE}"
+# ビルドの時刻（#248）。c3c の run_explicit_build() が CACHEBUST に渡すエポック秒をそのまま記録し、
+# guard_asset_drift() が IMAGE_MAX_AGE_DAYS を過ぎたイメージで -b を案内する。ASSET_HASH と同じく、
+# CACHEBUST を消費する RUN より後に置く（-b のたびに値が変わっても、追加のキャッシュ無効化は生まない）。
+LABEL io.c3c.build-epoch="${CACHEBUST}"
 
 # compose.yml は init-firewall.sh が iptables を設定できるよう NET_ADMIN/NET_RAW
 # （cap_add）を追加する。userns_mode: keep-id を伴う rootless podman では、

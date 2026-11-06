@@ -401,7 +401,8 @@ class CheckAndCleanContractTests(ConfigCase):
         result = self.run_c3c('codex', str(self.proj))
         run = self.assert_single_run(result, 'codex')
         self.assertEqual(run['env']['CODEX_DIR'], str(self.codex_dir))
-        self.assertEqual(run['env']['BASE_IMAGE'], 'debian:stable', 'evil 側の base-image.txt は読まれない')
+        # compose に渡る値は完全名（base_image_pull_ref()。#248）。
+        self.assertEqual(run['env']['BASE_IMAGE'], 'docker.io/library/debian:stable', 'evil 側の base-image.txt は読まれない')
         self.assertIn('PROJECT_CONF_DIR', result.stderr, '許可リスト外として WARNING')
 
 
@@ -430,7 +431,8 @@ class ResolverConsistencyTests(ConfigCase):
         self.assertEqual(staged and hashlib.sha256(b'htop\n').hexdigest(), staged['packages.txt'])
         self.assertNotIn('env', staged, 'ランタイム設定を焼き込まない')
         self.assertRegex(run['env']['ASSET_HASH'], r'^[0-9a-f]{64}$')
-        self.assertEqual(run['env']['BASE_IMAGE'], 'debian:testing')
+        # compose に渡る値は完全名（base_image_pull_ref()。#248）。
+        self.assertEqual(run['env']['BASE_IMAGE'], 'docker.io/library/debian:testing')
         # .env は補間に使わせない（--env-file /dev/null）。
         args = run['args']
         self.assertIn('--env-file', args)

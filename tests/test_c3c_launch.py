@@ -76,10 +76,14 @@ elif head == 'image inspect':
         print(state.get('label', ''))
     elif 'ipv6-support' in fmt:
         print('1')
+    elif 'io.c3c.base-image' in fmt:
+        print(state.get('base_image_label', ''))
     else:
         print('')
 elif head.startswith('ps '):
     print('[]')
+elif args[:1] == ['pull']:
+    sys.exit(state.get('pull_rc', 0))
 elif args[:1] == ['compose']:
     verb = next((a for a in args if a in ('build', 'run')), None)
     if verb == 'build':
@@ -1122,7 +1126,7 @@ class ImageLayoutGateTests(LaunchCase):
         self.assertEqual(len(self.compose_calls('build')), 1)
 
     def test_absent_image_is_not_checked(self):
-        # 未ビルドなら compose の暗黙ビルドが label 付きで作る。ゲートは既存イメージだけを見る。
+        # 未ビルドなら run_explicit_build() が label 付きで作る（#248）。ゲートは既存イメージだけを見る。
         self.state['image_exists'] = False
         result = self.run_c3c('claude', str(self.proj))
         self.assert_single_run(result, 'claude')
@@ -1236,6 +1240,105 @@ class ClaudeManagedSettingsGateTests(LaunchCase):
         result = self.run_c3c('claude', str(self.proj))
         self.assert_single_run(result, 'claude')
         self.assertEqual(len(self.image_exists_calls()), IMAGE_EXISTS_CALLS_CLAUDE_LAUNCH)
+
+
+
+DIGEST = '0123456789abcdef' * 4
+
+
+class BaseImageRefreshTests(LaunchCase):
+    """#248: -b とイメージが無いときのビルドは、compose の build の前に podman pull <完全名> でベースを取り直す。
+    取り直しに失敗したら compose を呼ばずに止まる。pull と FROM（build arg の BASE_IMAGE）に同じ完全名を渡す。"""
+
+    def pull_calls(self):
+        return [c for c in self.calls if c['args'][:1] == ['pull']]
+
+    def index_of(self, predicate):
+        return next(i for i, c in enumerate(self.calls) if predicate(c))
+
+    def test_rebuild_pulls_base_before_build(self):
+        result = self.run_c3c('claude', '-b', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        (pull,) = self.pull_calls()
+        self.assertEqual(pull['args'], ['pull', 'docker.io/library/debian:stable'])
+        (build,) = self.compose_calls('build')
+        pull_at = self.index_of(lambda c: c['args'][:1] == ['pull'])
+        build_at = self.index_of(lambda c: c['args'][:1] == ['compose'] and 'build' in c['args'])
+        self.assertLess(pull_at, build_at)
+
+    def test_pull_ref_is_fully_qualified(self):
+        cases = {
+            'debian:testing': 'docker.io/library/debian:testing',
+            'docker.io/debian:trixie-20260701': 'docker.io/library/debian:trixie-20260701',
+            f'docker.io/library/debian:stable@sha256:{DIGEST}': f'docker.io/library/debian:stable@sha256:{DIGEST}',
+            f'debian:stable@sha256:{DIGEST}': f'docker.io/library/debian:stable@sha256:{DIGEST}',
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                (self.conf / 'base-image.txt').write_text(value + '\n')
+                result = self.run_c3c('claude', '-b', str(self.proj))
+                run = self.assert_single_run(result, 'claude')
+                (pull,) = self.pull_calls()
+                self.assertEqual(pull['args'], ['pull', expected])
+                (build,) = self.compose_calls('build')
+                self.assertEqual(build['env']['BASE_IMAGE'], expected)
+                self.assertEqual(run['env']['BASE_IMAGE'], expected)
+
+    def test_base_image_drift_compares_normalized(self):
+        # #248 より前のイメージは短い名前を記録している。正規化して比べ、同じベースなら WARNING を出さない。
+        self.state['base_image_label'] = 'debian:stable'
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertNotIn('ベースイメージの設定', result.stderr)
+        self.state['base_image_label'] = 'docker.io/library/debian:stable'
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotIn('ベースイメージの設定', result.stderr)
+        # 違うベースなら、正規化しても WARNING が出る。
+        self.state['base_image_label'] = 'docker.io/library/debian:testing'
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertIn('ベースイメージの設定', result.stderr)
+
+    def test_pull_failure_stops_before_compose(self):
+        self.state['pull_rc'] = 125
+        result = self.run_c3c('claude', '-b', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('docker.io/library/debian:stable をレジストリから取り直せませんでした', result.stderr)
+        self.assertIn('終了コード 125', result.stderr)
+        self.assertIn('イメージは作り直していません', result.stderr)
+        self.assertEqual(self.compose_calls(), [])
+
+    def test_build_failure_message(self):
+        self.state['build_rc'] = 3
+        result = self.run_c3c('claude', '-b', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('podman compose build の終了コード 3', result.stderr)
+        self.assertEqual(self.main_runs(), [])
+
+    def test_absent_image_builds_explicitly_claude(self):
+        # .claude も .mcp.json も無い Claude の経路（ゲートなし）でも、compose の暗黙のビルドに頼らない。
+        self.state['image_exists'] = False
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertEqual(len(self.pull_calls()), 1)
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        build_at = self.index_of(lambda c: c['args'][:1] == ['compose'] and 'build' in c['args'])
+        run_at = self.index_of(lambda c: c['args'][:1] == ['compose'] and 'run' in c['args'])
+        self.assertLess(build_at, run_at)
+
+    def test_absent_image_pull_failure_does_not_run(self):
+        self.state['image_exists'] = False
+        self.state['pull_rc'] = 125
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('をレジストリから取り直せませんでした', result.stderr)
+        self.assertEqual(self.compose_calls(), [])
+
+    def test_existing_image_without_rebuild_does_not_pull(self):
+        result = self.run_c3c('claude', str(self.proj))
+        self.assert_single_run(result, 'claude')
+        self.assertEqual(self.pull_calls(), [])
+        self.assertEqual(self.compose_calls('build'), [])
 
 
 if __name__ == '__main__':

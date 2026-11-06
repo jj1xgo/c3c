@@ -75,6 +75,8 @@ elif head == 'image inspect':
         print('')
 elif head.startswith('ps '):
     print('[]')
+elif args[:1] == ['pull']:
+    sys.exit(state.get('pull_rc', 0))
 elif args[:1] == ['compose']:
     verb = next((a for a in args if a in ('build', 'run')), None)
     if verb == 'build':
@@ -367,6 +369,17 @@ class ImageLabelTests(LaunchCase):
                                 min(i for i, o in enumerate(order) if o == 'run'))
                 if expect_builds:
                     self.assertLess(order.index('build'), max(i for i, o in enumerate(order) if o == 'inspect'))
+
+    def test_absent_image_pulls_base_once_and_builds_once(self):
+        # #248: Codex の経路でも、イメージが無いときは compose の build の前にベースを 1 回だけ取り直す。
+        self.approve()
+        self.state = {'image_exists': False, 'label': '2', 'build_label': '2', 'preflight': {'stdout': protocol()}}
+        result = self.run_launcher('--agent', 'codex', str(self.proj))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        pulls = [c for c in self.calls if c['args'][:1] == ['pull']]
+        self.assertEqual([c['args'] for c in pulls], [['pull', 'docker.io/library/debian:stable']])
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        self.assertEqual(len(self.main_runs()), 1)
 
     def test_missing_or_unknown_label_blocks_preflight_and_run(self):
         for label in ('', '1', 'yes'):

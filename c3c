@@ -699,10 +699,9 @@ write_agent_preference() {
 }
 
 # 本起動（従来の最終 compose run をそのまま包む）。環境代入と Compose 引数列は変えない。
-# BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は
-# compose の暗黙ビルドで焼かれるため、run 側に渡し忘れると初回だけ既定値でビルド
-# され、以後 -b するまで設定が効かないという無言バグになる（ASSET_HASH を両方に
-# 渡している理由と同型）。
+# BASE_IMAGE・ASSET_HASH は build 側だけでなくここ（run 側）にも渡す。イメージが無いときのビルドは
+# どの経路でも run_explicit_build() が先に済ませる（#248）ので、run が暗黙にビルドすることは無いが、
+# compose.yml の補間（build 節の args）の既定値に効くので、build と同じ値（BASE_IMAGE は完全名）をそろえて渡す。
 #
 # --env-file /dev/null は、podman-compose が既定で読む compose ディレクトリと
 # カレントディレクトリ（＝対象プロジェクト）の .env を補間に使わせないため（#60）。
@@ -711,7 +710,9 @@ write_agent_preference() {
 # dotenv_to_dict() は通常ファイルでないパスに空辞書を返し、引数が ".env" でなければ
 # compose ディレクトリ側も読まれない（podman-compose 1.6.0 で実測）。build 側にも同じ理由で付ける。
 run_main_compose() {
-  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
+  local ref
+  ref=$(base_image_pull_ref) || exit 1
+  CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null run --rm claude-auth-workspace
 }
 
@@ -1114,8 +1115,8 @@ guard_codex_image_support() {
 # コンテナ内の配置の確認（改名 第 2 段。#241 で版を 3 に上げた）。v16 の compose は承認記録を /etc/c3c/*、秘密を
 # 新パスにだけ載せ、v15.1 以前のイメージの entrypoint.sh はそこを読まない。#241 より前のイメージは記録の置き場の
 # 名前を検証せず、古い Claude Code では名前が黙って無視される。既存イメージの label が対応値でなければ -b を案内して
-# 止める（guard_codex_image_support() と同じ型）。未ビルドなら何もしない（compose の暗黙ビルドが label 付きで
-# 作る）。通常起動の -b は、この後の明示ビルドで作り直すので見ない（guard_ipv6() と同じ）。通常起動ではガード列で
+# 止める（guard_codex_image_support() と同じ型）。未ビルドなら何もしない（run_explicit_build() が label 付きで
+# 作る。#248）。通常起動の -b は、この後の明示ビルドで作り直すので見ない（guard_ipv6() と同じ）。通常起動ではガード列で
 # 呼び、ホストの MCP 承認の対話・検査用コンテナ・本起動より前に止める。--check では既存イメージの静的診断。
 # 未ビルドと扱うのは podman image exists の rc 1（不在）だけ。ストレージの検査失敗（rc 125 等）で素通りすると、
 # 後で復旧したときに配置を確かめていないイメージで起動するので止める。
@@ -1603,8 +1604,13 @@ check_claude_project_approval() {
   export CLAUDE_PROJECT_APPROVAL_FILE
 }
 
-# -b のビルド、および Codex 経路の image 不在時の明示ビルド。`run --build` はビルド失敗時に既存の
-# 古いイメージで起動してしまう（fail-open）ため、build を独立させ set -e で失敗時に起動へ進ませない。
+# -b のビルド、およびイメージが無いときの明示ビルド（どの経路でも。#248）。`run --build` はビルド失敗時に
+# 既存の古いイメージで起動してしまう（fail-open）ため、build を独立させ、失敗したら起動へ進ませない。
+# build の前に、ベースをレジストリから取り直す（#248）。取り直しは compose とは別の podman pull で行い、
+# その rc で止める: --pull=newer は手元にベースがあると取得の失敗を握りつぶし（man podman-build:
+# 「Pull errors are suppressed if a local image was found.」）、--pull=always は compose の build の中に入るので
+# 取り直しの失敗と apt の失敗を終了コードでも文言でも分けられない。pull と FROM（build arg の BASE_IMAGE）には
+# 同じ完全名を渡す（short name の解決やローカルの別のイメージで、pull したものと別のベースを FROM が使わないため）。
 run_explicit_build() {
   # codex-version.txt が "latest" のプロジェクトだけ Codex レイヤーのキャッシュを
   # 破棄する（Dockerfile.claude の ARG CODEX_CACHEBUST 参照箇所と対）。固定バージョン
@@ -1615,8 +1621,20 @@ run_explicit_build() {
      && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
     codex_cachebust="$(date +%s)"
   fi
-  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace
+  local ref rc=0
+  ref=$(base_image_pull_ref) || exit 1
+  podman pull "$ref" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: ベースイメージ $ref をレジストリから取り直せませんでした（podman pull の終了コード $rc）。ネットワークとレジストリ（docker.io）を確かめてください。Docker Hub の取得の回数の上限（ログインしていないと IP ごとに 100 回）に当たったときも、この失敗になります。イメージは作り直していません。起動を中止します。" >&2
+    exit 1
+  fi
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
+    podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace \
+    || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: イメージのビルドに失敗しました（podman compose build の終了コード $rc。apt などのビルドの段の失敗です。上のログを確かめてください）。起動を中止します。" >&2
+    exit 1
+  fi
 }
 
 # ホスト ~/.claude のうち「ホスト側で実行・読込される user scope の設定」を、compose.yml が
@@ -2256,6 +2274,16 @@ guard_base_image() {
   return 0
 }
 
+# ベースイメージの完全名（#248）。引数（省略時は BASE_IMAGE）から先頭の docker.io/library/ か docker.io/ を
+# 外し、docker.io/library/ を付けて標準出力へ出す。タグと digest pin（@sha256:…）はそのまま保つ。
+# podman pull と FROM（build arg）に同じ値を渡し、guard_asset_drift() の base-image の比較の正規化にも使う。
+base_image_pull_ref() {
+  local value="${1-$BASE_IMAGE}"
+  value="${value#docker.io/library/}"
+  value="${value#docker.io/}"
+  printf 'docker.io/library/%s\n' "$value"
+}
+
 # MCP監査ゲートの状態判定（読み取り専用部分。内部運用issue対応で check_mcp_approval()
 # から分離）。書き込み・TTY確認・export は一切行わない。--check モードの診断とTOFU承認の
 # 実処理が同一ロジックを共有するために分離した。
@@ -2619,8 +2647,14 @@ guard_asset_drift() {
   # compute_asset_hash() の内容ハッシュが一致してしまい上記の比較では検知できない。
   # 実ビルド値を記録したラベル（Dockerfile.claude の io.c3c.base-image）と
   # 現在の解決結果 $BASE_IMAGE（guard_base_image() が先に設定している前提）を
-  # 直接比較することで、この場合も検知する。
-  if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_base_image" != "$BASE_IMAGE" ]]; then
+  # 直接比較することで、この場合も検知する。#248 から label には完全名が入り、それより前のイメージは
+  # 書いた値（短い名前）を記録しているので、両方を base_image_pull_ref() で正規化してから比べる。
+  local recorded_ref current_ref
+  if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" ]]; then
+    recorded_ref=$(base_image_pull_ref "$recorded_base_image") || return 0
+    current_ref=$(base_image_pull_ref) || return 0
+  fi
+  if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_ref" != "$current_ref" ]]; then
     guard_warn "WARNING: ベースイメージの設定（$BASE_IMAGE）が、イメージの実ビルド値（$recorded_base_image）と異なります。-b でのリビルドを推奨します。"
   fi
   return 0
@@ -3147,8 +3181,8 @@ fi
 
 # 境界アセットのハッシュ（`#30`）。ビルドの有無に関わらず常に
 # 現在のソース（$RUN_DIR・$PROJECT_CONF_DIR）から計算し、build と run 両方の env
-# プレフィックスへ渡す（下記）。build ブロック内だけに限定すると、-b 無しの初回
-# 起動（compose の暗黙ビルド）でラベルが空になり、直後の通常起動で必ず誤警告が出る。
+# プレフィックスへ渡す（下記）。イメージが無いときのビルドも、-b と同じ run_explicit_build() が
+# この値を焼く（#248）。
 if ! compute_asset_hash; then
   echo "ERROR: 境界アセットのハッシュを計算できませんでした。起動を中止します" >&2
   exit 1
@@ -3167,9 +3201,10 @@ if [[ -z "${TZ:-}" ]]; then
 fi
 
 # -b のビルドは run と分離して実行する（run_explicit_build() 参照、fail-closed）。
-# Codex 経路は image 不在なら -b なしでも明示ビルドする（compose の暗黙ビルドでは、続く
-# label 確認の前に本起動へ進んでしまうため）。image があり -b なしならビルドしない。
-if [[ $BUILD -eq 1 || ( "$AGENT" == codex && $IMAGE_PRESENT -eq 0 ) || ( $CLAUDE_PROJECT_GATE -eq 1 && $IMAGE_PRESENT -eq 0 ) ]]; then
+# イメージが無いときも、経路（Claude・Codex・project 設定ゲートの有無）によらず -b なしで明示ビルドする
+# （#248）。compose の暗黙ビルドは、ベースを取り直さず、失敗しても古いイメージで起動しうる（fail-open）うえ、
+# Codex やゲートの経路では続く label 確認の前に本起動へ進んでしまうため。イメージがあり -b なしならビルドしない。
+if [[ $BUILD -eq 1 || $IMAGE_PRESENT -eq 0 ]]; then
   run_explicit_build
 fi
 

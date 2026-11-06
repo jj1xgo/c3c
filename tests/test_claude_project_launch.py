@@ -78,6 +78,18 @@ class GateSelectionTests(ClaudeProjectLaunchCase):
                 self.assertIn('-b', result.stderr)
                 self.assertEqual(self.compose_calls('run'), [])
 
+    def test_absent_image_pulls_base_once_and_builds_once(self):
+        # #248: ゲートの経路でも、イメージが無いときは compose の build の前にベースを 1 回だけ取り直す。
+        self.approve_claude()
+        self.state['image_exists'] = False
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        pulls = [c for c in self.calls if c['args'][:1] == ['pull']]
+        self.assertEqual([c['args'] for c in pulls], [['pull', 'docker.io/library/debian:stable']])
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        self.assertEqual(len(self.preflight_calls()), 1)
+        self.assertEqual(len(self.main_runs()), 1)
+
     def test_missing_host_python_blocks(self):
         # PATH から python3 だけを外す。fake podman は python3 で書かれているので、shebang を絶対パスに替える。
         podman = self.bin / 'podman'

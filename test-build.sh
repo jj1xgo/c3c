@@ -1969,7 +1969,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2485,6 +2485,7 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
   cp "${SCRIPT_DIR}/node-version.txt" "$dest/node-version.txt"
   cp "${SCRIPT_DIR}/codex-version.txt" "$dest/codex-version.txt"
+  cp "${SCRIPT_DIR}/copilot-version.txt" "$dest/copilot-version.txt"
   : > "$dest/allowed-ports.txt"
 
   local sibling gh_meta fetch_rc

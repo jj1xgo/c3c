@@ -1044,6 +1044,7 @@ run_launcher_tests() {
   check "Codex 同梱 bubblewrap の解決（npm の nested/hoisted/legacy・x64/arm64・欠落/実行不能/target 外/help 4 項目の fail-closed）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_bwrap.py"
   check "Codex 起動口（同梱 bubblewrap の PATH 先頭化・冪等・空 PATH・引数と終了コードの透過・欠落/dangling/実行不能の fail-closed・entrypoint との固定値一致）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launcher.py"
   check "Copilot の sandbox 用 bwrap の中継（--proc /proc の組だけを最初の -- より前で替える・組が無ければ素通し・本物の欠落の fail-closed・本物を空の環境で起動・終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_bwrap_shim.py"
+  check "Copilot 起動口（作業ディレクトリの拒否・settings.json の毎回の作り直しと readonlyPaths・弱めた設定と未知のキーと真偽値でない値の拒否・トークンの書式・環境の allowlist・どの argv にもトークンが無い・引数と終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_launcher.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
@@ -1970,7 +1971,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2482,6 +2483,8 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/claude-project-audit.py" "$dest/claude-project-audit.py"
   cp "${SCRIPT_DIR}/codex-launcher.sh" "$dest/codex-launcher.sh"
   cp "${SCRIPT_DIR}/copilot-bwrap-shim.sh" "$dest/copilot-bwrap-shim.sh"
+  cp "${SCRIPT_DIR}/copilot-launcher.sh" "$dest/copilot-launcher.sh"
+  cp "${SCRIPT_DIR}/copilot-settings.json" "$dest/copilot-settings.json"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"

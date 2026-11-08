@@ -4,7 +4,7 @@
 
 ## プロジェクト概要
 
-[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークした Claude Code サンドボックス環境。apt/pip パッケージや Node.js バージョン等の設定は `.c3c/`で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
+Claude Code サンドボックス環境。apt/pip パッケージや Node.js バージョン等の設定は `.c3c/`で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
 
 c3c は標準的な技術（Podman・iptables・fine-grained PAT 等）を取り入れつつ、使い易くて堅牢なコンテナ環境を目指す。新規の境界機構は標準技術の組み合わせを優先し、独自実装の追加は監査対象の拡大として避ける。
 

@@ -114,6 +114,24 @@ c3c 本体を変更する開発者（AI エージェントを含む）向けに�
   - 固定リンクの `-f`/`-x` を exec より前に検査し、欠落・dangling・実行不能なら `entrypoint.sh` と同じ文言で終了コード 1 にする（上流の PATH 探索がシステム版へ黙って戻るのを防ぐ fail-closed。外さない）。
   - PATH の先頭が既に `CODEX_BWRAP_DIR` なら一字も変えない（Codex 経路で entrypoint が渡す PATH を全段で一致させるため）。そうでなければ先頭へ一度加える。export されていない PATH（環境に PATH が無いとき bash が持つ `.` を含む既定値）と空の PATH は未設定として扱い、`CODEX_BWRAP_DIR` だけにする（カレントディレクトリを PATH に入れない）。
   - PATH を変えるのは exec した Codex とその子孫だけ。呼び出し元（Claude 本体など）の PATH は変えない。固定値と文言の一致は `tests/test_codex_launcher.py` が `entrypoint.sh` と照合する。
+- **`copilot-bwrap-shim.sh`**（Copilot CLI の sandbox 用の bwrap の中継。イメージでは opt-in のときだけ `/usr/local/libexec/c3c/copilot-bwrap/bwrap`）
+  - 固定パス `REAL_BWRAP=/usr/bin/bwrap` を `readonly` にし、環境変数による上書き口を作らない。秘密を読まない。本物が `-f`/`-x` でなければ、PATH 上のほかの bwrap を探さずに rc 1 で止める（fail-closed）。
+  - 書き換えるのは、最初の `--` より前で、連続する 2 つの引数がちょうど `--proc` と `/proc` の組だけ（`--ro-bind /proc /proc` の 3 つにする）。最初の `--` とそれより後ろ（sandbox の中で動くコマンドの引数）は一字も変えない。組が無ければ何も替えずに渡す（守りを弱めない）。
+  - 本物は bash の組み込み `exec -c` で空の環境で起動する（Copilot の環境にあるトークンなどの秘密を bwrap に渡さない）。`env -i` など外部コマンドを挟まない。
+  - 中継のディレクトリの中身はこの 1 ファイルだけにし、Copilot の起動口だけが PATH の先頭に置く（Codex や利用者の bwrap に効かせない）。MXC に `/proc` の予備の道が入るまでの暫定。
+- **`copilot-launcher.sh`**（Copilot CLI の起動口。イメージでは opt-in のときだけ `/usr/local/bin/copilot`）と **`copilot-settings.json`**（sandbox の設定の雛形。`/etc/c3c/copilot-settings.json`、root:root 0644）
+  - 固定パス（`CONTAINER_HOME`・`COPILOT_BWRAP_DIR`・`COPILOT_JS`・`COPILOT_HOME`・`SETTINGS_TEMPLATE`・`TOKEN_FILE`・`PYTHON3`）を `readonly` にし、環境変数による上書き口を作らない。`TOKEN_FILE` の親は `entrypoint.sh` の `SECRETS_MOUNT` と一致させる（`tests/test_copilot_launcher.py` が照合する）。
+  - 順序（中継と実体の検査 → 作業ディレクトリの検査 → 設定の作り直しと検査 → トークンの読み込み → 環境の allowlist → exec）を変えない。どれかを満たせなければ Copilot を起動せず rc 1（fail-closed）。
+  - 作業ディレクトリの検査は `/` で区切った要素の単位で行い（文字列の前方一致にしない）、`/home/node` 自身・その祖先・直下の `.` で始まるエントリとその下を断る。`pwd -P` の失敗でも止める。
+  - `settings.json` は起動のたびに雛形から作り直し、作業ディレクトリを `readonlyPaths` に入れる（既存のものを残さない。symlink なら止める。同じディレクトリの一時ファイルから `os.replace`）。雛形と作り直した結果の両方を `python3 -I` で検査する。真偽値は `is True`/`is False` で比べ、未知のキーは不合格にする。雛形の `addCurrentWorkingDirectory` は `false`（作業ディレクトリを書けるようにしない。`/workspace` はホストのフォルダで、`.git/hooks` などの経路になるため）。
+  - トークンは bash の組み込みでファイル全体を読み、印字できる ASCII の 1 行だけを受ける。外部コマンドの引数にしない（`env -i` を使わない。コマンドラインは並行する sandbox からも見える）。`set -x` や stderr に出さない。
+  - 環境は bash の組み込み（`compgen -e` と `unset`。起動口の readonly と同名のものは `export -n`）で allowlist に絞ってから、`PATH`・`COPILOT_HOME`・`COPILOT_AUTO_UPDATE=false`・`COPILOT_GITHUB_TOKEN` だけを足す。
+- **Dockerfile の `# >>> c3c copilot` の区間と `copilot-version.txt`**
+  - 同梱の `copilot-version.txt` は空（0 バイト）＝ 導入しない（opt-in）。版の書式は素の `X.Y.Z` だけで、`latest` を受けない（CACHEBUST を足さない）。`guard_build_input_defaults()` もビルド前に同じ書式で止める。
+  - opt-in のとき: `bubblewrap` は 0.5.0 以上、npm の `@github/copilot` は `package.json` の版が指定と一致し、ネイティブのバイナリが実行可能な通常ファイル。npm の symlink の実体と起動口の `readonly COPILOT_JS=` が固定パスと一致しなければ止める。symlink を消してから `install -o root -g root -m 0755` で置く。中継・起動口・雛形・`/usr/bin/bwrap` と、それぞれの親から `/` までが root 所有で group/other から書けないことを `find` で検査する。
+  - opt-in でも opt-out でも、区間の最後で `/tmp/copilot-*` を消す。opt-out ではほかに何も入れない（`test-build.sh --build-only` が検査する）。
+  - Copilot の宛先は、雛形があるときだけ許可リストの末尾に行の完全一致で足す（末尾が改行で終わらなければ先に改行を足す）。`/dev/net/tun` を通さず、slirp4netns を入れず、Podman の `unmask` を使わない。
+  - 4 つのファイルは `fixed`（`copilot-version.txt` だけ overridable）で `ASSET_HASH_TARGETS` に入る。増やしたので、無効のプロジェクトも含む全利用側で、`-b` までドリフトの WARNING が出る（意図した挙動）。
 - **`validate-build-input.sh`**（`#34`）
   - `packages.txt`/`requirements.txt` と GitHub meta のスナップショット（kind `github-meta`、`#238`）の検証はこのスクリプト**単独が正本**。`Dockerfile.claude`・`--check`・`test-build.sh` は呼び出すだけで、各自が regex・正規化を再実装しない（複製すると3者の判定がドリフトする）。
   - `init-firewall.sh` の `load_github_ranges()` は起動時の関門として同じ規則を自分で持つ（イメージの中で検証器を呼ばない）。2 つの判定の一致は `tests/test-github-meta-agreement.sh` が確かめ、検証器は init より緩くしない。`ipv6-firewall.py check` の IPv6 の値の検査は、この一致の対象外（検証器は IPv6 の値を見ない。#237 で意図したずれ）。

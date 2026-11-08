@@ -322,6 +322,7 @@ v16 で、旧製品名 `claude-container` を含む識別子の互換読み取�
 |---|---|---|---|
 | メイン PAT | `SECRETS_DIR` 直下（例 `GITHUB_MAIN_PAT`） | されない | push・PR レビュー・Release 作成等。`Contents: write` を含む広い権限を許容する場合はここに置く。gh には後述の明示読み手順で渡す |
 | MCP／issues 用 PAT | gh の明示読みだけなら直下（例 `GITHUB_ISSUES_PAT`）。環境変数を必要とする MCP・hook がある場合だけ `export/`（例 `GITHUB_MCP_PAT`） | `export/` 配下のみされる | issue 操作・GitHub 公式 MCP サーバー等。**Issues 限定などスコープを絞ったトークンを推奨**（後述リスク参照） |
+| Copilot 用 PAT | `SECRETS_DIR` 直下の `COPILOT_PAT`（opt-in の Copilot だけが使う） | されない（Copilot の起動口が読み、Copilot のプロセスにだけ渡す） | Copilot CLI のモデルの呼び出し。**Copilot Requests の権限だけ**の fine-grained PAT（後述「Copilot CLI を使う」節） |
 
 2 本目の配置は実際の消費者に合わせて選び、同じトークンを直下と `export/` の両方へ置かない。Issues 用でも常時 export は必須ではない。実装は PAT のパーミッションを検査しないため、「Issues 限定」はファイル名や配置で保証される性質ではなく、GitHub 側で設定・確認する制限である。
 
@@ -557,6 +558,43 @@ CLI が表示する公式 HTTPS URL をホストのブラウザで開き、一�
 
 実イメージと専用 ChatGPT 認証で、非 TTY protocol 分離、承認・変更拒否、対話作業と `/resume`、hook の個別承認後の実行まで確認した。共有ノートの Markdown は読めるが、既定の `workspace-write` sandbox では `/shared` への書込みは拒否された。CLI ごとの自動 memory の同等性や、期限切れ認証の refresh まで確認した意味ではない。最終レビューと残る受入条件は [第1段階の検証記録](docs/superpowers/plans/2026-09-20-c3c-phase1-results.md) を参照。
 
+## Copilot CLI を使う
+
+GitHub の Copilot CLI（`@github/copilot`）を、command sandboxing（Copilot が Microsoft Execution Containers〈MXC〉の bubblewrap で組む sandbox、通信なし）付きで、Claude のコンテナの中で使えるようにする。既定では入らない（**opt-in**）。
+
+**入れ方**:
+
+1. プロジェクトの `.c3c/copilot-version.txt` に、素のバージョンを 1 行書く（例: `1.0.103`。`latest` は受けない。前述「利用側プロジェクトの設定」）。
+2. `SECRETS_DIR` の直下（`export/` ではない）に、Copilot 専用の fine-grained PAT を `COPILOT_PAT` という名前で置く（`chmod 600`、中身はトークンの 1 行だけ）。権限は **Copilot Requests だけ**にする。メイン PAT や MCP／issues 用 PAT を使い回さない。
+3. `-b` で再ビルドする。起動時と `--check` に `Copilot 版: 1.0.103（採用元: project …）` が出る。
+
+opt-in のイメージには、Debian の `bubblewrap`（0.5.0 以上）、npm の `@github/copilot`、起動口（`/usr/local/bin/copilot`。npm の symlink を置き換える）、bwrap の中継（`/usr/local/libexec/c3c/copilot-bwrap/bwrap`）、sandbox の設定の雛形（`/etc/c3c/copilot-settings.json`）が入る。どれも root 所有で、node からは書けない（ビルド時に検査する）。Copilot の宛先 `api.individual.githubcopilot.com` と `telemetry.individual.githubcopilot.com`（個人のプラン）は、イメージの許可リストに自動で足す。Business・Enterprise など個人のプラン以外の宛先は対象外（必要なら `.c3c/allowed-domains.txt` に自分で書く。動作は確かめていない）。
+
+**起動口が止める条件**（`ERROR:` を出して rc 1。Copilot は起動しない）:
+
+- 中継か Copilot の実体が無い（旧イメージ。`-b` で再ビルドする）
+- 作業ディレクトリが `/home/node` 自身かその祖先（`/` を含む）か、`/home/node` の直下の `.` で始まるエントリ（`.claude`・`.codex`・`.copilot`・`.config` など）かその下。`/workspace` や `~/copilot-work` のような、Copilot に見せてよいディレクトリで起動する。消えたディレクトリの中でも止まる
+- sandbox の設定が目標の値でない（下）
+- `COPILOT_PAT` が無い、空、2 行以上、空白・制御文字・ASCII でない文字を含む
+
+**sandbox の設定**: 起動口は、起動のたびに `~/.copilot/settings.json`（`COPILOT_HOME` は `/home/node/.copilot` に固定）を雛形から作り直し、作業ディレクトリを `readonlyPaths` に入れてから検査する。目標の値は、sandbox が有効で、迂回（`allowBypass`）・開発ツールの自動許可・git/gh の認証の仲介・外への通信・ローカルネットワークがどれも無効、stdio の MCP と LSP も sandbox の中、`deniedPaths` に `/tmp` と `SECRETS_DIR` のマウント先を含む、というもの。真偽値は `true`/`false` そのものだけを受け、未知のキー（`readwritePaths`、`credentials` など）があれば止める。Copilot や利用者が `settings.json` を書き換えても、次の起動で雛形に戻る（`sandbox` の外の設定も残らない）。作業ディレクトリの `.github/copilot/settings.json` は sandbox の設定を上書きできない（Copilot の仕様。[GitHub Docs](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)）。外への通信を許す設定（MXC が slirp4netns でつなぐ形）は対応外。
+
+**sandbox から見えるもの**:
+
+- 作業ディレクトリは**読めるが書けない**（`readonlyPaths`。2026-11-08 の canary で `Read-only file system` を確かめた）。`/workspace` はホストのプロジェクトのフォルダなので、sandbox の中のコマンドが `.git/hooks` などに置いたものが後でホストで動く、という経路を作らないため。Copilot に書かせたいときは、別の写し（例: `~/copilot-work`）で起動する。
+- `/home/node`（`~/.claude`、`~/.codex`、`~/.copilot` を含む）、`/tmp`、`SECRETS_DIR`、`/shared`、`/data` は、作業ディレクトリでなければ見えない。読めるのは決まったシステムのディレクトリ（`/usr`・`/etc` など）と作業ディレクトリだけ。
+- ネットワークは `lo` だけ（名前も引けない）。ユーザー名前空間とネットワーク名前空間は外側と別。
+- トークンは sandbox の中の環境に無い。起動口は環境を allowlist（`HOME`・`LANG`・`LC_ALL`・`LC_CTYPE`・`TERM`・`TZ`・`NO_COLOR`・`COLORTERM`）に絞り、`PATH`・`COPILOT_HOME`・`COPILOT_AUTO_UPDATE=false`・`COPILOT_GITHUB_TOKEN`（`COPILOT_PAT` の値）だけを足す。`export/` の秘密（`GH_TOKEN` など）は Copilot に渡らない。トークンはどの外部コマンドの引数にも載らない。
+- 外側のプロセスの一覧とコマンドラインは見える（外側の `/proc` を読み取りだけで引き継ぐため）。環境・`root`・`cwd` は別のユーザー名前空間なので読めない。中継は本物の bwrap を空の環境で起動する（秘密を bwrap に渡さない）。
+
+**Copilot 自身のツールは sandbox の外**: sandbox に入るのはシェルのコマンド（と stdio の MCP・LSP）だけで、Copilot に組み込みのファイルの表示・編集などのツールは、sandbox の外の Copilot のプロセスで動き、設定に「できるだけ」従うだけである（`copilot help sandbox`）。レビューなどで使うときは、使える道具をシェルだけに絞る `--available-tools=bash` を付けることを勧める。非対話（`-p`）では、シェルのコマンドの承認を `--allow-tool=shell --allow-all-paths --allow-all-urls` で前もって与える（付けないと承認待ちになり、コマンドが走らない。通信と読める範囲は sandbox が別に止める）。
+
+**中継（暫定）**: MXC は必ず `--proc /proc` を bwrap に渡すが、c3c のコンテナでは Podman の `/proc` のマスクのためにこのマウントが失敗する（Codex の [#140](docs/codex-proc-investigation.md) と同じ原因）。中継は、最初の `--` より前にある `--proc` `/proc` の組だけを `--ro-bind /proc /proc` に替えて `/usr/bin/bwrap` を起動する（ほかの引数は変えない。組が無ければそのまま渡す）。中継は Copilot の起動口だけが `PATH` の先頭に置くので、Codex や利用者の `bwrap` には効かない。MXC に「マウントできなければ外側の `/proc` を引き継ぐ」予備の道が入れば、中継を外す。
+
+**`/dev/net/tun` と slirp4netns は入れない**: `copilot help sandbox`（1.0.103）は「どの sandbox も slirp4netns と `/dev/net/tun` が要る」と書くが、外への通信を一切許さない設定は MXC の `Isolated` モードになり、どちらも使わない（ソースと canary で確かめた）。Copilot の版を上げるときは、下の「変更後の確認」の受け入れで確かめ直す。
+
+**永続化と更新**: `~/.copilot`（`COPILOT_HOME`）はマウントしないので、コンテナを作り直すと消える（設定は起動のたびに雛形から作るので困らない。セッションの履歴は残らない）。自動更新は `COPILOT_AUTO_UPDATE=false` で止める（npm の版はもともと通知だけ）。版の更新は `copilot-version.txt` を書き換えて `-b` で再ビルドする。
+
 ## c3c 入口（CLI の選択と記憶）
 
 `c3c` が唯一の入口（通常ファイル）で、呼出名に関わらず次の引数解釈になる（c3c 第2a段階で導入、旧入口 `claude-container` は削除済み。[増分移行の段階計画](docs/superpowers/specs/2026-09-20-c3c-incremental-design.md) 第2段階 2a）。`CLAUDE_CONTAINER_*` の env キー・イメージ名・state directory・承認記録・コンテナ内のパスはこの段階では変えない。設定ディレクトリは第2b-1段階で `.c3c/` を標準にした（旧名 `.claude-container.d/` は v16 で読み取りを廃止した。移行手順は前述「旧名 claude-container からの移行（v16）」節。入口名で探索結果は変わらない）。
@@ -655,6 +693,8 @@ Codex CLI の起動時の更新確認は、イメージに焼き込む要件フ�
 | `/home/node/.claude/.claude.json` | `~/.claude.json`（上と同じファイル） | コンテナの中の Claude Code が実際に読む `.claude.json`（`CLAUDE_CONFIG_DIR=/home/node/.claude` のため。#241） |
 | `/workspace/` | 起動時に指定したディレクトリ | 作業対象プロジェクト |
 
+opt-in の Copilot CLI の `~/.copilot`（`COPILOT_HOME`）はマウントしないので保持されない（前述「Copilot CLI を使う」節）。
+
 ## 何ができて何ができないか（git / gh / PAT / hook 早見表）
 
 コンテナ内の `git` と `gh` CLI は認証の渡し方が異なる。`SECRETS_DIR/GITHUB_MAIN_PAT` を配置すると、github.com への HTTPS リモートに対する `git` の認証は `GIT_ASKPASS` 経由で配線される。一方、`gh` は既定で未認証（`GH_TOKEN` 等の ambient export を持たない）であり、同じ PAT を使う場合も「PAT を gh CLI に明示的に渡す」の手順が必要になる。PAT 配置後の `git push` 失敗も、まず接続先と起動中のコンテナへの配線を確認し、その上で PAT の有効期限・対象リポジトリ・権限やブランチ保護等の制約を切り分ける。
@@ -669,6 +709,7 @@ Codex CLI の起動時の更新確認は、イメージに焼き込む要件フ�
 | `gh` CLI（直下の PAT 明示読み） | 「PAT を gh CLI に明示的に渡す」の手順（メイン PAT または `GITHUB_ISSUES_PAT`） | 渡した PAT のパーミッション・対象リポジトリの範囲内で可 |
 | `gh` CLI（export 済みの MCP／issues 用 PAT） | `[ -n "${GITHUB_MCP_PAT:-}" ] && GH_TOKEN="$GITHUB_MCP_PAT" gh ...`（空・未設定なら実行しない） | MCP／issues 用 PAT のパーミッション範囲内で可（通常 Issues のみ） |
 | MCP（GitHub 公式サーバー） | `${GITHUB_MCP_PAT}`（`.mcp.json` の Authorization ヘッダ、export 経由） | 同上 |
+| Copilot CLI（opt-in） | `SECRETS_DIR/COPILOT_PAT` を起動口が読む（Copilot Requests だけ） | モデルの呼び出しだけ。sandbox の中のシェルからは GitHub にも外にも出られない（「Copilot CLI を使う」節） |
 
 **GitHub 操作が失敗したときの切り分け**
 
@@ -764,9 +805,13 @@ Claude は `--permission-mode auto`（Claude Code の auto mode）で起動す�
 - **auto-merge 経由の境界迂回に注意**: PRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。対象リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。auto-merge を無効に保つこと（1枚目の壁）に加え、同梱の PreToolUse hook（`examples/hooks/block-pr-approve.sh`、配線すれば）が承認操作の自律実行を機構的にブロックできる（2枚目の壁 — 適用範囲と限界は「何ができて何ができないか」節参照）。MCP 経由の承認（`mcp__github__pull_request_review_write` 等）はこの hook の検査対象外のため、MCP へは「GitHub トークンの配線」節の `permissions.deny` を別途の壁として使うこと
 - **mod は deny 規則と hook を越えうる**（[`#201`](https://github.com/jj1xgo/c3c/issues/201)）: 読み込まれた mod（Claude Code の plugin の一種で、Claude Code のプロセスの中で動く）は、ツールの呼び出しを承認できる。組織の managed settings か Team・Enterprise のサインインが無い環境では、`permissions.deny` が拒否する呼び出しも承認しうる（c3c のコンテナには `/cd` を止める managed settings のファイルがある〈後述「セキュリティモデル」節、#243〉。それで mod の承認の扱いが変わるかは確かめていない）。managed settings の外に置いた PreToolUse hook（`examples/hooks/block-pr-approve.sh` を含む）が止めた呼び出しは、その条件に関わらず承認しうる。auto mode では、mod が承認した呼び出しは分類器の判定を通らない。guard がある環境でも、deny 規則と managed settings の hook が効くのは Claude のツール呼び出しで、mod 自身のファイルとプロセスの操作（`$.fs`・`$.process`）には効かない（[公式](https://code.claude.com/docs/en/plugins/mods/admin)、2026-10-18 確認）。c3c は、この mount 経由ではコンテナの中から user scope の `plugins/`・`settings.json`・`dev-mods/` に書けないようにしているが、ホストで入れた plugin の mod と、ホストで書いた `dev-mods/` の mod は、読み込まれる条件を満たせばコンテナの中でも動く。project scope の設定のセッション中の変更は、project 設定ゲートの対象外（「ホストの Claude Code 設定の読み取り専用保護」の限界 (2)）。
 
+**Copilot CLI の sandbox は c3c の独自の部品（中継）に頼る**（opt-in のときだけ）: Copilot の sandbox が c3c のコンテナの中で起動するのは、bwrap の中継が `--proc /proc` を `--ro-bind /proc /proc` に替えるからである。外側の `/proc` を引き継ぐので、sandbox の中から外側のプロセスの一覧とコマンドラインが見える（環境・`root`・`cwd` は読めない）。守る相手は「sandbox の中でモデルが打つコマンド」で、コンテナの中の Claude は、もともとコンテナの中で何でもできるので対象にしない。Copilot に組み込みのファイルのツールは sandbox の外で動く。詳細と残るリスクは「Copilot CLI を使う」節。
+
 ## Podman 固有の注意
 
 - Codex で `bwrap: Can't mount proc on /proc: Operation not permitted` が出る場合は、[#140 の調査・診断手順](docs/codex-proc-investigation.md)を参照する。報告環境（Podman 5.8.6）では Codex 0.155.1 とシステム版 bubblewrap 0.12.0 の組合せで失敗し、システム版を外して Codex 同梱版を使う比較では成功した。#145 以降の c3c は、システム版が残っていても Codex 経路で同梱版を優先する（前述「Codex CLI を対話で使う」節の sandbox の bubblewrap）。依存パッケージを削除する必要はなく、旧イメージは `-b` で再ビルドする。`unmask=/proc/*` の既定追加は行わない。
+
+- Copilot CLI の sandbox も同じ原因で `--proc /proc` のマウントに失敗するので、c3c は bwrap の中継で外側の `/proc` を読み取りだけで引き継ぐ（前述「Copilot CLI を使う」節の「中継（暫定）」）。
 
 - `userns_mode: keep-id` はホストユーザーの UID/GID をコンテナ内にマップする Podman 固有の機能。Docker に移植する場合は削除する。
 - `--in-pod false` は Podman Compose がデフォルトでサービスを Pod にラップする挙動を抑制する。Docker Compose はこのフラグを無視する。
@@ -821,6 +866,8 @@ plugin の別名マウント（`compose.plugins-alias.yml`・`plugins_alias_targ
 Codex の要件ファイル（`Dockerfile.claude` の `# >>> c3c codex-requirements` 区切りの RUN）を変更した場合は、`--build-only`（所有者・mode・node から書込不可・固定内容と、`-c`・user 設定の true より要件が優先されることの `codex doctor --json` での確認）と、opt-out のイメージに `/etc/codex` が無いことを確かめる引数なしの全体実行を行う。更新確認の抑止は `doctor` の実効値だけで判断しない。使い捨ての専用 home と同一の更新キャッシュを使い、名前で呼ぶ対話 `codex`（`podman exec` とログインシェル）と本起動（通常・read-only）のどれでも更新案内が出ないことを確認する。対照には、要件ファイルの導入前にビルドした同じ版のイメージで、名前で呼んだ対話 `codex` に案内が出ることを確認する（旧イメージの本起動は #183 の `-c` で抑止されるので、対照にならない）。Codex 0.156.0 を固定した fixture でも確認する。base image に既存の要件ファイルがある場合と `/etc/codex` が 0755 でない場合にビルドが止まることは、手動ビルドで確認する。未実施の項目は `not run` と理由を報告する。
 
 Codex 同梱 bubblewrap の固定リンク（`Dockerfile.claude` の `# >>> c3c codex-bwrap` 区切りの RUN、`entrypoint.sh` の Codex 経路の PATH）や Codex 起動口（`codex-launcher.sh`、`# >>> c3c codex-launcher` 区切りの RUN）を変更した場合は、`tests/test_codex_launcher.py`（PATH の先頭化・冪等・空 PATH、引数と終了コードの透過、欠落・dangling・実行不能の fail-closed、`entrypoint.sh` との固定値の一致）、`tests/test_codex_bwrap.py`（npm の nested/hoisted/legacy・x64/arm64 の解決、欠落・実行不能・target 外・help 4 項目の拒否。Node.js が必要）と `tests/test_codex_entrypoint.py`（全段の PATH 一致・Claude の不変・欠落時の停止）を含む `--launcher-only`、最終イメージの所有者・mode・書込不可と起動口の置換を確かめる `--build-only`、opt-out のイメージに起動口が無いことを確かめる引数なしの全体実行を行う。arm64 は fixture の合格であり、実機の合格とは区別する。対応 Codex を更新するときは、上流の [launcher.rs](https://github.com/openai/codex/blob/rust-v0.156.0/codex-rs/linux-sandbox/src/launcher.rs)・[PATH 探索](https://github.com/openai/codex/blob/rust-v0.156.0/codex-rs/sandboxing/src/bwrap.rs)・[npm ラッパー](https://github.com/openai/codex/blob/rust-v0.156.0/codex-cli/bin/codex.js)・[proc fallback](https://github.com/openai/codex/blob/rust-v0.156.0/codex-rs/linux-sandbox/src/linux_run_main.rs) の新版で、PATH 候補の選び方、help の必要オプション、npm の配置、`/newroot/proc` の失敗検出が変わっていないことを確かめる。そのうえで、システム版 bubblewrap のある fixture で通常起動の `pwd`/`git status` と通信・mount の受入をやり直す（[調査記録](docs/codex-proc-investigation.md)の「#145 の受入」）。
+
+Copilot CLI（`copilot-version.txt`、`copilot-launcher.sh`、`copilot-bwrap-shim.sh`、`copilot-settings.json`、`Dockerfile.claude` の `# >>> c3c copilot` 区切りの RUN と許可リストへの追記の RUN）を変えた場合は、`tests/test_copilot_launcher.py`・`tests/test_copilot_bwrap_shim.py`・`tests/test_c3c_config.py`（`--launcher-only` に含む）、`./test-build.sh --build-only`（既定で何も入らないこと）、全体実行（opt-in のビルドの配置・所有者・版・ログインシェル・トークンなしの停止・宛先、Codex を無効にして Copilot だけ有効のビルド、`latest` のビルドの失敗）を走らせる。さらに、モデルを呼ぶ実機の受け入れ（CI には入れない）を行う: opt-in のイメージで `/workspace` を作業ディレクトリにして canary を起動口経由で 2 回走らせ、sandbox の中で名前空間が外と別、ネットワークが `lo` だけ（`curl` が失敗）、`SECRETS_DIR`・`~/.copilot`・gh の設定が読めない、`COPILOT_GITHUB_TOKEN`・`GH_TOKEN` が空でどのプロセスの環境にもトークンが無い、作業ディレクトリに書けないことを確かめ、起動口が `/home/node` と弱めた設定で止まることも確かめる。Copilot の版を上げたときもこの受け入れを行う（`/dev/net/tun` が要るようになっていないか、トークンの渡し方が変わっていないか）。
 
 `SHARED_MOUNT` の別名マウントと `AGENTS_DIR`（`compose.shared-home.yml`・`compose.shared-host.yml`・`compose.agents.yml`・`guard_shared_home_alias()`・`guard_agents_dir()`）の変更時も `./test-build.sh --launcher-only` を実行する（opt-in の配線、不正値の拒否、`--check` の不変、symlink の実体解決を含む）。このランチャーテストの仮 HOME は `mktemp` 配下に作るため、`TMPDIR` が `/var/tmp` や `/run/user/<uid>` の配下だと予約領域の拒否条件に当たり、正常系も失敗する。該当する環境では `TMPDIR=/tmp ./test-build.sh --launcher-only` として実行する（全体テストも `TMPDIR=/tmp ./test-build.sh`）。`lint.sh` は override 単独と 7 ファイル同時の Compose 設定、`${VAR:?}` の fail-closed を検証する。実際に別名が読めて別名経由で書けないこと、`/shared` が rw のままであることは `-b` で起動したコンテナ内で確認する（前述「ホストの指示ファイルとスキルをコンテナ内で解決する」節）。
 

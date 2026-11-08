@@ -1,6 +1,6 @@
 # c3c — Claude Code & Codex Container
 
-[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container) をフォークした Podman 上の Claude Code コンテナ実行環境。
+Podman 上の Claude Code コンテナ実行環境。
 
 Podman + Compose を使い、ホストの Claude 認証情報を共有しながら任意のディレクトリを `/workspace` にマウントして Claude Code を起動する。
 

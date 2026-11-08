@@ -31,7 +31,7 @@ FIXED_TEMPLATE = '/etc/c3c/copilot-settings.json'
 FIXED_PYTHON = '/usr/bin/python3'
 REAL_PYTHON = shutil.which('python3')
 
-TOKEN = 'github_pat_TESTTOKEN0123456789abcdef'
+TOKEN = 'c3c-dummy-copilot-credential-0123456789'
 ALLOWED_ENV = {'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TZ', 'NO_COLOR', 'COLORTERM'}
 SET_BY_LAUNCHER = {'PATH', 'COPILOT_HOME', 'COPILOT_GITHUB_TOKEN', 'COPILOT_AUTO_UPDATE'}
 # exec の前後でシェルが自分で足すもの（起動口が渡すものではない）。

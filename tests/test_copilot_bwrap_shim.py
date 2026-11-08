@@ -21,6 +21,7 @@ MISSING_MESSAGE = 'ERROR: /usr/bin/bwrap がありません。-b で再ビルド
 
 DUMMY = '''#!/bin/sh
 for arg in "$@"; do printf '%s\\0' "$arg"; done > "{record}"
+/usr/bin/env > "{record}.env"
 exit "${{DUMMY_RC:-0}}"
 '''
 
@@ -98,6 +99,19 @@ class CopilotBwrapShimTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(result.stderr.strip(), MISSING_MESSAGE)
                 self.assertFalse(self.record.exists())
+
+    def test_clears_environment_for_real_bwrap(self):
+        """中継は環境を空にして本物を起動する（秘密を bwrap に渡さない）。sandbox の中の環境は MXC が --clearenv と
+        --setenv で組む。"""
+        result = self.run_shim('--clearenv', '--setenv', 'A', 'x', '--', 'true',
+                               env_extra={'COPILOT_GITHUB_TOKEN': 'secret-value', 'GH_TOKEN': 'gh-value', 'PWD': '/x'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env_text = Path(str(self.record) + '.env').read_text()
+        self.assertNotIn('secret-value', env_text)
+        self.assertNotIn('gh-value', env_text)
+        self.assertNotIn('COPILOT_GITHUB_TOKEN', env_text)
+        self.assertNotRegex(env_text, r'(?m)^PATH=', 'PATH も渡さない（本物は絶対パスで起動する）')
+        self.assertEqual(self.recorded(), ['--clearenv', '--setenv', 'A', 'x', '--', 'true'])
 
     def test_exit_code_passthrough(self):
         result = self.run_shim('--', 'true', env_extra={'DUMMY_RC': '7'})

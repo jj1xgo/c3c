@@ -9,6 +9,10 @@
 # 最初の `--` とそれより後ろ（sandbox の中で動くコマンドの引数）は一字も変えない。組が無ければ何も
 # 替えずに渡す。MXC に予備の道が入るまでの暫定（README「Copilot CLI を使う」節）。
 #
+# 本物の bwrap は環境を空にして起動する（bash の組み込み `exec -c`。値を外部コマンドの引数に載せない）。
+# Copilot の環境にあるトークンなどの秘密を bwrap に渡さないため。sandbox の中の環境は MXC が --clearenv と
+# --setenv で、作業ディレクトリは --chdir で渡すので、bwrap の環境は要らない。
+#
 # 秘密は読まない。本物の bwrap のパスは環境変数で差し替えられない（readonly、上書き口を作らない）。
 # 本物が無ければ、PATH 上のほかの bwrap を探さずに止める（fail-closed）。
 set -u
@@ -36,4 +40,4 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-exec "$REAL_BWRAP" "${args[@]}"
+exec -c "$REAL_BWRAP" "${args[@]}"

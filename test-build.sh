@@ -1043,7 +1043,7 @@ run_launcher_tests() {
   check "entrypoint の Claude project 設定ゲート（preflight の fd3 分離・enum・再照合・TTY 確認・秘密より前）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_entrypoint.py"
   check "Codex 同梱 bubblewrap の解決（npm の nested/hoisted/legacy・x64/arm64・欠落/実行不能/target 外/help 4 項目の fail-closed）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_bwrap.py"
   check "Codex 起動口（同梱 bubblewrap の PATH 先頭化・冪等・空 PATH・引数と終了コードの透過・欠落/dangling/実行不能の fail-closed・entrypoint との固定値一致）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launcher.py"
-  check "Copilot の sandbox 用 bwrap の中継（--proc /proc の組だけを最初の -- より前で替える・組が無ければ素通し・本物の欠落の fail-closed・終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_bwrap_shim.py"
+  check "Copilot の sandbox 用 bwrap の中継（--proc /proc の組だけを最初の -- より前で替える・組が無ければ素通し・本物の欠落の fail-closed・本物を空の環境で起動・終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_bwrap_shim.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests

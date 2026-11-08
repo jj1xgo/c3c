@@ -407,7 +407,7 @@ RUN set -e; \
       [ "$(ls -A "$shimdir")" = bwrap ] || { echo "ERROR: $shimdir の中身が bwrap の 1 ファイルだけではありません" >&2; exit 1; }; \
       install -d -o root -g root -m 0755 /etc/c3c; \
       install -o root -g root -m 0644 /tmp/copilot-settings.json /etc/c3c/copilot-settings.json; \
-      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap; do \
+      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap /usr/bin/flock "$expected" "$native"; do \
         p="$start"; \
         while :; do \
           bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { \

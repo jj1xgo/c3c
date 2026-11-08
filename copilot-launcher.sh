@@ -16,6 +16,11 @@
 # 固定パスは環境変数で差し替えられない（readonly、上書き口を作らない）。設定の検査は python3 -I で行い、
 # パスは引数で渡す。
 set -u
+# 呼び出し元の xtrace（bash -x、環境の SHELLOPTS）でトークンが stderr に出ないよう、最初に止める。
+set +x +v
+# 起動口が使う名前を、呼び出し元が export した同じ名前から切り離す（export のまま値を入れると、下の環境の
+# 絞り込みで消える）。
+unset -v cwd rel token name saved_lc_all saved_lc_all_set
 
 readonly CONTAINER_HOME=/home/node
 readonly COPILOT_BWRAP_DIR=/usr/local/libexec/c3c/copilot-bwrap
@@ -24,6 +29,10 @@ readonly COPILOT_HOME=/home/node/.copilot
 readonly SETTINGS_TEMPLATE=/etc/c3c/copilot-settings.json
 readonly TOKEN_FILE=/home/node/.config/c3c/secrets/COPILOT_PAT
 readonly PYTHON3=/usr/bin/python3
+readonly FLOCK=/usr/bin/flock
+# 雛形の deniedPaths の必須の 2 つ。作業ディレクトリ（readonlyPaths に入る）をこれらと重ねない。
+readonly SANDBOX_TMP=/tmp
+readonly SECRETS_DIR=/home/node/.config/c3c/secrets
 readonly SAFE_PATH="$COPILOT_BWRAP_DIR:/usr/local/bin:/usr/bin:/bin"
 
 fail() {
@@ -40,8 +49,14 @@ if [ ! -f "$COPILOT_JS" ] || [ ! -x "$COPILOT_JS" ]; then
 fi
 
 # 2. 作業ディレクトリ。比較は / で区切った要素の単位で行う（文字列の前方一致にしない）。
-if ! cwd="$(pwd -P 2>/dev/null)" || [ -z "$cwd" ] || [ "${cwd#/}" = "$cwd" ]; then
+# $(...) は末尾の改行を落とすので、番兵の文字を付けて受け取る。改行・制御文字を含むパスは断る。
+if ! cwd="$(pwd -P 2>/dev/null && printf x)" || [ "${cwd%x}" = "$cwd" ]; then
   fail "作業ディレクトリを解決できません（消えたディレクトリの中などで起動していないか確かめてください）。"
+fi
+cwd="${cwd%x}"
+cwd="${cwd%$'\n'}"
+if [ -z "$cwd" ] || [ "${cwd#/}" = "$cwd" ] || [[ "$cwd" == *[[:cntrl:]]* ]]; then
+  fail "作業ディレクトリを解決できません（改行や制御文字を含むパスでは起動しません）。"
 fi
 refuse_cwd() {
   fail "作業ディレクトリ $cwd では起動しません（$1）。Copilot に見せてよいディレクトリ（/workspace や $CONTAINER_HOME/copilot-work など）で起動してください。"
@@ -52,6 +67,11 @@ fi
 case "$CONTAINER_HOME" in
   "$cwd"/*) refuse_cwd "$CONTAINER_HOME とその祖先は、認証や秘密の置き場を含むため" ;;
 esac
+for denied in "$SANDBOX_TMP" "$SECRETS_DIR"; do
+  case "$cwd" in
+    "$denied" | "$denied"/*) refuse_cwd "$denied とその下は sandbox で隠す場所のため" ;;
+  esac
+done
 case "$cwd" in
   "$CONTAINER_HOME"/*)
     rel="${cwd#"$CONTAINER_HOME"/}"
@@ -61,12 +81,31 @@ case "$cwd" in
     ;;
 esac
 
-# 3. sandbox の設定を雛形から作り直して検査する。
+# 3. settings.json は全起動で 1 つを共有するので、別の copilot が動いている間は起動しない（作り直した設定を
+#    取り合わないため）。lock は fd 9（読み取りだけ）を exec した Copilot が持ち続け、終わると外れる。
+if [ -L "$COPILOT_HOME" ] || { [ -e "$COPILOT_HOME" ] && [ ! -d "$COPILOT_HOME" ]; }; then
+  fail "$COPILOT_HOME がディレクトリではありません（symlink を含む）。"
+fi
+if [ ! -d "$COPILOT_HOME" ] && ! mkdir -m 700 "$COPILOT_HOME" 2>/dev/null; then
+  fail "$COPILOT_HOME を作れません。"
+fi
+readonly LOCK_FILE="$COPILOT_HOME/.c3c-launch.lock"
+if [ -L "$LOCK_FILE" ] || { [ -e "$LOCK_FILE" ] && [ ! -f "$LOCK_FILE" ]; }; then
+  fail "$LOCK_FILE が通常のファイルではありません（symlink を含む）。"
+fi
+if ! { : >> "$LOCK_FILE" && exec 9< "$LOCK_FILE"; } 2>/dev/null; then
+  fail "$LOCK_FILE を開けません。"
+fi
+if ! "$FLOCK" -n 9; then
+  fail "別の copilot が動いています（$COPILOT_HOME の settings.json を共有するため、並行して起動しません）。"
+fi
+
+#    sandbox の設定を雛形から作り直して検査する。
 if ! "$PYTHON3" -I -c '
 import json, os, sys
 
-template_path, home, settings_path, cwd = sys.argv[1:5]
-REQUIRED_DENIED = ["/tmp", "/home/node/.config/c3c/secrets"]
+template_path, home, settings_path, cwd, required_tmp, required_secrets = sys.argv[1:7]
+REQUIRED_DENIED = [required_tmp, required_secrets]
 
 
 def die(message):
@@ -152,7 +191,7 @@ with open(settings_path, encoding="utf-8") as f:
 problem = check(written, [cwd])
 if problem:
     die(settings_path + " の sandbox の設定が不正です: " + problem + "。")
-' "$SETTINGS_TEMPLATE" "$COPILOT_HOME" "$COPILOT_HOME/settings.json" "$cwd"; then
+' "$SETTINGS_TEMPLATE" "$COPILOT_HOME" "$COPILOT_HOME/settings.json" "$cwd" "$SANDBOX_TMP" "$SECRETS_DIR"; then
   fail "sandbox の設定を用意できないため、Copilot を起動しません。"
 fi
 
@@ -192,9 +231,14 @@ for name in $(compgen -e); do
       ;;
   esac
 done
+# export された関数（環境の BASH_FUNC_*）も Copilot へ渡さない。起動口自身の関数（fail など）も消えるので、
+# ここより後で fail を呼ばない。
+for name in $(compgen -A function); do
+  unset -f "$name"
+done
 export PATH="$SAFE_PATH"
 export COPILOT_HOME
 export COPILOT_AUTO_UPDATE=false
 export COPILOT_GITHUB_TOKEN="$token"
-unset token saved_lc_all saved_lc_all_set
+unset token saved_lc_all saved_lc_all_set name denied cwd rel
 exec "$COPILOT_JS" "$@"

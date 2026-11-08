@@ -10,6 +10,7 @@ wrapper に替える（どの外部コマンドの引数にもトークンが載
 ホストの設定や認証には触れない。
 """
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ FIXED_BWRAP_DIR = '/usr/local/libexec/c3c/copilot-bwrap'
 FIXED_COPILOT_JS = '/usr/local/lib/node_modules/@github/copilot/npm-loader.js'
 FIXED_TEMPLATE = '/etc/c3c/copilot-settings.json'
 FIXED_PYTHON = '/usr/bin/python3'
+FIXED_TMP_LINE = 'readonly SANDBOX_TMP=/tmp\n'
 REAL_PYTHON = shutil.which('python3')
 
 TOKEN = 'c3c-dummy-copilot-credential-0123456789'
@@ -73,7 +75,10 @@ class CopilotLauncherTest(unittest.TestCase):
         self.python.write_text(PYTHON_WRAPPER.format(record=self.record, real=REAL_PYTHON))
         self.python.chmod(0o755)
         self.template = self.root / 'copilot-settings.json'
-        self.template.write_text(TEMPLATE.read_text().replace(FIXED_HOME, str(self.home)))
+        # sandbox が隠す /tmp は、試験の一時ディレクトリ（/tmp の下）と重なるので、起動口と雛形の両方で別の場所に替える。
+        self.fake_tmp = self.root / 'faketmp'
+        self.fake_tmp.mkdir()
+        self.template.write_text(self.render_template(TEMPLATE.read_text()))
         self.work = self.home / 'copilot-work'
         self.work.mkdir()
         text = LAUNCHER.read_text()
@@ -84,12 +89,18 @@ class CopilotLauncherTest(unittest.TestCase):
                 .replace(FIXED_TEMPLATE, str(self.template))
                 .replace(FIXED_PYTHON, str(self.python))
                 .replace(FIXED_HOME, str(self.home)))
+        self.assertIn(FIXED_TMP_LINE, text)
+        text = text.replace(FIXED_TMP_LINE, f'readonly SANDBOX_TMP={self.fake_tmp}\n')
         self.launcher = self.root / 'copilot'
         self.launcher.write_text(text)
         self.launcher.chmod(0o755)
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def render_template(self, text):
+        self.assertIn('"/tmp"', text)
+        return text.replace(FIXED_HOME, str(self.home)).replace('"/tmp"', json.dumps(str(self.fake_tmp)))
 
     def run_launcher(self, *args, cwd=None, env_extra=None):
         env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(self.home), 'LANG': 'C.UTF-8'}
@@ -131,7 +142,7 @@ class CopilotLauncherTest(unittest.TestCase):
         return doc
 
     def write_template(self, mutate):
-        doc = json.loads(TEMPLATE.read_text().replace(FIXED_HOME, str(self.home)))
+        doc = json.loads(self.render_template(TEMPLATE.read_text()))
         mutate(doc)
         self.template.write_text(json.dumps(doc))
 
@@ -164,7 +175,8 @@ class CopilotLauncherTest(unittest.TestCase):
         result = self.run_launcher('--version', cwd=other)
         self.assert_ran(result)
         self.assertEqual(json.loads(self.settings.read_text()), self.expected_settings(other))
-        self.assertEqual([p.name for p in self.copilot_home.iterdir()], ['settings.json'], '一時ファイルを残さない')
+        self.assertEqual(sorted(p.name for p in self.copilot_home.iterdir()), ['.c3c-launch.lock', 'settings.json'],
+                         '一時ファイルを残さない')
 
     def test_refuses_settings_symlink(self):
         self.copilot_home.mkdir(mode=0o700)
@@ -205,7 +217,8 @@ class CopilotLauncherTest(unittest.TestCase):
 
     def test_refuses_missing_denied_paths(self):
         secrets = str(self.home / '.config' / 'c3c' / 'secrets')
-        for value in ([], ['/tmp'], [secrets], '/tmp', [secrets, '/tmp', 3]):
+        tmp = str(self.fake_tmp)
+        for value in ([], [tmp], [secrets], tmp, [secrets, tmp, 3]):
             with self.subTest(value=value):
                 self.write_template(lambda d: d['sandbox']['userPolicy']['filesystem'].update(deniedPaths=value))
                 self.assert_refused(self.run_launcher('--version'))
@@ -276,6 +289,34 @@ class CopilotLauncherTest(unittest.TestCase):
                 self.assertEqual(Path(str(self.record) + '.cwd').read_text().strip(), str(path))
                 os.unlink(str(self.record) + '.argv')
 
+    def test_refuses_cwd_in_denied_paths(self):
+        """作業ディレクトリは readonlyPaths に入るので、deniedPaths（/tmp・SECRETS_DIR）とその下と重ねない。"""
+        refused = [self.fake_tmp, self.fake_tmp / 'sub', self.home / '.config' / 'c3c' / 'secrets' / 'sub']
+        for path in refused:
+            path.mkdir(parents=True, exist_ok=True)
+            with self.subTest(cwd=str(path)):
+                self.assert_refused(self.run_launcher('--version', cwd=path))
+        sibling = self.root / 'faketmp2'
+        sibling.mkdir()
+        self.assert_ran(self.run_launcher('--version', cwd=sibling))
+
+    def test_refuses_cwd_with_newline(self):
+        for name in ('trailing\n', 'mid\ndle'):
+            path = self.home / name
+            path.mkdir()
+            with self.subTest(name=name):
+                self.assert_refused(self.run_launcher('--version', cwd=path))
+
+    def test_refuses_concurrent_launch(self):
+        """settings.json は 1 つを共有するので、別の copilot が動いている間は起動しない。"""
+        self.copilot_home.mkdir(mode=0o700)
+        lock = self.copilot_home / '.c3c-launch.lock'
+        with open(lock, 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_launcher('--version')
+            self.assert_refused(result, r'並行')
+        self.assert_ran(self.run_launcher('--version'))
+
     def test_refuses_symlink_into_sensitive_cwd(self):
         link = self.root / 'link-to-secrets'
         link.symlink_to(self.home / '.config' / 'c3c' / 'secrets')
@@ -339,6 +380,38 @@ class CopilotLauncherTest(unittest.TestCase):
                          ('xterm', 'Asia/Tokyo', '1', str(self.home)))
         for value in ('gh-secret', 'github-secret', 'mcp-secret', 'aws-secret', '/elsewhere'):
             self.assertNotIn(value, env.values())
+
+    def test_exported_internal_names_do_not_break(self):
+        extra = {'token': 'x', 'cwd': '/', 'rel': 'x', 'name': 'x', 'saved_lc_all': 'x', 'saved_lc_all_set': 'set'}
+        result = self.run_launcher('--version', env_extra=extra)
+        self.assert_ran(result)
+        env = self.recorded_env()
+        self.assertEqual(env['COPILOT_GITHUB_TOKEN'], TOKEN)
+        self.assertEqual(set(extra) & set(env), set())
+
+    def test_exported_functions_are_removed(self):
+        # dash は名前に % を含む環境変数を落とすので、この試験の dummy は環境をそのまま記録する python にする。
+        self.js.write_text(f'#!{REAL_PYTHON}\nimport os\nopen({str(self.record) + ".env"!r}, "w").write("\\n".join(os.environ))\n'
+                           f'open({str(self.record) + ".argv"!r}, "w").close()\n')
+        result = self.run_launcher('--version', env_extra={'BASH_FUNC_leak%%': '() {  echo leaked\n}'})
+        self.assert_ran(result)
+        names = Path(str(self.record) + '.env').read_text().splitlines()
+        self.assertIn('COPILOT_HOME', names, 'dummy が環境を記録している')
+        self.assertEqual([n for n in names if n.startswith('BASH_FUNC_')], [])
+
+    def test_xtrace_does_not_print_token(self):
+        for how in ('-x', 'SHELLOPTS'):
+            with self.subTest(how=how):
+                env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(self.home)}
+                argv = ['/bin/bash', str(self.launcher), '--version']
+                if how == '-x':
+                    argv.insert(1, '-x')
+                else:
+                    env['SHELLOPTS'] = 'xtrace'
+                result = subprocess.run(argv, env=env, cwd=str(self.work), capture_output=True, text=True, timeout=30)
+                self.assert_ran(result)
+                self.assertNotIn(TOKEN, result.stdout + result.stderr)
+                os.unlink(str(self.record) + '.argv')
 
     def test_token_not_in_any_argv(self):
         result = self.run_launcher('-p', 'hello', '--model', 'x')

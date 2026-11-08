@@ -127,7 +127,7 @@
   - `test_refuses_non_bool_values`: `allowBypass: 0`、`auth.git: null`、`enabled: "true"` のそれぞれで rc 1
   - `test_refuses_unknown_sandbox_keys`: `filesystem.readwritePaths`、`sandbox.maskedEnv`、`userPolicy.proxy` のそれぞれで rc 1
   - `test_refuses_broken_json`、`test_refuses_settings_symlink`
-  - `test_refuses_sensitive_cwd`: cwd が `/`、試験用の HOME とその親、HOME の下の `.config/c3c/secrets`・`.claude`・`.codex`・`.copilot`・任意のディレクトリ（例: `HOME/work`）→ rc 1。`/workspace` 相当、名前が前方一致するだけの `HOME` の兄弟（例: `/home/node2`）→ 通る
+  - `test_refuses_sensitive_cwd`: cwd が `/`、試験用の HOME とその親、HOME の下の `.config/c3c/secrets`・`.claude`・`.codex`・`.copilot`・`.ssh`・`.local/share` → rc 1。HOME の下の `copilot-work` と `copilot-work/sub`、HOME の下の `work/.hidden`（直下でない隠しディレクトリ）→ 通る。`/workspace` 相当、名前が前方一致するだけの `HOME` の兄弟（例: `/home/node2`）→ 通る
   - `test_refuses_missing_cwd`: cwd を消した後に起動 → rc 1
   - `test_requires_token_file`: 無い・空・LF だけ・2 行・CR を含む・途中に空白を含む・タブを含む → rc 1。末尾に LF が 1 つある 1 行 → 通る
   - `test_env_is_allowlisted`: 元の環境に `GH_TOKEN`・`GITHUB_TOKEN`・`COPILOT_GITHUB_TOKEN=old`・`GITHUB_MCP_PAT`・`AWS_ACCESS_KEY_ID`・`COPILOT_HOME=/elsewhere` → dummy の環境に無い（`COPILOT_GITHUB_TOKEN` はファイルの値、`COPILOT_HOME` は固定値、`PATH` は下の固定値）
@@ -145,7 +145,7 @@
 
   起動口の処理（この順で行う。どれかを満たせなければ `ERROR: ...` を stderr に出して rc 1 とし、Copilot は起動しない）:
   1. 中継が `-f`・`-x` を満たし、`COPILOT_JS` も `-f`・`-x` を満たす。
-  2. `cwd=$(pwd -P)` が成功する（失敗したら止める）。パスの比較はすべて `/` で区切った要素の単位で行う（文字列の前方一致にしない）。cwd が `$CONTAINER_HOME` かその祖先（`/` を含む）か、`$CONTAINER_HOME` の下のどこか（`.config`・`.claude`・`.codex`・`.copilot` を含むすべて）なら止める。
+  2. `cwd=$(pwd -P)` が成功する（失敗したら止める）。パスの比較はすべて `/` で区切った要素の単位で行う（文字列の前方一致にしない）。cwd が `$CONTAINER_HOME` かその祖先（`/` を含む）か、`$CONTAINER_HOME` の直下の名前が `.` で始まるエントリ（`.config`・`.claude`・`.codex`・`.copilot` などすべて）かその下なら止める。`$CONTAINER_HOME` の下の、名前が `.` で始まらないディレクトリ（例: `~/copilot-work`。コンテナでの並走の作業フォルダの置き場）とその下は通す。
   3. `$COPILOT_HOME/settings.json` が無ければ、`install -d -m 0700 "$COPILOT_HOME"` のあと雛形をコピーする。有れば触らない。symlink なら止める。
   4. `python3 -I` で `$COPILOT_HOME/settings.json` を検査する（パスは引数で渡す）。合格の条件:
      - `sandbox.enabled`・`sandboxMcpServers`・`sandboxLspServers` が `True`
@@ -298,7 +298,7 @@
 - argon（並走、正式外）: 修正後に渡せる。消費 59.0 クレジット、所要 893 秒。生の出力 `<pairing-runs>/20261108-c3c-plan-copilot-sandbox-argon/out.txt`。送ったのは `plan-initial.md`（公開の経路、未 push、base `4508e96`）。Sol と材料が違った点: グローバル指示と `.claude/AGENTS.md` は渡さず名前だけ、スキルの表の `~/` のパスを外した
   - C1 Task 1 が未作成のファイルを登録 → 既に反映済み（Claude I1・Codex I2 と同じ）
   - C2 起動口が `deniedPaths` の中身を見ていない → 採用（雛形の 2 つを必須にし、`test_refuses_missing_denied_paths` を足した）
-  - C3 `COPILOT_HOME` の上書き口と、作業ディレクトリの検査の抜け → `COPILOT_HOME` は既に固定。作業ディレクトリは採用（`/home/node` の下をすべて拒否、`CONTAINER_HOME` の定数）
+  - C3 `COPILOT_HOME` の上書き口と、作業ディレクトリの検査の抜け → `COPILOT_HOME` は既に固定。作業ディレクトリは採用（`CONTAINER_HOME` の定数）。最初は `/home/node` の下をすべて拒否したが、持ち主の決定（2026-11-08、下の行）で、`/home/node` 自身・祖先と、直下の隠しエントリとその下だけを拒否する形に戻した
   - I1 文言・既存の試験・許可リストの読み方 → 既に反映済み
   - I2 新しい試験が CI で走らない → 既に反映済み
   - I3 Dockerfile の位置・apt・arch・一時ファイル → 位置・apt・arch は既に反映済み。一時ファイルを opt-in でも消す点を採用
@@ -307,6 +307,10 @@
   - M1 unittest のコマンドが `ModuleNotFoundError` になる（argon の実測） → 採用（既存と同じ `discover -s tests -p` の形）
   - M2 `/home/node` の定数 → 採用。M3 起動口の probe → 採用
 - 確認限定巡 3: Codex（argon の C2・C3 の作業ディレクトリ・I3 の一時ファイル・I4、所要 26 秒）→ すべて直った。実装に渡せる。生の出力 `<scratchpad>/tasks/b60z8j8i5.output`
+- 承認の後の変更 2（2026-11-08、持ち主の決定）: `/home/node` の下をすべて拒否すると、コンテナでの並走の作業フォルダ（ホストの `~/copilot-work` に当たる、git の外の置き場）が無くなる（`/workspace` と `/shared` は git の中、`/tmp` は sandbox で隠す）。持ち主の側から届いた注意を受け、持ち主が「戻す」を選んだ。拒否は `/home/node` 自身・祖先と、直下の `.` で始まるエントリとその下に限り、普通のサブディレクトリは通す。守りたいもの（認証・秘密・設定）は隠しディレクトリの下にあるため。
+- 確認限定巡 4: Codex（承認の後の変更 2、所要 34 秒）→ 穴なし。compose.yml の認証・秘密・設定のマウント先はすべて拒否の範囲（`/home/node/.claude.json` は `/home/node` 自身として拒否）。実装に渡せる。生の出力 `<scratchpad>/tasks/bra3z4zfr.output`
+
+実装: Opus（持ち主指定、2026-11-08）
 
 区分: 境界（セキュリティ境界〈コンテナの中の sandbox の構成〉と、秘密やトークンを読む経路〈`COPILOT_PAT` の読み込み〉に触れるため）
 推奨実装: Opus（判定順 2「秘密やトークンを読む経路に触れる変更 → Claude（Opus）」に当たるため。Codex を推さないのは、判定順 2 が 4〜6 より先に当たるから。単価は Sonnet より高いが、作業は 7 Task で 1 セッションに収まる見込み）

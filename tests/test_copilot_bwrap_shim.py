@@ -5,7 +5,8 @@
 先頭に置く。Copilot の sandbox（MXC）が bwrap に渡す `--proc /proc` は、Podman の /proc のマスクの下では
 失敗するので、最初の `--` より前にある組だけを `--ro-bind /proc /proc` に替えて本物の bwrap を exec する。
 実物のスクリプトの固定パス（REAL_BWRAP）を試験用の dummy へ置換して実行する（tests/test_codex_launcher.py
-と同じ流儀）。dummy は argv を NUL 区切りで記録し、DUMMY_RC の終了コードで終わる。
+と同じ流儀）。dummy は argv を NUL 区切りで、環境を `.env` に記録し、`.rc` に書いた終了コードで終わる（中継は環境を空にして
+本物を起動するので、終了コードは環境変数で渡せない）。
 """
 
 import os
@@ -22,7 +23,8 @@ MISSING_MESSAGE = 'ERROR: /usr/bin/bwrap がありません。-b で再ビルド
 DUMMY = '''#!/bin/sh
 for arg in "$@"; do printf '%s\\0' "$arg"; done > "{record}"
 /usr/bin/env > "{record}.env"
-exit "${{DUMMY_RC:-0}}"
+if [ -f "{record}.rc" ]; then exit "$(cat "{record}.rc")"; fi
+exit 0
 '''
 
 
@@ -114,7 +116,8 @@ class CopilotBwrapShimTest(unittest.TestCase):
         self.assertEqual(self.recorded(), ['--clearenv', '--setenv', 'A', 'x', '--', 'true'])
 
     def test_exit_code_passthrough(self):
-        result = self.run_shim('--', 'true', env_extra={'DUMMY_RC': '7'})
+        Path(str(self.record) + '.rc').write_text('7\n')
+        result = self.run_shim('--', 'true')
         self.assertEqual(result.returncode, 7)
 
 

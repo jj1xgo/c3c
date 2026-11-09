@@ -7,6 +7,9 @@ tmp
 # 引き続きコミット対象。このリポジトリ自身の設定も .c3c/ に置く。
 # サンプルは examples/c3c/env.example を参照。
 .c3c/env
+# .c3c/copilot-version.txt は、c3c 自身の開発環境で Copilot CLI を opt-in するかの個人の選択
+# （Copilot 専用の PAT を持つ保守者だけが使う）。同梱 default は空 = 無効のまま公開する。
+.c3c/copilot-version.txt
 
 # .claude/ はメンテナ個人の開発運用ファイル（プロダクト本体ではない）。
 # private nested git リポジトリとして別途管理するため追跡しない。

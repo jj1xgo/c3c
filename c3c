@@ -1027,17 +1027,41 @@ guard_codex_dir() {
 # 両方で表示する（c3c 第2b-2段階）。採用元は resolve_asset_source() の結果（project / 同梱 default）と
 # 内容（空 = 明示 opt-out）から決め、ここで別の解決規則を持たない。Node が opt-out で Codex が有効な
 # 組合せは、ベースイメージや packages.txt で npm が入るかをホスト側では判定できない（断定しない）ため
-# ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。値の妥当性（書式）は
-# Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。
+# ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。Node・Codex の値の妥当性
+# （書式）は Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。Copilot CLI
+# （copilot-version.txt。同梱 default は空 = 無効の opt-in）は、ビルドで必ず止まる書式違反を
+# ここでも検査して止める（素の X.Y.Z だけ。latest は受けない）。Node が空で Copilot が有効な
+# 組合せも Codex と同じ理由で WARNING にする。
 guard_build_input_defaults() {
   local name label value origin_text
   local node_value="" codex_value="" info_prefix="INFO: "
   [[ ${CHECK_MODE:-0} -eq 1 ]] && info_prefix="[INFO] "
-  for name in node-version.txt codex-version.txt; do
+  local copilot_value=""
+  for name in node-version.txt codex-version.txt copilot-version.txt; do
     resolve_asset_source "$name"
     value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
       guard_fail "ERROR: $ASSET_PATH を読めません。起動を中止します。" || return 1
     }
+    if [[ "$name" == copilot-version.txt ]]; then
+      if [[ -z "$value" && "$ASSET_ORIGIN" != "project" ]]; then
+        origin_text="なし（既定で無効。導入するには $PROJECT_CONF_DIR/copilot-version.txt に版を書きます）"
+      elif [[ -z "$value" ]]; then
+        origin_text="なし（$ASSET_PATH が空、Copilot を導入しません）"
+      elif [[ ! "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        guard_fail "ERROR: $ASSET_PATH には 1.0.103 のような素のバージョンを書いてください（実際の値: $value）" || return 1
+      elif [[ "$ASSET_ORIGIN" == "project" ]]; then
+        origin_text="$value（採用元: project $ASSET_PATH）"
+      else
+        origin_text="$value（採用元: 同梱 default）"
+      fi
+      if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
+        echo "${info_prefix}Copilot 版: $origin_text"
+      else
+        echo "${info_prefix}Copilot 版: $origin_text" >&2
+      fi
+      copilot_value="$value"
+      continue
+    fi
     label="Node.js"
     [[ "$name" == codex-version.txt ]] && label="Codex"
     if [[ "$ASSET_ORIGIN" == "project" ]]; then
@@ -1064,6 +1088,11 @@ guard_build_input_defaults() {
     local warn_prefix=""
     [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
     guard_warn "${warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに codex-version.txt は有効（$codex_value）です。Codex CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Codex を使わないなら $PROJECT_CONF_DIR/codex-version.txt も空にして無効化できます。"
+  fi
+  if [[ -z "$node_value" && -n "$copilot_value" ]]; then
+    local copilot_warn_prefix=""
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && copilot_warn_prefix="[WARN] "
+    guard_warn "${copilot_warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに copilot-version.txt は有効（$copilot_value）です。Copilot CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Copilot を使わないなら $PROJECT_CONF_DIR/copilot-version.txt も空にして無効化できます。"
   fi
   return 0
 }
@@ -2414,10 +2443,12 @@ check_mcp_approval() {
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
 #                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
-#                    codex-mcp-audit.py・claude-project-audit.py・codex-launcher.sh・固定 Compose override 群）
+#                    codex-mcp-audit.py・claude-project-audit.py・codex-launcher.sh・copilot-bwrap-shim.sh・
+#                    copilot-launcher.sh・copilot-settings.json・
+#                    固定 Compose override 群）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
-#                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
+#                    codex-version.txt・copilot-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
 #                  同梱 default を持ち（現在は 24.18.0 / Codex latest）、project 側の空ファイルは
 #                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
@@ -2430,11 +2461,11 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | copilot-bwrap-shim.sh | copilot-launcher.sh | copilot-settings.json | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
-    packages.txt | requirements.txt | allowed-domains.txt | node-version.txt | codex-version.txt)
+    packages.txt | requirements.txt | allowed-domains.txt | node-version.txt | codex-version.txt | copilot-version.txt)
       if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
         ASSET_PATH="$PROJECT_CONF_DIR/$name"
         ASSET_ORIGIN="project"
@@ -2469,6 +2500,9 @@ ASSET_HASH_TARGETS=(
   codex-mcp-audit.py
   claude-project-audit.py
   codex-launcher.sh
+  copilot-bwrap-shim.sh
+  copilot-launcher.sh
+  copilot-settings.json
   compose.ipv6.yml
   compose.plugins-alias.yml
   compose.shared-home.yml
@@ -2484,6 +2518,7 @@ ASSET_HASH_TARGETS=(
   allowed-domains.txt
   node-version.txt
   codex-version.txt
+  copilot-version.txt
   allowed-ports.txt
   base-image.txt
 )
@@ -2512,8 +2547,8 @@ compute_asset_hash() {
 }
 
 # entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh / codex-launcher.sh 等（fixed）・
-# packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt
-# （overridable）・allowed-ports.txt（optional）をビルドコンテキストへ集約する。
+# packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt /
+# copilot-version.txt（overridable）・allowed-ports.txt（optional）をビルドコンテキストへ集約する。
 # packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
 # （$PROJECT_CONF_DIR）にあればそちらを、なければ c3c 同梱のデフォルト
 # （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
@@ -2525,7 +2560,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py claude-project-audit.py codex-launcher.sh git-askpass.sh validate-build-input.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py claude-project-audit.py codex-launcher.sh copilot-bwrap-shim.sh copilot-launcher.sh copilot-settings.json git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -2550,7 +2585,7 @@ stage_build_context() {
   # Codex を勝手に導入しない）。allowed-ports.txt は任意機能で移行元が無く、無ければ静かに
   # 空ファイルを生成する。空の意味（既定値 443,22 の適用）は init-firewall.sh 自身が解釈する
   # （`#31`）。
-  for name in node-version.txt codex-version.txt allowed-ports.txt; do
+  for name in node-version.txt codex-version.txt copilot-version.txt allowed-ports.txt; do
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "missing" ]]; then
       : > "$BUILD_CONTEXT_DIR/$name"

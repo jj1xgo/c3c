@@ -448,7 +448,7 @@ class ResolverConsistencyTests(ConfigCase):
         self.use_new_layout()
         baseline_run, baseline_staged = self.run_and_capture('claude', str(self.proj))
         for name in ('entrypoint.sh', 'init-firewall.sh', 'git-askpass.sh', 'validate-build-input.sh',
-                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
+                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'ipv6-firewall.py', 'firewall-refresh.py',
                      'compose.ipv6.yml', 'compose.codex-preflight.yml'):
             (self.new / name).write_text('#!/bin/sh\nexit 99\n')
         run, staged = self.run_and_capture('claude', str(self.proj))
@@ -671,6 +671,78 @@ class BuildInputDefaultTests(ConfigCase):
         self.assertNotIn('npm', result.stderr)
         self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project ')
         self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: 同梱 default）')
+
+    # --- Copilot CLI（opt-in。同梱 default は空 = 無効） --------------------
+
+    COPILOT_PIN = '1.0.103'
+
+    def test_copilot_version_default_disabled(self):
+        self.assertEqual((REPO / 'copilot-version.txt').read_bytes(), b'', '同梱 default は 0 バイト（無効）')
+        (self.new / 'copilot-version.txt').unlink(missing_ok=True)
+        expected = f'Copilot 版: なし（既定で無効。導入するには {self.new}/copilot-version.txt に版を書きます）'
+        result, run, staged = self.launch_claude()
+        self.assertEqual(staged['copilot-version.txt'], EMPTY_SHA256)
+        self.assertIn('INFO: ' + expected, result.stderr.splitlines())
+        check = self.run_check('c3c', self.proj)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn('[INFO] ' + expected, check.stdout.splitlines())
+
+    def test_copilot_version_project_pin(self):
+        path = self.new / 'copilot-version.txt'
+        path.write_text(self.COPILOT_PIN + '\n')
+        result, run, staged = self.launch_claude()
+        self.assertEqual(staged['copilot-version.txt'], sha256_text(self.COPILOT_PIN + '\n'))
+        self.assertIn(f'INFO: Copilot 版: {self.COPILOT_PIN}（採用元: project {path}）', result.stderr.splitlines())
+        check = self.run_check('c3c', self.proj)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn(f'[INFO] Copilot 版: {self.COPILOT_PIN}（採用元: project {path}）', check.stdout.splitlines())
+        # 版を変えれば hash も変わる（ドリフト検知の対象）。
+        path.unlink()
+        _, absent_run, _ = self.launch_claude()
+        self.assertNotEqual(absent_run['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
+
+    def test_copilot_version_project_empty(self):
+        path = self.new / 'copilot-version.txt'
+        path.write_text('\n')
+        result, _, staged = self.launch_claude()
+        self.assertEqual(staged['copilot-version.txt'], sha256_text('\n'))
+        self.assertIn(f'INFO: Copilot 版: なし（{path} が空、Copilot を導入しません）', result.stderr.splitlines())
+        check = self.run_check('c3c', self.proj)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn(f'[INFO] Copilot 版: なし（{path} が空、Copilot を導入しません）', check.stdout.splitlines())
+
+    def test_copilot_enabled_without_node_warns(self):
+        (self.new / 'node-version.txt').write_text('')
+        (self.new / 'codex-version.txt').write_text('')
+        (self.new / 'copilot-version.txt').write_text(self.COPILOT_PIN + '\n')
+        result, _, _ = self.launch_claude('-b')
+        self.assertEqual(len(self.compose_calls('build')), 1, '通常起動は進む')
+        warning = [line for line in result.stderr.splitlines() if line.startswith('WARNING:') and 'npm' in line]
+        self.assertEqual(len(warning), 1, result.stderr)
+        self.assertIn('copilot-version.txt は有効（1.0.103）', warning[0])
+        self.assertIn('Copilot CLI の導入には npm が必要', warning[0])
+        self.assertNotIn('Codex', warning[0])
+        check = self.run_check('c3c', self.proj)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertRegex(check.stdout, r'\[WARN\] WARNING: .*node-version\.txt が空.*copilot-version\.txt')
+        self.assertIn('→ 結果: WARN', check.stdout)
+
+    def test_copilot_version_bad_format_fails(self):
+        path = self.new / 'copilot-version.txt'
+        for value in ('latest', '1.0', '1.0.103-beta'):
+            with self.subTest(value=value):
+                path.write_text(value + '\n')
+                message = f'ERROR: {path} には 1.0.103 のような素のバージョンを書いてください（実際の値: {value}）'
+                self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
+                result = self.run_c3c('claude', str(self.proj))
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(message, result.stderr.splitlines())
+                self.assert_no_containers()
+                self.assertEqual(self.compose_calls('build'), [])
+                check = self.run_check('c3c', self.proj)
+                self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+                self.assertIn(message, check.stdout.splitlines(), '--check は診断を stdout にまとめる')
+                self.assertIn('→ 結果: FAIL', check.stdout)
 
 
 if __name__ == '__main__':

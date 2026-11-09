@@ -1,0 +1,1 @@
+{"sandbox":{"enabled":true,"allowBypass":false,"addCurrentWorkingDirectory":false,"allowDevToolAccess":false,"auth":{"git":false,"gh":false},"sandboxMcpServers":true,"sandboxLspServers":true,"userPolicy":{"network":{"allowOutbound":false,"allowLocalNetwork":false},"filesystem":{"deniedPaths":["/tmp","/home/node/.config/c3c/secrets"]}}}}

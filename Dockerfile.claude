@@ -353,6 +353,76 @@ RUN set -e; \
     fi
 # <<< c3c codex-requirements
 
+# >>> c3c copilot
+# GitHub Copilot CLI（opt-in。copilot-version.txt の同梱 default は空 = 導入しない）を、command sandboxing
+# （MXC の bubblewrap、通信なし）付きで入れる。版は素の X.Y.Z だけ（latest は受けない）。入れるのは次の 4 つ:
+#   - Debian の bubblewrap（0.5.0 以上。MXC の MIN_BWRAP_VERSION）
+#   - npm の @github/copilot（版が指定と一致し、ネイティブのバイナリが実行可能な通常ファイルであることを確かめる）
+#   - 起動口 copilot-launcher.sh（npm の symlink /usr/local/bin/copilot を置き換える。symlink の実体が起動口の
+#     固定パス COPILOT_JS と一致することを確かめ、npm の配置が変わったら黙って別物を exec しないよう止める）
+#   - bwrap の中継 copilot-bwrap-shim.sh（/usr/local/libexec/c3c/copilot-bwrap/bwrap。中身はこの 1 ファイルだけ）と
+#     sandbox の設定の雛形（/etc/c3c/copilot-settings.json）
+# 中継・起動口・雛形と、それぞれの親から / までが、root 所有で group/other から書けないことを検査する（Codex の
+# 固定リンク #145 と同じ形）。/dev/net/tun と slirp4netns は入れない（通信なしの設定では要らない。README
+# 「Copilot CLI を使う」節）。一時ファイルは opt-in でも opt-out でも消す。
+COPY copilot-version.txt /tmp/copilot-version.txt
+COPY copilot-launcher.sh /tmp/copilot-launcher.sh
+COPY copilot-bwrap-shim.sh /tmp/copilot-bwrap-shim.sh
+COPY copilot-settings.json /tmp/copilot-settings.json
+RUN set -e; \
+    COPILOT_VERSION="$(tr -d '[:space:]' < /tmp/copilot-version.txt)"; \
+    if [ -z "$COPILOT_VERSION" ]; then \
+      echo "INFO: Copilot は無効のため入れません"; \
+    else \
+      echo "$COPILOT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
+        echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンを書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
+      command -v npm >/dev/null || { \
+        echo "ERROR: copilot-version.txt（$COPILOT_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Copilot を使わないなら .c3c/copilot-version.txt も空にしてください。" >&2; exit 1; }; \
+      apt-get update && apt-get install -y --no-install-recommends bubblewrap && apt-get clean && rm -rf /var/lib/apt/lists/*; \
+      bwrap_version="$(dpkg-query -W -f='${Version}' bubblewrap)" && dpkg --compare-versions "$bwrap_version" ge 0.5.0 || { \
+        echo "ERROR: bubblewrap が 0.5.0 以上ではありません（${bwrap_version:-不明}）" >&2; exit 1; }; \
+      [ -f /usr/bin/bwrap ] && [ -x /usr/bin/bwrap ] || { echo "ERROR: /usr/bin/bwrap がありません" >&2; exit 1; }; \
+      npm install -g "@github/copilot@${COPILOT_VERSION}"; \
+      pkg=/usr/local/lib/node_modules/@github/copilot; \
+      installed="$(node -p 'require(process.argv[1]).version' "$pkg/package.json")" && [ "$installed" = "$COPILOT_VERSION" ] || { \
+        echo "ERROR: 入った @github/copilot の版（${installed:-不明}）が指定（$COPILOT_VERSION）と違います" >&2; exit 1; }; \
+      case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo "ERROR: 未対応のアーキテクチャです: $(uname -m)" >&2; exit 1 ;; esac; \
+      native="$pkg/node_modules/@github/copilot-linux-$arch/copilot"; \
+      [ -f "$native" ] && ! [ -L "$native" ] && [ -x "$native" ] || { \
+        echo "ERROR: Copilot のネイティブのバイナリ $native が実行可能な通常ファイルではありません" >&2; exit 1; }; \
+      expected="$pkg/npm-loader.js"; \
+      grep -qxF "readonly COPILOT_JS=$expected" /tmp/copilot-launcher.sh || { \
+        echo "ERROR: copilot-launcher.sh の COPILOT_JS が $expected ではありません" >&2; exit 1; }; \
+      [ -L /usr/local/bin/copilot ] || { echo "ERROR: /usr/local/bin/copilot が npm の symlink ではありません" >&2; exit 1; }; \
+      real="$(readlink -e /usr/local/bin/copilot)" && [ "$real" = "$expected" ] || { \
+        echo "ERROR: /usr/local/bin/copilot の実体が $expected ではありません（${real:-解決不能}）" >&2; exit 1; }; \
+      [ -f "$expected" ] && [ -x "$expected" ] || { echo "ERROR: $expected が実行可能な通常ファイルではありません" >&2; exit 1; }; \
+      rm -f /usr/local/bin/copilot; \
+      install -o root -g root -m 0755 /tmp/copilot-launcher.sh /usr/local/bin/copilot; \
+      shimdir=/usr/local/libexec/c3c/copilot-bwrap; \
+      install -d -o root -g root -m 0755 /usr/local/libexec /usr/local/libexec/c3c "$shimdir"; \
+      grep -qxF 'readonly REAL_BWRAP=/usr/bin/bwrap' /tmp/copilot-bwrap-shim.sh || { \
+        echo "ERROR: copilot-bwrap-shim.sh の REAL_BWRAP が /usr/bin/bwrap ではありません" >&2; exit 1; }; \
+      install -o root -g root -m 0755 /tmp/copilot-bwrap-shim.sh "$shimdir/bwrap"; \
+      [ "$(ls -A "$shimdir")" = bwrap ] || { echo "ERROR: $shimdir の中身が bwrap の 1 ファイルだけではありません" >&2; exit 1; }; \
+      install -d -o root -g root -m 0755 /etc/c3c; \
+      install -o root -g root -m 0644 /tmp/copilot-settings.json /etc/c3c/copilot-settings.json; \
+      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap /usr/bin/flock "$expected" "$native"; do \
+        p="$start"; \
+        while :; do \
+          bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { \
+            echo "ERROR: Copilot の経路 $p の所有者・mode を検査できません" >&2; exit 1; }; \
+          [ -z "$bad" ] || { \
+            echo "ERROR: Copilot の経路 $p が root 所有でないか group/other から書込可能です" >&2; exit 1; }; \
+          [ "$p" = / ] && break; \
+          p="$(dirname "$p")"; \
+        done; \
+      done; \
+      echo "INFO: Copilot $COPILOT_VERSION: 起動口 /usr/local/bin/copilot -> exec $expected、bwrap の中継 $shimdir/bwrap -> /usr/bin/bwrap（$bwrap_version）"; \
+    fi; \
+    rm -f /tmp/copilot-version.txt /tmp/copilot-launcher.sh /tmp/copilot-bwrap-shim.sh /tmp/copilot-settings.json
+# <<< c3c copilot
+
 # エグレスファイアウォールのアセット。スクリプトと許可リストは root の持ち物にして、
 # 実行時に node が書き換えられないようにする。node に許す sudo はこのスクリプトの実行だけで、
 # sudoers の断片は root 所有・0440 の空ファイルを先に作ってから 1 行を書き込む。
@@ -363,6 +433,19 @@ RUN chmod 755 /usr/local/bin/init-firewall.sh && \
   chmod 644 /etc/c3c/allowed-domains.txt /etc/c3c/allowed-ports.txt && \
   install -o root -g root -m 0440 /dev/null /etc/sudoers.d/node-firewall && \
   printf '%s\n' 'node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh' >> /etc/sudoers.d/node-firewall
+
+# opt-in の Copilot（上の c3c copilot の区間が雛形を置いたとき）だけ、Copilot の宛先（個人のプランの 2 つ）を
+# 許可リストの末尾に足す。行の完全一致で既にあれば足さない。末尾が改行で終わらないファイルは、最後の行と
+# つながらないよう先に改行を 1 つ足す。
+RUN set -e; \
+    f=/etc/c3c/allowed-domains.txt; \
+    if [ -f /etc/c3c/copilot-settings.json ]; then \
+      if [ -n "$(tail -c 1 "$f")" ]; then printf '\n' >> "$f"; fi; \
+      for name in api.individual.githubcopilot.com telemetry.individual.githubcopilot.com; do \
+        grep -qxF "$name" "$f" || printf '%s\n' "$name" >> "$f"; \
+      done; \
+      echo "INFO: Copilot の宛先を許可リストに足しました"; \
+    fi
 
 # オプトインの git push 配線用の GIT_ASKPASS ヘルパー（entrypoint.sh を参照）。
 # init-firewall.sh と同じパターンで root 所有にし、node ユーザーが実行時に

@@ -53,6 +53,10 @@ exec {real} "$@"
 '''
 
 
+VERIFIED = '1.0.103'
+WARNING_PREFIX = f'WARNING: Copilot CLI {{}} は、c3c が sandbox を canary で確かめた版（{VERIFIED}）と違います。'
+
+
 class CopilotLauncherTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -71,6 +75,9 @@ class CopilotLauncherTest(unittest.TestCase):
         self.js = self.root / 'npm-loader.js'
         self.js.write_text(DUMMY_JS.format(record=self.record))
         self.js.chmod(0o755)
+        # 起動口は COPILOT_JS の隣の package.json の版を、確かめた版（VERIFIED_COPILOT_VERSION）と比べる。
+        self.package_json = self.root / 'package.json'
+        self.package_json.write_text(json.dumps({'version': VERIFIED}) + '\n')
         self.python = self.root / 'python3'
         self.python.write_text(PYTHON_WRAPPER.format(record=self.record, real=REAL_PYTHON))
         self.python.chmod(0o755)
@@ -145,6 +152,41 @@ class CopilotLauncherTest(unittest.TestCase):
         doc = json.loads(self.render_template(TEMPLATE.read_text()))
         mutate(doc)
         self.template.write_text(json.dumps(doc))
+
+    # --- 確かめた版との比較 -------------------------------------------------
+
+    def test_verified_version_constant(self):
+        lines = [line for line in LAUNCHER.read_text().splitlines() if line.startswith('readonly VERIFIED_COPILOT_VERSION=')]
+        self.assertEqual(lines, [f'readonly VERIFIED_COPILOT_VERSION={VERIFIED}'])
+
+    def test_no_warning_for_verified_version(self):
+        result = self.run_launcher()
+        self.assert_ran(result)
+        self.assertNotIn('WARNING', result.stderr)
+
+    def test_warns_for_other_version(self):
+        for version in ('1.0.110', '1.0.90'):
+            with self.subTest(version=version):
+                Path(str(self.record) + '.argv').unlink(missing_ok=True)
+                self.package_json.write_text(json.dumps({'version': version}))
+                result = self.run_launcher()
+                self.assert_ran(result)
+                warnings = [line for line in result.stderr.splitlines() if line.startswith('WARNING')]
+                self.assertEqual(len(warnings), 1, result.stderr)
+                self.assertTrue(warnings[0].startswith(WARNING_PREFIX.format(version)), warnings[0])
+                self.assertIn('変更後の確認', warnings[0])
+                self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_refuses_unreadable_package_json(self):
+        cases = [('missing', None), ('not json', '{'), ('no version', '{}'), ('number', '{"version": 1}'),
+                 ('empty', '{"version": ""}'), ('newline', '{"version": "1.0.103\\n"}'), ('array', '[]')]
+        for label, text in cases:
+            with self.subTest(label):
+                if text is None:
+                    self.package_json.unlink(missing_ok=True)
+                else:
+                    self.package_json.write_text(text)
+                self.assert_refused(self.run_launcher(), r'package\.json')
 
     # --- 雛形 ---------------------------------------------------------------
 

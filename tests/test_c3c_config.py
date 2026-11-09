@@ -528,6 +528,24 @@ class BuildInputDefaultTests(ConfigCase):
                 else:
                     self.assertEqual(cachebust, 'pinned', '固定版と opt-out はキャッシュを維持する')
 
+    def test_rebuild_cachebust_follows_resolved_copilot_version(self):
+        for value in (None, '1.0.103', '', 'latest'):
+            with self.subTest(version=value):
+                path = self.new / 'copilot-version.txt'
+                if value is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(value + '\n')
+                self.launch_claude('-b')
+                builds = [call for call in self.calls
+                          if call['args'][:1] == ['compose'] and 'build' in call['args']]
+                self.assertEqual(len(builds), 1)
+                cachebust = builds[0]['env']['COPILOT_CACHEBUST']
+                if value == 'latest':
+                    self.assertRegex(cachebust, r'^\d+$', 'latest の再ビルドは Copilot のレイヤーのキャッシュを捨てる')
+                else:
+                    self.assertEqual(cachebust, 'pinned', '固定版・空・未指定はキャッシュを保つ')
+
     def test_bundled_defaults_are_the_contract_values(self):
         self.assertEqual((REPO / 'node-version.txt').read_bytes(), (DEFAULT_NODE + '\n').encode())
         self.assertEqual((REPO / 'codex-version.txt').read_bytes(), (DEFAULT_CODEX + '\n').encode())
@@ -701,6 +719,16 @@ class BuildInputDefaultTests(ConfigCase):
         _, absent_run, _ = self.launch_claude()
         self.assertNotEqual(absent_run['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
 
+    def test_copilot_version_latest(self):
+        path = self.new / 'copilot-version.txt'
+        path.write_text('latest\n')
+        result, _, staged = self.launch_claude()
+        self.assertEqual(staged['copilot-version.txt'], sha256_text('latest\n'))
+        self.assertIn(f'INFO: Copilot 版: latest（採用元: project {path}）', result.stderr.splitlines())
+        check = self.run_check('c3c', self.proj)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn(f'[INFO] Copilot 版: latest（採用元: project {path}）', check.stdout.splitlines())
+
     def test_copilot_version_project_empty(self):
         path = self.new / 'copilot-version.txt'
         path.write_text('\n')
@@ -729,10 +757,10 @@ class BuildInputDefaultTests(ConfigCase):
 
     def test_copilot_version_bad_format_fails(self):
         path = self.new / 'copilot-version.txt'
-        for value in ('latest', '1.0', '1.0.103-beta'):
+        for value in ('1.0', '1.0.103-beta', 'LATEST', 'latest-1'):
             with self.subTest(value=value):
                 path.write_text(value + '\n')
-                message = f'ERROR: {path} には 1.0.103 のような素のバージョンを書いてください（実際の値: {value}）'
+                message = f'ERROR: {path} には 1.0.103 のような素のバージョンか、文字どおり "latest" を書いてください（実際の値: {value}）'
                 self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
                 result = self.run_c3c('claude', str(self.proj))
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

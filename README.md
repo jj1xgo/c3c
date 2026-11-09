@@ -17,6 +17,7 @@ apt/pip パッケージは `.c3c/`（後述。旧名 `.claude-container.d/` は 
 - [MCP サーバーの追加](#mcp-サーバーの追加)
 - [Codex CLI をセカンドオピニオンとして使う](#codex-cli-をセカンドオピニオンとして使う)
 - [Codex CLI を対話で使う](#codex-cli-を対話で使う)
+- [Copilot CLI を使う](#copilot-cli-を使う)
 - [c3c 入口（CLI の選択と記憶）](#c3c-入口cli-の選択と記憶)
 - [アーキテクチャ](#アーキテクチャ)
 - [イメージの変更](#イメージの変更)

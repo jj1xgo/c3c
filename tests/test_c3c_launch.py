@@ -57,6 +57,17 @@ with open(os.path.join(root, 'calls'), 'a') as out:
 def save():
     with open(state_path, 'w') as handle:
         json.dump(state, handle)
+def rewrite_launcher():
+    # 実行中の c3c を同じ inode のまま書き換える（セルフホストでコンテナの中から c3c を直す場面）。
+    # 3 行目の前に行を足すので、bash が古い版の続きのバイト位置から読むと別の行の途中に当たる。
+    target = state.get('rewrite_launcher')
+    if not target:
+        return
+    with open(target, 'r+b') as handle:
+        data = handle.read()
+        cut = data.index(b'\\n', data.index(b'\\n') + 1) + 1
+        handle.seek(0)
+        handle.write(data[:cut] + b'# rewritten while running\\n' * 20 + data[cut:])
 head = ' '.join(args[:2])
 if head == 'images --all':
     print('[]')
@@ -90,6 +101,7 @@ elif args[:1] == ['pull']:
 elif args[:1] == ['compose']:
     verb = next((a for a in args if a in ('build', 'run')), None)
     if verb == 'build':
+        rewrite_launcher()
         rc = state.get('build_rc', 0)
         if rc:
             sys.exit(rc)
@@ -107,6 +119,7 @@ elif args[:1] == ['compose']:
         sys.stderr.flush()
         sys.exit(spec.get('rc', 0))
     elif verb == 'run':
+        rewrite_launcher()
         sys.exit(state.get('run_rc', 0))
 elif args[:1] in (['rmi'], ['network'], ['image']):
     pass
@@ -796,6 +809,29 @@ class MemoryUpdateTests(LaunchCase):
         saved = self.pref_file()
         self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
         self.assertEqual(saved.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_rewriting_launcher_during_main_run_keeps_exit_code_and_memory(self):
+        # bash は読みながら実行するので、本 run の間に c3c が書き換わると、続きを新しい版の
+        # 古いバイト位置から読んで壊れる（2026-11-09 に「予期しないトークン `fi'」で観測）。
+        self.approve_codex()
+        self.set_pref('claude')
+        self.state['rewrite_launcher'] = str(self.launcher)
+        result = self.run_c3c('codex', str(self.proj))
+        self.assert_single_run(result, 'codex')
+        self.assertNotIn('構文エラー', result.stderr)
+        self.assertNotIn('syntax error', result.stderr)
+        self.assertEqual(self.saved_agent(), 'codex')
+
+    def test_rewriting_launcher_during_build_still_launches(self):
+        # イメージが無いときのビルドも top-level から呼ぶので、その間の書き換えにも耐える。
+        self.approve_codex()
+        self.set_pref('claude')
+        self.state = {'image_exists': False, 'preflight': {'stdout': protocol()},
+                      'rewrite_launcher': str(self.launcher)}
+        result = self.run_c3c('codex', str(self.proj))
+        self.assert_single_run(result, 'codex')
+        self.assertEqual(len(self.compose_calls('build')), 1)
+        self.assertEqual(self.saved_agent(), 'codex')
 
     def test_build_preflight_and_rejected_approval_keep_old_value(self):
         self.set_pref('claude')

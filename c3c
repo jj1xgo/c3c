@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# 本体全体を { } で囲み、bash に実行前にファイル全部を読ませる。bash はスクリプトを読みながら実行するので、
+# 囲まないと、ビルド・承認待ち・本 run の間に c3c が同じ inode のまま書き換わったとき（セルフホストで
+# コンテナの中から c3c を直す場面）、続きを新しい版の古いバイト位置から読んで壊れる。exit は囲みの中に置く。
+{
 set -euo pipefail
 trap 'exit 1' INT
 
@@ -3297,3 +3301,4 @@ if [[ $run_rc -eq 0 ]]; then
   write_agent_preference || true
 fi
 exit "$run_rc"
+}

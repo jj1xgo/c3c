@@ -130,8 +130,8 @@ c3c 本体を変更する開発者（AI エージェントを含む）向けに�
   - トークンは bash の組み込みでファイル全体を読み、印字できる ASCII の 1 行だけを受ける。外部コマンドの引数にしない（`env -i` を使わない。コマンドラインは並行する sandbox からも見える）。`set -x` や stderr に出さない。
   - 環境は bash の組み込み（`compgen -e` と `unset`。起動口の readonly と同名のものは `export -n`。export された関数は exec の直前に `unset -f`）で allowlist に絞ってから、`PATH`・`COPILOT_HOME`・`COPILOT_AUTO_UPDATE=false`・`COPILOT_GITHUB_TOKEN` だけを足す。
 - **Dockerfile の `# >>> c3c copilot` の区間と `copilot-version.txt`**
-  - 同梱の `copilot-version.txt` は空（0 バイト）＝ 導入しない（opt-in）。版の書式は素の `X.Y.Z` だけで、`latest` を受けない（CACHEBUST を足さない）。`guard_build_input_defaults()` もビルド前に同じ書式で止める。
-  - opt-in のとき: `bubblewrap` は 0.5.0 以上、npm の `@github/copilot` は `package.json` の版が指定と一致し、ネイティブのバイナリが実行可能な通常ファイル。npm の symlink の実体と起動口の `readonly COPILOT_JS=` が固定パスと一致しなければ止める。symlink を消してから `install -o root -g root -m 0755` で置く。中継・起動口・雛形・`/usr/bin/bwrap`・`/usr/bin/flock`・`npm-loader.js`・ネイティブのバイナリと、それぞれの親から `/` までが root 所有で group/other から書けないことを `find` で検査する。
+  - 同梱の `copilot-version.txt` は空（0 バイト）＝ 導入しない（opt-in）。版の書式は素の `X.Y.Z` か文字どおりの `latest`（`^([0-9]+\.[0-9]+\.[0-9]+|latest)$`）で、`guard_build_input_defaults()` もビルド前に同じ書式で止める。`latest` のときだけ `run_explicit_build()` が `COPILOT_CACHEBUST` を時刻にし（ほかは `pinned`。Codex の `CODEX_CACHEBUST` と同じ形）、区間の `ARG COPILOT_CACHEBUST=pinned` を RUN の先頭で echo してキャッシュを捨てる。
+  - opt-in のとき: `bubblewrap` は 0.5.0 以上、npm の `@github/copilot` は `package.json` の版が、番号の指定なら指定と一致し、`latest` なら素の `X.Y.Z`（prerelease で止める）で、ネイティブのバイナリが実行可能な通常ファイル。npm の symlink の実体と起動口の `readonly COPILOT_JS=` が固定パスと一致しなければ止める。symlink を消してから `install -o root -g root -m 0755` で置く。中継・起動口・雛形・`/usr/bin/bwrap`・`/usr/bin/flock`・`npm-loader.js`・`package.json`・ネイティブのバイナリと、それぞれの親から `/` までが root 所有で group/other から書けないことを `find` で検査する。
   - opt-in でも opt-out でも、区間の最後で `/tmp/copilot-*` を消す。opt-out ではほかに何も入れない（`test-build.sh --build-only` が検査する）。
   - Copilot の宛先は、雛形があるときだけ許可リストの末尾に行の完全一致で足す（末尾が改行で終わらなければ先に改行を足す）。`/dev/net/tun` を通さず、slirp4netns を入れず、Podman の `unmask` を使わない。
   - 4 つのファイルは `fixed`（`copilot-version.txt` だけ overridable）で `ASSET_HASH_TARGETS` に入る。増やしたので、無効のプロジェクトも含む全利用側で、`-b` までドリフトの WARNING が出る（意図した挙動）。

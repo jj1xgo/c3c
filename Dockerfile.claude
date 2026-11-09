@@ -355,7 +355,9 @@ RUN set -e; \
 
 # >>> c3c copilot
 # GitHub Copilot CLI（opt-in。copilot-version.txt の同梱 default は空 = 導入しない）を、command sandboxing
-# （MXC の bubblewrap、通信なし）付きで入れる。版は素の X.Y.Z だけ（latest は受けない）。入れるのは次の 4 つ:
+# （MXC の bubblewrap、通信なし）付きで入れる。版は素の X.Y.Z か、文字どおりの latest（npm の dist-tag で
+# その時点の最新。COPILOT_CACHEBUST〈latest のときだけ c3c が更新する〉がこの区間のキャッシュだけを捨てるので、
+# `-b` のたびに入れ直す）。入れるのは次の 4 つ:
 #   - Debian の bubblewrap（0.5.0 以上。MXC の MIN_BWRAP_VERSION）
 #   - npm の @github/copilot（版が指定と一致し、ネイティブのバイナリが実行可能な通常ファイルであることを確かめる）
 #   - 起動口 copilot-launcher.sh（npm の symlink /usr/local/bin/copilot を置き換える。symlink の実体が起動口の
@@ -369,13 +371,15 @@ COPY copilot-version.txt /tmp/copilot-version.txt
 COPY copilot-launcher.sh /tmp/copilot-launcher.sh
 COPY copilot-bwrap-shim.sh /tmp/copilot-bwrap-shim.sh
 COPY copilot-settings.json /tmp/copilot-settings.json
+ARG COPILOT_CACHEBUST=pinned
 RUN set -e; \
+    echo "copilot-cachebust=${COPILOT_CACHEBUST}"; \
     COPILOT_VERSION="$(tr -d '[:space:]' < /tmp/copilot-version.txt)"; \
     if [ -z "$COPILOT_VERSION" ]; then \
       echo "INFO: Copilot は無効のため入れません"; \
     else \
-      echo "$COPILOT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
-        echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンを書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
+      echo "$COPILOT_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
+        echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
         echo "ERROR: copilot-version.txt（$COPILOT_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Copilot を使わないなら .c3c/copilot-version.txt も空にしてください。" >&2; exit 1; }; \
       apt-get update && apt-get install -y --no-install-recommends bubblewrap && apt-get clean && rm -rf /var/lib/apt/lists/*; \
@@ -384,8 +388,13 @@ RUN set -e; \
       [ -f /usr/bin/bwrap ] && [ -x /usr/bin/bwrap ] || { echo "ERROR: /usr/bin/bwrap がありません" >&2; exit 1; }; \
       npm install -g "@github/copilot@${COPILOT_VERSION}"; \
       pkg=/usr/local/lib/node_modules/@github/copilot; \
-      installed="$(node -p 'require(process.argv[1]).version' "$pkg/package.json")" && [ "$installed" = "$COPILOT_VERSION" ] || { \
-        echo "ERROR: 入った @github/copilot の版（${installed:-不明}）が指定（$COPILOT_VERSION）と違います" >&2; exit 1; }; \
+      installed="$(node -p 'require(process.argv[1]).version' "$pkg/package.json")" || installed=""; \
+      if [ "$COPILOT_VERSION" = latest ]; then \
+        printf '%s\n' "$installed" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+'; \
+      else \
+        [ "$installed" = "$COPILOT_VERSION" ]; \
+      fi || { \
+        echo "ERROR: 入った @github/copilot の版（${installed:-不明}）が指定（$COPILOT_VERSION）に合いません（latest は素の X.Y.Z に解決されること）" >&2; exit 1; }; \
       case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo "ERROR: 未対応のアーキテクチャです: $(uname -m)" >&2; exit 1 ;; esac; \
       native="$pkg/node_modules/@github/copilot-linux-$arch/copilot"; \
       [ -f "$native" ] && ! [ -L "$native" ] && [ -x "$native" ] || { \
@@ -407,7 +416,7 @@ RUN set -e; \
       [ "$(ls -A "$shimdir")" = bwrap ] || { echo "ERROR: $shimdir の中身が bwrap の 1 ファイルだけではありません" >&2; exit 1; }; \
       install -d -o root -g root -m 0755 /etc/c3c; \
       install -o root -g root -m 0644 /tmp/copilot-settings.json /etc/c3c/copilot-settings.json; \
-      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap /usr/bin/flock "$expected" "$native"; do \
+      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap /usr/bin/flock "$expected" "$pkg/package.json" "$native"; do \
         p="$start"; \
         while :; do \
           bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { \
@@ -418,7 +427,7 @@ RUN set -e; \
           p="$(dirname "$p")"; \
         done; \
       done; \
-      echo "INFO: Copilot $COPILOT_VERSION: 起動口 /usr/local/bin/copilot -> exec $expected、bwrap の中継 $shimdir/bwrap -> /usr/bin/bwrap（$bwrap_version）"; \
+      echo "INFO: Copilot $installed（指定: $COPILOT_VERSION）: 起動口 /usr/local/bin/copilot -> exec $expected、bwrap の中継 $shimdir/bwrap -> /usr/bin/bwrap（$bwrap_version）"; \
     fi; \
     rm -f /tmp/copilot-version.txt /tmp/copilot-launcher.sh /tmp/copilot-bwrap-shim.sh /tmp/copilot-settings.json
 # <<< c3c copilot

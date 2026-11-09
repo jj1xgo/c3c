@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,8 @@ class InstalledVersionCheckTest(unittest.TestCase):
             ('1.0.103', '1.0.103', True),
             ('1.0.103', '1.0.110', False),
             ('1.0.103', '', False),
+            ('latest', 'junk\n1.0.110', False),
+            ('latest', '1.0.110\njunk', False),
         ]
         for requested, installed, ok in cases:
             with self.subTest(requested=requested, installed=installed):
@@ -123,6 +126,7 @@ tr '\\0' '\\n' < /proc/$$/environ > "$rec/env"
 printf '%s\\n' "$COPILOT_HOME" > "$rec/home"
 cp "$COPILOT_HOME/settings.json" "$rec/settings.json"
 [ -e "$rec/sleep" ] && exec sleep 5
+if [ -e "$rec/ignore-term" ]; then trap '' TERM; while :; do :; done; fi
 cat "$rec/out"
 exit "$(cat "$rec/rc")"
 """
@@ -235,6 +239,16 @@ class ConfigCheckTest(unittest.TestCase):
                     (self.rec / name).unlink(missing_ok=True)
                 self.assert_failed(self.run_check(**kwargs))
 
+    def test_timeout_kills_child_ignoring_sigterm(self):
+        (self.rec / 'ignore-term').write_text('')
+        started = time.monotonic()
+        result = self.run_check()
+        self.assertLess(time.monotonic() - started, 10, 'SIGTERM を無視する子でも打ち切る')
+        self.assert_failed(result)
+
+    def test_check_runs_native_binary(self):
+        self.assertIn('"$native"', extract_check_call(), '孫を残さないよう、loader でなくネイティブのバイナリを直接起動する')
+
     def test_temp_home_removed(self):
         for label, kwargs in (('pass', {}), ('fail', dict(rc=1))):
             with self.subTest(label):
@@ -254,7 +268,7 @@ class CheckWiringTest(unittest.TestCase):
             node = bin_dir / 'node'
             node.write_text(f'#!/bin/sh\nexit {node_rc}\n')
             node.chmod(0o755)
-            env = {'PATH': f'{bin_dir}:/usr/bin:/bin', 'expected': '/x/npm-loader.js', 'installed': '1.0.103'}
+            env = {'PATH': f'{bin_dir}:/usr/bin:/bin', 'native': '/x/copilot', 'installed': '1.0.103'}
             return subprocess.run(['sh', '-c', 'set -e; ' + extract_check_call() + ' echo after'], env=env,
                                   capture_output=True, text=True, timeout=30)
 
@@ -269,7 +283,7 @@ class CheckWiringTest(unittest.TestCase):
 
     def test_called_with_fixed_arguments(self):
         call = extract_check_call()
-        self.assertRegex(call, r"""' "\$expected" /tmp/copilot-settings\.json /workspace 60 \|\|""")
+        self.assertRegex(call, r"""' "\$native" /tmp/copilot-settings\.json /workspace 60 \|\|""")
 
 
 if __name__ == '__main__':

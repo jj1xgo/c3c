@@ -365,7 +365,8 @@ RUN set -e; \
 #   - bwrap の中継 copilot-bwrap-shim.sh（/usr/local/libexec/c3c/copilot-bwrap/bwrap。中身はこの 1 ファイルだけ）と
 #     sandbox の設定の雛形（/etc/c3c/copilot-settings.json）
 # 中継・起動口・雛形と、それぞれの親から / までが、root 所有で group/other から書けないことを検査する（Codex の
-# 固定リンク #145 と同じ形）。起動口を置く前に、入った Copilot に `config --list --json` を打たせ、起動口が書くのと同じ
+# 固定リンク #145 と同じ形）。起動口を置く前に、入った Copilot のネイティブのバイナリ（npm-loader.js は孫として起こすので、
+# 打ち切りが届くよう直接起動する。SIGKILL で打ち切る）に `config --list --json` を打たせ、起動口が書くのと同じ
 # sandbox の設定（雛形＋readonlyPaths）の葉が全部、型も含めて同じ値で読めていなければ止める（node -e の中は
 # 行継続で 1 行になるので、単一引用符と // の行コメントを使わない。tests/test_copilot_config_check.py が抜き出して
 # 試験する。飛ばす口は作らない）。/dev/net/tun と slirp4netns は入れない（通信なしの設定では要らない。README
@@ -393,7 +394,7 @@ RUN set -e; \
       pkg=/usr/local/lib/node_modules/@github/copilot; \
       installed="$(node -p 'require(process.argv[1]).version' "$pkg/package.json")" || installed=""; \
       if [ "$COPILOT_VERSION" = latest ]; then \
-        printf '%s\n' "$installed" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+'; \
+        printf '%s\n' "$installed" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+' && [ "$(printf '%s' "$installed" | tr -d '\n')" = "$installed" ]; \
       else \
         [ "$installed" = "$COPILOT_VERSION" ]; \
       fi || { \
@@ -423,7 +424,7 @@ RUN set -e; \
           home = fs.mkdtempSync(path.join(os.tmpdir(), "c3c-copilot-check-")); \
           fs.writeFileSync(path.join(home, "settings.json"), JSON.stringify(settings) + "\n", { mode: 0o600 }); \
           const env = { HOME: home, COPILOT_HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin", COPILOT_AUTO_UPDATE: "false" }; \
-          const r = cp.spawnSync(loader, ["config", "--list", "--json"], { env: env, stdio: ["ignore", "pipe", "pipe"], timeout: seconds * 1000, encoding: "utf8" }); \
+          const r = cp.spawnSync(loader, ["config", "--list", "--json"], { env: env, stdio: ["ignore", "pipe", "pipe"], timeout: seconds * 1000, killSignal: "SIGKILL", encoding: "utf8" }); \
           if (r.error) { problem = "copilot config を実行できないか、打ち切りました（" + (r.error.code || r.error.message) + "）"; } \
           else if (r.status !== 0) { problem = "copilot config --list --json が rc " + r.status + " で終わりました"; } \
           else { \
@@ -439,7 +440,7 @@ RUN set -e; \
         } catch (e) { problem = "sandbox の設定の読みを確かめられません（" + String(e && e.message ? e.message : e).split("\n")[0] + "）"; } \
         finally { if (home) { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) { problem = problem || "一時のディレクトリを消せません"; } } } \
         if (problem) { console.error("ERROR: " + problem); process.exit(1); } \
-      ' "$expected" /tmp/copilot-settings.json /workspace 60 || { \
+      ' "$native" /tmp/copilot-settings.json /workspace 60 || { \
         echo "ERROR: Copilot $installed が sandbox の設定（/tmp/copilot-settings.json と readonlyPaths）を同じ名前・同じ値で読めません。sandbox が効かなくなっている恐れがあるのでビルドを止めます。確認を飛ばす口はありません。.c3c/copilot-version.txt を通る版に番号で固定してください" >&2; exit 1; }; \
       echo "INFO: Copilot $installed が sandbox の設定を全部読めることを確かめました"; \
       rm -f /usr/local/bin/copilot; \

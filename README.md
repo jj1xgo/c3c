@@ -571,9 +571,12 @@ GitHub の Copilot CLI（`@github/copilot`）を、command sandboxing（Copilot 
 
 opt-in のイメージには、Debian の `bubblewrap`（0.5.0 以上）、npm の `@github/copilot`、起動口（`/usr/local/bin/copilot`。npm の symlink を置き換える）、bwrap の中継（`/usr/local/libexec/c3c/copilot-bwrap/bwrap`）、sandbox の設定の雛形（`/etc/c3c/copilot-settings.json`）が入る。どれも root 所有で、node からは書けない（ビルド時に検査する）。Copilot の宛先 `api.individual.githubcopilot.com` と `telemetry.individual.githubcopilot.com`（個人のプラン）は、イメージの許可リストに自動で足す。Business・Enterprise など個人のプラン以外の宛先は対象外（必要なら `.c3c/allowed-domains.txt` に自分で書く。動作は確かめていない）。
 
+**確かめた版と違うときの WARNING**: 起動口は、起動のたびに Copilot の `package.json` の版を、c3c が sandbox を canary で確かめた版（起動口の `VERIFIED_COPILOT_VERSION`。今は `1.0.103`）と比べる。違えば `WARNING: Copilot CLI <版> は、c3c が sandbox を canary で確かめた版（1.0.103）と違います。…` を stderr に 1 行出して、起動は続ける。`latest` か番号での固定かは見ない（確かめていない版であることは同じため）。同じ版なら出ない。確かめた版は、新しい版で下の「変更後の確認」の受け入れ（canary）に合格した後に、`VERIFIED_COPILOT_VERSION` を上げる PR で上げる。
+
 **起動口が止める条件**（`ERROR:` を出して rc 1。Copilot は起動しない）:
 
 - 中継か Copilot の実体が無い（旧イメージ。`-b` で再ビルドする）
+- Copilot の `package.json` が読めないか、版が空白を含まない印字できる 1 語でない
 - 作業ディレクトリが `/home/node` 自身かその祖先（`/` を含む）か、`/home/node` の直下の `.` で始まるエントリ（`.claude`・`.codex`・`.copilot`・`.config` など）かその下。sandbox で隠す `/tmp` と `SECRETS_DIR` のマウント先とその下も断る（作業ディレクトリは sandbox に読み取りだけで入るので、隠す場所と重ねない）。`/workspace` や `/home/node/copilot-work` のような、Copilot に見せてよいディレクトリで起動する。消えたディレクトリの中、改行や制御文字を含むパスでも止まる
 - 別の `copilot` が動いている（`~/.copilot/settings.json` を全起動で共有するので、起動口は lock を取り、並行して起動しない。lock は Copilot が終わると外れる）
 - sandbox の設定が目標の値でない（下）

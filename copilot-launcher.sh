@@ -5,7 +5,9 @@
 #
 # Copilot の command sandboxing（MXC の bubblewrap、通信なし）を c3c のコンテナの中で動かすため、次をこの順で
 # 行い、どれかを満たせなければ ERROR を出して rc 1 で止まる（Copilot を起動しない。fail-closed）。
-#   1. bwrap の中継（copilot-bwrap-shim.sh）と Copilot の実体があること
+#   1. bwrap の中継（copilot-bwrap-shim.sh）と Copilot の実体があること。続けて Copilot の package.json の版を、
+#      c3c が sandbox を canary で確かめた版（VERIFIED_COPILOT_VERSION）と比べ、違えば WARNING を出す（止めない）。
+#      package.json が読めない・版が印字できる 1 語でなければ止める
 #   2. 作業ディレクトリが、認証や秘密の置き場（/home/node 自身とその祖先、/home/node の直下の . で始まる
 #      エントリとその下）でないこと。sandbox はその作業ディレクトリを読み取りだけで見せる
 #   3. COPILOT_HOME の settings.json を、root が持つ雛形から毎回作り直し、作業ディレクトリを readonlyPaths に
@@ -20,11 +22,13 @@ set -u
 set +x +v
 # 起動口が使う名前を、呼び出し元が export した同じ名前から切り離す（export のまま値を入れると、下の環境の
 # 絞り込みで消える）。
-unset -v cwd rel token name saved_lc_all saved_lc_all_set
+unset -v cwd rel token name saved_lc_all saved_lc_all_set installed_version
 
 readonly CONTAINER_HOME=/home/node
 readonly COPILOT_BWRAP_DIR=/usr/local/libexec/c3c/copilot-bwrap
 readonly COPILOT_JS=/usr/local/lib/node_modules/@github/copilot/npm-loader.js
+# c3c が sandbox を canary で確かめた Copilot の版（README「変更後の確認」の Copilot の受け入れ）。合格した版でだけ上げる。
+readonly VERIFIED_COPILOT_VERSION=1.0.103
 readonly COPILOT_HOME=/home/node/.copilot
 readonly SETTINGS_TEMPLATE=/etc/c3c/copilot-settings.json
 readonly TOKEN_FILE=/home/node/.config/c3c/secrets/COPILOT_PAT
@@ -46,6 +50,23 @@ if [ ! -f "$COPILOT_BWRAP_DIR/bwrap" ] || [ ! -x "$COPILOT_BWRAP_DIR/bwrap" ]; t
 fi
 if [ ! -f "$COPILOT_JS" ] || [ ! -x "$COPILOT_JS" ]; then
   fail "Copilot CLI（$COPILOT_JS）がありません。-b で再ビルドしてください。"
+fi
+if ! installed_version="$("$PYTHON3" -I -c '
+import json, re, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        doc = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+version = doc.get("version") if isinstance(doc, dict) else None
+if not isinstance(version, str) or not re.fullmatch(r"[!-~]+", version):
+    sys.exit(1)
+print(version)
+' "${COPILOT_JS%/*}/package.json" 2>/dev/null)"; then
+  fail "Copilot CLI の版を ${COPILOT_JS%/*}/package.json から読めません。-b で再ビルドしてください。"
+fi
+if [ "$installed_version" != "$VERIFIED_COPILOT_VERSION" ]; then
+  echo "WARNING: Copilot CLI $installed_version は、c3c が sandbox を canary で確かめた版（$VERIFIED_COPILOT_VERSION）と違います。ビルドで sandbox の設定が読めることは確かめましたが、通信が実際に塞がれるかは確かめていません。README「変更後の確認」の Copilot の受け入れ（canary）で確かめてください。" >&2
 fi
 
 # 2. 作業ディレクトリ。比較は / で区切った要素の単位で行う（文字列の前方一致にしない）。
@@ -240,5 +261,5 @@ export PATH="$SAFE_PATH"
 export COPILOT_HOME
 export COPILOT_AUTO_UPDATE=false
 export COPILOT_GITHUB_TOKEN="$token"
-unset token saved_lc_all saved_lc_all_set name denied cwd rel
+unset token saved_lc_all saved_lc_all_set name denied cwd rel installed_version
 exec "$COPILOT_JS" "$@"

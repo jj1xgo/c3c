@@ -2929,6 +2929,13 @@ fi
 rc=0; out="$(cd /workspace && "$f" --version 2>&1)" || rc=$?
 [ "$rc" = 1 ] || { echo "COPILOT_PAT が無いのに起動口が止まらない（rc=$rc）"; exit 1; }
 printf "%s\n" "$out" | grep -q "COPILOT_PAT" || { echo "トークンの ERROR が出ない: $out"; exit 1; }
+v="$(node -p "require(process.argv[1]).version" "${js%/*}/package.json")"
+verified="$(sed -n "s/^readonly VERIFIED_COPILOT_VERSION=//p" "$f")"
+if [ "$v" = "$verified" ]; then
+  ! printf "%s\n" "$out" | grep -q "WARNING: Copilot CLI" || { echo "確かめた版 $v なのに WARNING が出る: $out"; exit 1; }
+else
+  [ "$(printf "%s\n" "$out" | grep -c "^WARNING: Copilot CLI $v は、c3c が sandbox を canary で確かめた版")" = 1 ] || { echo "版 $v（確かめた版 $verified）で WARNING が 1 行出ない: $out"; exit 1; }
+fi
 ! ls /tmp/copilot-* >/dev/null 2>&1 || { echo "/tmp/copilot-* が残っている"; exit 1; }
 for n in api.individual.githubcopilot.com telemetry.individual.githubcopilot.com; do
   [ "$(grep -cxF "$n" "$a")" = 1 ] || { echo "許可リストに $n がちょうど 1 行ない"; exit 1; }

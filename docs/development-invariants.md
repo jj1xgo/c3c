@@ -122,7 +122,7 @@ c3c 本体を変更する開発者（AI エージェントを含む）向けに�
   - 中継のディレクトリの中身はこの 1 ファイルだけにし、Copilot の起動口だけが PATH の先頭に置く（Codex や利用者の bwrap に効かせない）。MXC に `/proc` の予備の道が入るまでの暫定。
 - **`copilot-launcher.sh`**（Copilot CLI の起動口。イメージでは opt-in のときだけ `/usr/local/bin/copilot`）と **`copilot-settings.json`**（sandbox の設定の雛形。`/etc/c3c/copilot-settings.json`、root:root 0644）
   - 固定パス（`CONTAINER_HOME`・`COPILOT_BWRAP_DIR`・`COPILOT_JS`・`COPILOT_HOME`・`SETTINGS_TEMPLATE`・`TOKEN_FILE`・`PYTHON3`）を `readonly` にし、環境変数による上書き口を作らない。`TOKEN_FILE` の親は `entrypoint.sh` の `SECRETS_MOUNT` と一致させる（`tests/test_copilot_launcher.py` が照合する）。
-  - 順序（中継と実体の検査 → 作業ディレクトリの検査 → 設定の作り直しと検査 → トークンの読み込み → 環境の allowlist → exec）を変えない。どれかを満たせなければ Copilot を起動せず rc 1（fail-closed）。
+  - 順序（中継と実体の検査 → 版の比較 → 作業ディレクトリの検査 → 設定の作り直しと検査 → トークンの読み込み → 環境の allowlist → exec）を変えない。版の比較は、`"${COPILOT_JS%/*}/package.json"` の `version` を `python3 -I` で読み（読めない・空白を含まない印字できる 1 語でなければ rc 1）、`readonly VERIFIED_COPILOT_VERSION`（c3c が canary で sandbox を確かめた版。合格した版でだけ上げる）と違えば stderr に WARNING を 1 行出して続ける（止めない。`latest` か番号かは見ない）。どれかを満たせなければ Copilot を起動せず rc 1（fail-closed）。
   - 作業ディレクトリの検査は `/` で区切った要素の単位で行い（文字列の前方一致にしない）、`/home/node` 自身・その祖先・直下の `.` で始まるエントリとその下、雛形の `deniedPaths` の必須の 2 つ（`SANDBOX_TMP`・`SECRETS_DIR`）とその下を断る。`pwd -P` の失敗、改行・制御文字を含むパスでも止める（`$(...)` が末尾の改行を落とすので番兵を付けて受け取る）。
   - 冒頭で `set +x +v` にし、起動口が使う名前（`token` など）を `unset -v` で呼び出し元の export から切り離す。
   - `settings.json` を共有するので、`COPILOT_HOME` の lock（`/usr/bin/flock -n`、読み取りだけの fd 9 を exec した Copilot が持ち続ける）を取れなければ起動しない。

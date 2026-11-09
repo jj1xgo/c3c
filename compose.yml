@@ -9,6 +9,7 @@ services:
         CACHEBUST: ${CACHEBUST:-unknown}
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
         CODEX_CACHEBUST: ${CODEX_CACHEBUST:-pinned}
+        COPILOT_CACHEBUST: ${COPILOT_CACHEBUST:-pinned}
         ASSET_HASH: ${ASSET_HASH:-unknown}
         BASE_IMAGE: ${BASE_IMAGE:-debian:stable}
         CC_PROJECT_METADATA: ${CC_PROJECT_METADATA:-}

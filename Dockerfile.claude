@@ -355,7 +355,9 @@ RUN set -e; \
 
 # >>> c3c copilot
 # GitHub Copilot CLI（opt-in。copilot-version.txt の同梱 default は空 = 導入しない）を、command sandboxing
-# （MXC の bubblewrap、通信なし）付きで入れる。版は素の X.Y.Z だけ（latest は受けない）。入れるのは次の 4 つ:
+# （MXC の bubblewrap、通信なし）付きで入れる。版は素の X.Y.Z か、文字どおりの latest（npm の dist-tag で
+# その時点の最新。COPILOT_CACHEBUST〈latest のときだけ c3c が更新する〉がこの区間のキャッシュだけを捨てるので、
+# `-b` のたびに入れ直す）。入れるのは次の 4 つ:
 #   - Debian の bubblewrap（0.5.0 以上。MXC の MIN_BWRAP_VERSION）
 #   - npm の @github/copilot（版が指定と一致し、ネイティブのバイナリが実行可能な通常ファイルであることを確かめる）
 #   - 起動口 copilot-launcher.sh（npm の symlink /usr/local/bin/copilot を置き換える。symlink の実体が起動口の
@@ -363,19 +365,25 @@ RUN set -e; \
 #   - bwrap の中継 copilot-bwrap-shim.sh（/usr/local/libexec/c3c/copilot-bwrap/bwrap。中身はこの 1 ファイルだけ）と
 #     sandbox の設定の雛形（/etc/c3c/copilot-settings.json）
 # 中継・起動口・雛形と、それぞれの親から / までが、root 所有で group/other から書けないことを検査する（Codex の
-# 固定リンク #145 と同じ形）。/dev/net/tun と slirp4netns は入れない（通信なしの設定では要らない。README
+# 固定リンク #145 と同じ形）。起動口を置く前に、入った Copilot のネイティブのバイナリ（npm-loader.js は孫として起こすので、
+# 打ち切りが届くよう直接起動する。SIGKILL で打ち切る）に `config --list --json` を打たせ、起動口が書くのと同じ
+# sandbox の設定（雛形＋readonlyPaths）の葉が全部、型も含めて同じ値で読めていなければ止める（node -e の中は
+# 行継続で 1 行になるので、単一引用符と // の行コメントを使わない。tests/test_copilot_config_check.py が抜き出して
+# 試験する。飛ばす口は作らない）。/dev/net/tun と slirp4netns は入れない（通信なしの設定では要らない。README
 # 「Copilot CLI を使う」節）。一時ファイルは opt-in でも opt-out でも消す。
 COPY copilot-version.txt /tmp/copilot-version.txt
 COPY copilot-launcher.sh /tmp/copilot-launcher.sh
 COPY copilot-bwrap-shim.sh /tmp/copilot-bwrap-shim.sh
 COPY copilot-settings.json /tmp/copilot-settings.json
+ARG COPILOT_CACHEBUST=pinned
 RUN set -e; \
+    echo "copilot-cachebust=${COPILOT_CACHEBUST}"; \
     COPILOT_VERSION="$(tr -d '[:space:]' < /tmp/copilot-version.txt)"; \
     if [ -z "$COPILOT_VERSION" ]; then \
       echo "INFO: Copilot は無効のため入れません"; \
     else \
-      echo "$COPILOT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
-        echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンを書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
+      echo "$COPILOT_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
+        echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
         echo "ERROR: copilot-version.txt（$COPILOT_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Copilot を使わないなら .c3c/copilot-version.txt も空にしてください。" >&2; exit 1; }; \
       apt-get update && apt-get install -y --no-install-recommends bubblewrap && apt-get clean && rm -rf /var/lib/apt/lists/*; \
@@ -384,8 +392,13 @@ RUN set -e; \
       [ -f /usr/bin/bwrap ] && [ -x /usr/bin/bwrap ] || { echo "ERROR: /usr/bin/bwrap がありません" >&2; exit 1; }; \
       npm install -g "@github/copilot@${COPILOT_VERSION}"; \
       pkg=/usr/local/lib/node_modules/@github/copilot; \
-      installed="$(node -p 'require(process.argv[1]).version' "$pkg/package.json")" && [ "$installed" = "$COPILOT_VERSION" ] || { \
-        echo "ERROR: 入った @github/copilot の版（${installed:-不明}）が指定（$COPILOT_VERSION）と違います" >&2; exit 1; }; \
+      installed="$(node -p 'require(process.argv[1]).version' "$pkg/package.json")" || installed=""; \
+      if [ "$COPILOT_VERSION" = latest ]; then \
+        printf '%s\n' "$installed" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+' && [ "$(printf '%s' "$installed" | tr -d '\n')" = "$installed" ]; \
+      else \
+        [ "$installed" = "$COPILOT_VERSION" ]; \
+      fi || { \
+        echo "ERROR: 入った @github/copilot の版（${installed:-不明}）が指定（$COPILOT_VERSION）に合いません（latest は素の X.Y.Z に解決されること）" >&2; exit 1; }; \
       case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo "ERROR: 未対応のアーキテクチャです: $(uname -m)" >&2; exit 1 ;; esac; \
       native="$pkg/node_modules/@github/copilot-linux-$arch/copilot"; \
       [ -f "$native" ] && ! [ -L "$native" ] && [ -x "$native" ] || { \
@@ -397,6 +410,39 @@ RUN set -e; \
       real="$(readlink -e /usr/local/bin/copilot)" && [ "$real" = "$expected" ] || { \
         echo "ERROR: /usr/local/bin/copilot の実体が $expected ではありません（${real:-解決不能}）" >&2; exit 1; }; \
       [ -f "$expected" ] && [ -x "$expected" ] || { echo "ERROR: $expected が実行可能な通常ファイルではありません" >&2; exit 1; }; \
+      node -e ' \
+        const fs = require("fs"); const os = require("os"); const path = require("path"); const cp = require("child_process"); \
+        const args = process.argv.slice(1); const loader = args[0]; const templatePath = args[1]; const readonlyPath = args[2]; const seconds = Number(args[3]); \
+        function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v); } \
+        function leaves(v, prefix, out) { if (isObject(v)) { for (const k of Object.keys(v)) { leaves(v[k], prefix ? prefix + "." + k : k, out); } } else { out.push([prefix, v]); } return out; } \
+        function lookup(doc, name) { let cur = doc; for (const k of name.split(".")) { if (!isObject(cur) || !Object.prototype.hasOwnProperty.call(cur, k)) { return { found: false }; } cur = cur[k]; } return { found: true, value: cur }; } \
+        function same(a, b) { if (Array.isArray(a)) { return Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b); } return typeof a === typeof b && a === b; } \
+        let home = ""; let problem = ""; \
+        try { \
+          const settings = JSON.parse(fs.readFileSync(templatePath, "utf8")); \
+          settings.sandbox.userPolicy.filesystem.readonlyPaths = [readonlyPath]; \
+          home = fs.mkdtempSync(path.join(os.tmpdir(), "c3c-copilot-check-")); \
+          fs.writeFileSync(path.join(home, "settings.json"), JSON.stringify(settings) + "\n", { mode: 0o600 }); \
+          const env = { HOME: home, COPILOT_HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin", COPILOT_AUTO_UPDATE: "false" }; \
+          const r = cp.spawnSync(loader, ["config", "--list", "--json"], { env: env, stdio: ["ignore", "pipe", "pipe"], timeout: seconds * 1000, killSignal: "SIGKILL", encoding: "utf8" }); \
+          if (r.error) { problem = "copilot config を実行できないか、打ち切りました（" + (r.error.code || r.error.message) + "）"; } \
+          else if (r.status !== 0) { problem = "copilot config --list --json が rc " + r.status + " で終わりました"; } \
+          else { \
+            let out = null; let parsed = true; \
+            try { out = JSON.parse(r.stdout); } catch (e) { parsed = false; } \
+            if (!parsed) { problem = "copilot config --list --json の出力が JSON ではありません"; } \
+            else if (!isObject(out)) { problem = "copilot config --list --json の出力が JSON の object ではありません"; } \
+            else { \
+              const bad = leaves(settings, "", []).filter(function (p) { const got = lookup(out, p[0]); return !got.found || !same(p[1], got.value); }).map(function (p) { return p[0]; }); \
+              if (bad.length) { problem = "Copilot が sandbox の設定を同じ値で読めていません: " + bad.join(", "); } \
+            } \
+          } \
+        } catch (e) { problem = "sandbox の設定の読みを確かめられません（" + String(e && e.message ? e.message : e).split("\n")[0] + "）"; } \
+        finally { if (home) { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) { problem = problem || "一時のディレクトリを消せません"; } } } \
+        if (problem) { console.error("ERROR: " + problem); process.exit(1); } \
+      ' "$native" /tmp/copilot-settings.json /workspace 60 || { \
+        echo "ERROR: Copilot $installed が sandbox の設定（/tmp/copilot-settings.json と readonlyPaths）を同じ名前・同じ値で読めません。sandbox が効かなくなっている恐れがあるのでビルドを止めます。確認を飛ばす口はありません。.c3c/copilot-version.txt を通る版に番号で固定してください" >&2; exit 1; }; \
+      echo "INFO: Copilot $installed が sandbox の設定を全部読めることを確かめました"; \
       rm -f /usr/local/bin/copilot; \
       install -o root -g root -m 0755 /tmp/copilot-launcher.sh /usr/local/bin/copilot; \
       shimdir=/usr/local/libexec/c3c/copilot-bwrap; \
@@ -407,7 +453,7 @@ RUN set -e; \
       [ "$(ls -A "$shimdir")" = bwrap ] || { echo "ERROR: $shimdir の中身が bwrap の 1 ファイルだけではありません" >&2; exit 1; }; \
       install -d -o root -g root -m 0755 /etc/c3c; \
       install -o root -g root -m 0644 /tmp/copilot-settings.json /etc/c3c/copilot-settings.json; \
-      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap /usr/bin/flock "$expected" "$native"; do \
+      for start in /usr/local/bin/copilot "$shimdir/bwrap" /etc/c3c/copilot-settings.json /usr/bin/bwrap /usr/bin/flock "$expected" "$pkg/package.json" "$native"; do \
         p="$start"; \
         while :; do \
           bad="$(find "$p" -maxdepth 0 \( ! -user 0 -o -perm /022 \) -print)" || { \
@@ -418,7 +464,7 @@ RUN set -e; \
           p="$(dirname "$p")"; \
         done; \
       done; \
-      echo "INFO: Copilot $COPILOT_VERSION: 起動口 /usr/local/bin/copilot -> exec $expected、bwrap の中継 $shimdir/bwrap -> /usr/bin/bwrap（$bwrap_version）"; \
+      echo "INFO: Copilot $installed（指定: $COPILOT_VERSION）: 起動口 /usr/local/bin/copilot -> exec $expected、bwrap の中継 $shimdir/bwrap -> /usr/bin/bwrap（$bwrap_version）"; \
     fi; \
     rm -f /tmp/copilot-version.txt /tmp/copilot-launcher.sh /tmp/copilot-bwrap-shim.sh /tmp/copilot-settings.json
 # <<< c3c copilot

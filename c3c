@@ -1034,7 +1034,7 @@ guard_codex_dir() {
 # ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。Node・Codex の値の妥当性
 # （書式）は Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。Copilot CLI
 # （copilot-version.txt。同梱 default は空 = 無効の opt-in）は、ビルドで必ず止まる書式違反を
-# ここでも検査して止める（素の X.Y.Z だけ。latest は受けない）。Node が空で Copilot が有効な
+# ここでも検査して止める（素の X.Y.Z か、文字どおりの latest）。Node が空で Copilot が有効な
 # 組合せも Codex と同じ理由で WARNING にする。
 guard_build_input_defaults() {
   local name label value origin_text
@@ -1051,8 +1051,8 @@ guard_build_input_defaults() {
         origin_text="なし（既定で無効。導入するには $PROJECT_CONF_DIR/copilot-version.txt に版を書きます）"
       elif [[ -z "$value" ]]; then
         origin_text="なし（$ASSET_PATH が空、Copilot を導入しません）"
-      elif [[ ! "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        guard_fail "ERROR: $ASSET_PATH には 1.0.103 のような素のバージョンを書いてください（実際の値: $value）" || return 1
+      elif [[ ! "$value" =~ ^([0-9]+\.[0-9]+\.[0-9]+|latest)$ ]]; then
+        guard_fail "ERROR: $ASSET_PATH には 1.0.103 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $value）" || return 1
       elif [[ "$ASSET_ORIGIN" == "project" ]]; then
         origin_text="$value（採用元: project $ASSET_PATH）"
       else
@@ -1663,6 +1663,13 @@ run_explicit_build() {
      && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
     codex_cachebust="$(date +%s)"
   fi
+  # copilot-version.txt が "latest" のプロジェクトだけ Copilot のレイヤーのキャッシュを捨てる
+  # （Dockerfile.claude の ARG COPILOT_CACHEBUST と対）。固定版・空は "pinned" のまま。
+  local copilot_cachebust=pinned
+  if [[ -f "$BUILD_CONTEXT_DIR/copilot-version.txt" ]] \
+     && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/copilot-version.txt")" == "latest" ]]; then
+    copilot_cachebust="$(date +%s)"
+  fi
   local ref rc=0
   ref=$(base_image_pull_ref) || exit 1
   podman pull "$ref" || rc=$?
@@ -1670,7 +1677,7 @@ run_explicit_build() {
     echo "ERROR: ベースイメージ $ref をレジストリから取り直せませんでした（podman pull の終了コード $rc）。ネットワークとレジストリ（docker.io）を確かめてください。Docker Hub の取得の回数の上限（ログインしていないと IP ごとに 100 回）に当たったときも、この失敗になります。イメージは作り直していません。起動を中止します。" >&2
     exit 1
   fi
-  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" COPILOT_CACHEBUST="$copilot_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace \
     || rc=$?
   if [[ $rc -ne 0 ]]; then

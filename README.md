@@ -581,6 +581,8 @@ opt-in のイメージには、Debian の `bubblewrap`（0.5.0 以上）、npm �
 
 **sandbox の設定**: 起動口は、起動のたびに `~/.copilot/settings.json`（`COPILOT_HOME` は `/home/node/.copilot` に固定）を雛形から作り直し、作業ディレクトリを `readonlyPaths` に入れてから検査する。目標の値は、sandbox が有効で、迂回（`allowBypass`）・開発ツールの自動許可・git/gh の認証の仲介・外への通信・ローカルネットワークがどれも無効、stdio の MCP と LSP も sandbox の中、`deniedPaths` に `/tmp` と `SECRETS_DIR` のマウント先を含む、というもの。真偽値は `true`/`false` そのものだけを受け、未知のキー（`readwritePaths`、`credentials` など）があれば止める。Copilot や利用者が `settings.json` を書き換えても、次の起動で雛形に戻る（`sandbox` の外の設定も残らない）。作業ディレクトリの `.github/copilot/settings.json` は sandbox の設定を上書きできない（Copilot の仕様。[GitHub Docs](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)）。外への通信を許す設定（MXC が slirp4netns でつなぐ形）は対応外。
 
+**ビルドの中の確認**: opt-in のビルドは、起動口を置く前に、入った Copilot に `copilot config --list --json` を打たせ（ログインも通信も使わない。一時の `COPILOT_HOME` に、起動口が書くのと同じ設定〈雛形に `readonlyPaths: ["/workspace"]` を足したもの〉を置く）、c3c が書いた項目が全部、型も含めて同じ値で読めているかを確かめる。Copilot は知らない項目を黙って捨てるので、新しい版で項目の名前が変わったり消えたりすると、ここで `ERROR: Copilot が sandbox の設定を同じ値で読めていません: <項目>` を出してビルドが止まる（出力に余分な項目があるのは止めない）。確かめるのは「設定が読めているか」までで、次のものは拾えない: (1) 項目の名前と値はそのままで、意味や挙動が変わった場合、(2) 新しい版で足された項目の既定値がゆるい場合、(3) MXC の backend の変更。これらは「変更後の確認」の受け入れの canary でしか分からない。確認を飛ばす口は無い。新しい版で確認が通らなくなったら、通る版に番号で固定して使い、c3c 側の確認を直す。
+
 **sandbox から見えるもの**:
 
 - 作業ディレクトリは**読めるが書けない**（`readonlyPaths`。2026-11-08 の canary で `Read-only file system` を確かめた）。`/workspace` はホストのプロジェクトのフォルダなので、sandbox の中のコマンドが `.git/hooks` などに置いたものが後でホストで動く、という経路を作らないため。どの作業ディレクトリでも同じで、sandbox の中のシェルからは書けない（結果は Copilot の応答として受け取る）。

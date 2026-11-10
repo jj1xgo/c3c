@@ -571,7 +571,7 @@ GitHub の Copilot CLI（`@github/copilot`）を、command sandboxing（Copilot 
 
 opt-in のイメージには、Debian の `bubblewrap`（0.5.0 以上）、npm の `@github/copilot`、起動口（`/usr/local/bin/copilot`。npm の symlink を置き換える）、bwrap の中継（`/usr/local/libexec/c3c/copilot-bwrap/bwrap`）、sandbox の設定の雛形（`/etc/c3c/copilot-settings.json`）が入る。どれも root 所有で、node からは書けない（ビルド時に検査する）。Copilot の宛先 `api.individual.githubcopilot.com` と `telemetry.individual.githubcopilot.com`（個人のプラン）は、イメージの許可リストに自動で足す。Business・Enterprise など個人のプラン以外の宛先は対象外（必要なら `.c3c/allowed-domains.txt` に自分で書く。動作は確かめていない）。
 
-**確かめた版と違うときの WARNING**: 起動口は、起動のたびに Copilot の `package.json` の版を、c3c が sandbox を canary で確かめた版（起動口の `VERIFIED_COPILOT_VERSION`。今は `1.0.103`）と比べる。違えば `WARNING: Copilot CLI <版> は、c3c が sandbox を canary で確かめた版（1.0.103）と違います。…` を stderr に 1 行出して、起動は続ける。`latest` か番号での固定かは見ない（確かめていない版であることは同じため）。同じ版なら出ない。確かめた版は、新しい版で下の「変更後の確認」の受け入れ（canary）に合格した後に、`VERIFIED_COPILOT_VERSION` を上げる PR で上げる。
+**確かめた版と違うときの WARNING**: 起動口は、起動のたびに Copilot の `package.json` の版を、c3c が sandbox を canary で確かめた版（起動口の `VERIFIED_COPILOT_VERSION`。今は `1.0.108`）と比べる。違えば `WARNING: Copilot CLI <版> は、c3c が sandbox を canary で確かめた版（1.0.108）と違います。…` を stderr に 1 行出して、起動は続ける。`latest` か番号での固定かは見ない（確かめていない版であることは同じため）。同じ版なら出ない。確かめた版は、新しい版で下の「変更後の確認」の受け入れ（canary）に合格した後に、`VERIFIED_COPILOT_VERSION` を上げる PR で上げる。
 
 **起動口が止める条件**（`ERROR:` を出して rc 1。Copilot は起動しない）:
 
@@ -599,7 +599,7 @@ opt-in のイメージには、Debian の `bubblewrap`（0.5.0 以上）、npm �
 
 **中継（暫定）**: MXC は必ず `--proc /proc` を bwrap に渡すが、c3c のコンテナでは Podman の `/proc` のマスクのためにこのマウントが失敗する（Codex の [#140](docs/codex-proc-investigation.md) と同じ原因）。中継は、最初の `--` より前にある `--proc` `/proc` の組だけを `--ro-bind /proc /proc` に替えて `/usr/bin/bwrap` を起動する（ほかの引数は変えない。組が無ければそのまま渡す）。中継は Copilot の起動口だけが `PATH` の先頭に置くので、Codex や利用者の `bwrap` には効かない。MXC に「マウントできなければ外側の `/proc` を引き継ぐ」予備の道が入れば、中継を外す。
 
-**`/dev/net/tun` と slirp4netns は入れない**: `copilot help sandbox`（1.0.103）は「どの sandbox も slirp4netns と `/dev/net/tun` が要る」と書くが、外への通信を一切許さない設定は MXC の `Isolated` モードになり、どちらも使わない（ソースと canary で確かめた）。Copilot の版を上げるときは、下の「変更後の確認」の受け入れで確かめ直す。
+**`/dev/net/tun` と slirp4netns は入れない**: `copilot help sandbox`（1.0.103。1.0.108 も同じ）は「どの sandbox も slirp4netns と `/dev/net/tun` が要る」と書くが、外への通信を一切許さない設定は MXC の `Isolated` モードになり、どちらも使わない（ソースと canary で確かめた。1.0.108 は 2026-11-10 の canary で確かめ直した）。Copilot の版を上げるときは、下の「変更後の確認」の受け入れで確かめ直す。
 
 **永続化と更新**: `~/.copilot`（`COPILOT_HOME`）はマウントしないので、コンテナを作り直すと消える（設定は起動のたびに雛形から作るので困らない。セッションの履歴は残らない）。自動更新は `COPILOT_AUTO_UPDATE=false` で止める（npm の版はもともと通知だけ）。版の更新は、番号なら `copilot-version.txt` を書き換えて、`latest` ならそのまま、`-b` で再ビルドする。
 

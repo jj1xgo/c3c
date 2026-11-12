@@ -977,9 +977,12 @@ guard_secrets_dir() {
 # 起動を中止する（GITCONFIG_FILE/SECRETS_DIR と同じ理由: 不存在パスを bind mount すると
 # podman がホスト側に空ディレクトリを誤作成するため）。詳細は内部運用issue参照。
 guard_codex_dir() {
+  # 実体へ上書きする前の綴り（~ 展開済み）を guard_home_mounts() が比べる（symlink の差し替えの経路。#259）。
+  unset CODEX_DIR_SPELLED
   if [[ -n "${CODEX_DIR:-}" ]]; then
     CODEX_DIR="${CODEX_DIR/#\~\//$HOME/}"
     CODEX_DIR="${CODEX_DIR%/}"
+    CODEX_DIR_SPELLED="$CODEX_DIR"
     export CODEX_DIR
     local codex_real_msg="ERROR: CODEX_DIR が実ホストの \$HOME/.codex を指しています。コンテナ側のコードが config.toml（notify フック・MCP サーバー定義）を汚染し、ホストで codex 実行時に任意コマンドが実行される経路になるため、専用ディレクトリ（例: ~/.codex-container）を指定してください。起動を中止します。"
     # 文字列比較（#36）。~/.codex が存在しない状態での誤指定もここで捕まえる。
@@ -2364,7 +2367,7 @@ guard_home_mounts() {
     mapfile -t -O "${#credentials[@]}" credentials < <(
       home_mount_paths "$CLAUDE_CONFIG_BASE_REAL/.claude"; home_mount_paths "${CLAUDE_CONFIG_BASE_HOST%/}/.claude")
   fi
-  for item in "${SECRETS_DIR:-}" "${CODEX_DIR:-}"; do
+  for item in "${SECRETS_DIR:-}" "${CODEX_DIR:-}" "${CODEX_DIR_SPELLED:-}"; do
     mapfile -t -O "${#credentials[@]}" credentials < <(home_mount_paths "$item")
   done
   # HOME_MOUNT（rw）だけが止まる、:ro で守っているものとホストで実行・参照されるもの。既存の rw マウントは

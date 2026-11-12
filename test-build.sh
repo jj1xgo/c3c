@@ -2642,7 +2642,9 @@ run_home_mount_launcher_tests() {
   ln -s "$home/secrets/c3c" "$home/lnk/sec"
   ln -s "$home/agents" "$home/lnk/ag"
   ln -s "$home/cfg" "$home/lnk/cfg"
-  for value in 'GITCONFIG_FILE=~/lnk/gitconfig' 'SECRETS_DIR=~/lnk/sec' 'AGENTS_DIR=~/lnk/ag' 'CLAUDE_CONFIG_DIR=~/lnk/cfg'; do
+  mkdir -p "$home/codexreal"
+  ln -s "$home/codexreal" "$home/lnk/codex"
+  for value in 'GITCONFIG_FILE=~/lnk/gitconfig' 'SECRETS_DIR=~/lnk/sec' 'AGENTS_DIR=~/lnk/ag' 'CLAUDE_CONFIG_DIR=~/lnk/cfg' 'CODEX_DIR=~/lnk/codex'; do
     printf '%s\nHOME_MOUNT=~/lnk\n' "$value" > "$proj/.c3c/env"
     hm_expect_reject HOME_MOUNT "守っている領域を指す symlink が HOME_MOUNT の中にあると止まる: $value"
   done

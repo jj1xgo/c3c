@@ -79,6 +79,7 @@
 
 - 秘密と認証の置き場（`SECRETS_DIR`・`CODEX_DIR`・Claude 設定の `.claude`）と重なる値は、`HOME_MOUNT_RO` でも `guard_fail` にする。上の「`HOME_MOUNT_RO` の source が上の守っているものと重なるときは比べない」を、この 3 つについて改める。読むだけでも、`~` の別の位置に見せると、パスで隠している Copilot の起動口の sandbox（`SECRETS_DIR` のマウント先と `/home/node` を隠す）から作業ディレクトリ経由で読める（Claude の PR 前レビュー I1）。同じ理由で、`HOME_MOUNT` と `CODEX_DIR` の重なりも警告から `guard_fail` に上げる。
 - 守っている領域は、実体（`realpath -m`。未作成でも祖先の symlink を解決する）に加えて、綴り（`realpath -ms`）でも比べる。守っている領域を指す symlink が `HOME_MOUNT` の中にあると、コンテナから差し替えて次の起動の参照先を変えられる（Sol I2・carbon I2）。未作成の領域の親が symlink の場合も実体で比べる（carbon I1）。
+- PR 後レビュー（PR #260）で、比べ方を次のように強めた。(1) 実体と綴りの両端に加え、解決の途中で通るすべての symlink の位置も比べる（`~/.claude → ~/data/mid → ~/real` に `HOME_MOUNT=~/data` を組むと、両端は外にあるのに `~/data/mid` を差し替えられた。Claude I1・Sol I3・carbon M1）。両端は標準の `realpath` で出し、途中の段は `readlink` で 1 段ずつ辿って見つけ、辿った終点が `realpath -m` と一致しなければ止める。(2) 比べる値が相対パスなら止める（Sol I1・carbon I1）。(3) `realpath`・`readlink` の失敗、40 段を超える symlink は止める（Sol I2）。(4) 基点の `.claude.json` を秘密と認証の置き場に入れる（通常ファイルへの symlink を許すので、実体が `HOME_MOUNT_RO` の中にありうる。carbon I2）。
 - `/` を指す守っている領域・rw のマウントは、すべてと重なるものとして扱う（Sol I1・carbon C1）。
 - ホストの `$HOME` が `/home/node` のときの、Claude 設定の綴りとのマウント先の比較はやめた（plugin 別名は `/home/node` の下に付かないので、比べる相手が無い。Claude の Minor 1・carbon の Minor 1）。`.claude` との重なりは上の秘密と認証の置き場の規則で止まる。
 

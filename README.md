@@ -247,7 +247,7 @@ HOME_MOUNT_RO=~/work/shared-guard  # /home/node/work/shared-guard に :ro
 - **`HOME_MOUNT`（rw）が止まる重なり**: c3c が守っている領域と重なる（含むか、その中にある）値は拒否する。比べるのは `~/.claude`（`CLAUDE_CONFIG_DIR` 基点）、`SECRETS_DIR`、`GITCONFIG_FILE` の実体、`AGENTS_DIR`、`~/.codex/plugins/cache`、c3c の checkout（起動スクリプトの置き場）、`~/.local/state/c3c`、`HOME_MOUNT_RO`。コンテナから書けると、`:ro` の保護やホストで実行・参照されるものを壊せるため。既存の rw マウント（`EXTRA_MOUNT` など）はこれらと重なっても警告に留まるが、新しいキーは最初から塞ぐ。
 - **2 つのキーとほかのマウントとの重なり**: `HOME_MOUNT` と `HOME_MOUNT_RO` の source かマウント先が重なる（一致・包含）値と、マウント先が `SHARED_MOUNT_HOME_ALIAS` の `~` 側の別名と重なる値は拒否する（入れ子にすると、rw 側から中身を symlink に差し替えて `:ro` を外せる）。作業ディレクトリ・`EXTRA_MOUNT`・`SHARED_MOUNT`・`CODEX_DIR`（`HOME_MOUNT_RO` はさらに `~/.claude`）と source が重なるときは、別の rw の経路から書けることを `WARNING` で知らせる（起動は止めない）。
 - **`HOME_MOUNT_RO` の `:ro` が守るもの**: このマウント経由の誤った書き換えだけ。同じ実体が別の rw マウントからも見えれば書ける（上の `WARNING`）。悪意のある回避までは保証しない。`HOME_MOUNT` 側は `/shared` と同じく、コンテナの中から全面的に書ける。
-- **マウント先の親**: `/home/node/<相対>` の親ディレクトリがコンテナに無いと、podman が作る。`/home/node` 直下に新しく作られるディレクトリは root 所有になり、node からは書けない見込み（マウントした実体の中は書ける）。`SHARED_MOUNT_HOME_ALIAS` の `~` 側の別名と同じ挙動。
+- **マウント先の親**: `/home/node/<相対>` の親ディレクトリがコンテナに無いと、podman が作る。`/home/node` 直下に新しく作られるディレクトリは root 所有（実測ではモード `1755`）になり、node からは書けない（マウントした実体の中は書ける）。`SHARED_MOUNT_HOME_ALIAS` の `~` 側の別名と同じ挙動。
 - **ほかの CLI から見えるか**: Codex の sandbox は `/` を読み取りで見せるので、どちらのマウントも読める。Copilot の起動口の sandbox からは、作業ディレクトリでなければ見えない（後述「Copilot CLI を使う」節）。
 - ホストの `$HOME` が `/home/node` なら、マウント先とホストのパスは一致する（別名を足さない）。どちらもランタイムの bind mount なので `-b` なしで効くが、override ファイル（`compose.home-mount.yml`・`compose.home-mount-ro.yml`）が境界アセットのハッシュ対象に入るため、既存イメージでは `-b` するまで起動時にドリフトの WARNING が出る。`--check` は有効時に `[OK]   HOME_MOUNT: <source> -> <マウント先> (rw)` と `[OK]   HOME_MOUNT_RO: <source> -> <マウント先> (ro)` を表示する。
 

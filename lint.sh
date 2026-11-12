@@ -77,6 +77,8 @@ import re
 import sys
 
 target = re.escape(sys.argv[1])
+# 2 つ目の引数が rw なら「mount があって読み取り専用ではない」ことを確かめる（compose_mount_is_rw）。
+want_rw = len(sys.argv) > 2 and sys.argv[2] == 'rw'
 lines = sys.stdin.read().splitlines()
 found = False
 ro = False
@@ -122,12 +124,20 @@ for index, line in enumerate(lines):
 if not found:
     print('ERROR: compose config に対象の mount がありません: ' + sys.argv[1], file=sys.stderr)
     sys.exit(1)
-if not ro:
+if want_rw and ro:
+    print('ERROR: compose config で対象の mount が読み取り専用になっています（rw のはず）: ' + sys.argv[1], file=sys.stderr)
+    sys.exit(1)
+if not want_rw and not ro:
     print('ERROR: compose config で対象の mount が読み取り専用ではありません: ' + sys.argv[1], file=sys.stderr)
     sys.exit(1)
 PYTHON
   )
-  python3 -I -c "$script" "$1"
+  python3 -I -c "$script" "$1" "${2:-ro}"
+}
+
+# 対象の mount が残っていて、読み取り専用ではないこと（rw の HOME_MOUNT、#259）。判定は compose_mount_is_ro と共有する。
+compose_mount_is_rw() {
+  compose_mount_is_ro "$1" rw
 }
 
 # 検査用 override のマージ結果で TTY と stdin が無効であること。provider が false を省略しても
@@ -143,20 +153,23 @@ compose_tty_disabled() {
   return 0
 }
 
-# 7 ファイル同時の compose config（stdin）に、plugin 別名・指示ファイルの共有・AGENTS_DIR・Codex キャッシュの
-# :ro mount と IPv6 の network_mode が残っていることを確かめる（override のマージで消えていないこと）。
+# 9 ファイル同時の compose config（stdin）に、plugin 別名・指示ファイルの共有・AGENTS_DIR・Codex キャッシュ・
+# HOME_MOUNT_RO の :ro mount、HOME_MOUNT の rw mount と IPv6 の network_mode が残っていることを確かめる
+# （override のマージで消えていないこと）。
 # 部分一致だと /home/node/.agents-x のような別の target でも通るので、mount は target の完全一致で
 # 意味を見る（compose_mount_is_ro）。IPv6 は mount ではないので network_mode の行を行頭と行末で照合する（#112）。
 # tests/test-lint-compose-checks.sh が関数定義だけを抽出して fixture で検証する（#174）。
 compose_merged_overrides_ok() {
   local merged target rc=0
   merged=$(cat)
-  for target in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache; do
+  for target in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache /home/node/lint-home-mount-ro; do
     compose_mount_is_ro "$target" <<<"$merged" \
-      || { echo "ERROR: compose の 7 ファイル同時 config に :ro の '$target' がありません（override のマージで消えています）" >&2; rc=1; }
+      || { echo "ERROR: compose の 9 ファイル同時 config に :ro の '$target' がありません（override のマージで消えています）" >&2; rc=1; }
   done
+  compose_mount_is_rw /home/node/lint-home-mount <<<"$merged" \
+    || { echo "ERROR: compose の 9 ファイル同時 config に rw の '/home/node/lint-home-mount' がありません（override のマージで消えたか :ro になっています）" >&2; rc=1; }
   grep -qE -- "^[[:space:]]*network_mode:[[:space:]]*['\"]?pasta:-g,fe80::1['\"]?[[:space:]]*\$" <<<"$merged" \
-    || { echo "ERROR: compose の 7 ファイル同時 config に IPv6 の network_mode がありません（override のマージで消えています）" >&2; rc=1; }
+    || { echo "ERROR: compose の 9 ファイル同時 config に IPv6 の network_mode がありません（override のマージで消えています）" >&2; rc=1; }
   return "$rc"
 }
 
@@ -230,15 +243,28 @@ elif command -v podman >/dev/null 2>&1; then
       "$compose_var_literal" >&2
     status=1
   fi
-  # 指示ファイル・スキルの追加共有 override（#99）。source と destination は
-  # launcher が export するので lint ではダミー値を与える。7 ファイル同時のマージで plugin 別名・
-  # IPv6・3 本の指示ファイル別名 volume・Codex キャッシュが消えないことも見る。
+  # 指示ファイル・スキルの追加共有 override（#99）と HOME_MOUNT（#259）。source と destination は
+  # launcher が export するので lint ではダミー値を与える。9 ファイル同時のマージで plugin 別名・
+  # IPv6・3 本の指示ファイル別名 volume・Codex キャッシュ・2 本の HOME_MOUNT が消えないことも見る。
   SHARED_MOUNT=/tmp CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home \
     podman compose -f compose.yml -f compose.shared-home.yml config >/dev/null || status=1
   SHARED_MOUNT=/tmp CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host \
     podman compose -f compose.yml -f compose.shared-host.yml config >/dev/null || status=1
   AGENTS_DIR=/tmp \
     podman compose -f compose.yml -f compose.agents.yml config >/dev/null || status=1
+  # HOME_MOUNT（rw）と HOME_MOUNT_RO（:ro）を単独で。rw の側に :ro が付かないことも意味で検査する。
+  if merged=$(C3C_HOME_MOUNT_SOURCE=/tmp C3C_HOME_MOUNT_TARGET=/home/node/lint-home-mount \
+      podman compose -f compose.yml -f compose.home-mount.yml config); then
+    compose_mount_is_rw /home/node/lint-home-mount <<<"$merged" || status=1
+  else
+    status=1
+  fi
+  if merged=$(C3C_HOME_MOUNT_RO_SOURCE=/tmp C3C_HOME_MOUNT_RO_TARGET=/home/node/lint-home-mount-ro \
+      podman compose -f compose.yml -f compose.home-mount-ro.yml config); then
+    compose_mount_is_ro /home/node/lint-home-mount-ro <<<"$merged" || status=1
+  else
+    status=1
+  fi
   # ホストの Codex plugin キャッシュ共有。target の :ro を provider の出力形式に依らず意味で検査する。
   if merged=$(C3C_CODEX_PLUGINS_SOURCE=/tmp podman compose -f compose.yml -f compose.codex-plugins.yml config); then
     compose_mount_is_ro /home/node/.codex/plugins/cache <<<"$merged" || status=1
@@ -287,23 +313,35 @@ elif command -v podman >/dev/null 2>&1; then
   fi
   if merged=$(CLAUDE_PLUGINS_HOST_PATH=/tmp/lint-plugins-alias SHARED_MOUNT=/tmp \
       CLAUDE_SHARED_HOME_PATH=/home/node/lint-shared-home CLAUDE_SHARED_HOST_PATH=/tmp/lint-shared-host AGENTS_DIR=/tmp C3C_CODEX_PLUGINS_SOURCE=/tmp \
+      C3C_HOME_MOUNT_SOURCE=/tmp C3C_HOME_MOUNT_TARGET=/home/node/lint-home-mount \
+      C3C_HOME_MOUNT_RO_SOURCE=/tmp C3C_HOME_MOUNT_RO_TARGET=/home/node/lint-home-mount-ro \
       podman compose -f compose.yml -f compose.ipv6.yml -f compose.plugins-alias.yml \
-        -f compose.shared-home.yml -f compose.shared-host.yml -f compose.agents.yml -f compose.codex-plugins.yml config); then
+        -f compose.shared-home.yml -f compose.shared-host.yml -f compose.agents.yml \
+        -f compose.codex-plugins.yml -f compose.home-mount.yml -f compose.home-mount-ro.yml config); then
     compose_merged_overrides_ok <<<"$merged" || status=1
   else
     status=1
   fi
   # ${VAR:?} の fail-closed 検査（#98 の CLAUDE_PLUGINS_HOST_PATH と同じ理由）。
-  for pair in compose.shared-home.yml:CLAUDE_SHARED_HOME_PATH compose.shared-host.yml:CLAUDE_SHARED_HOST_PATH compose.agents.yml:AGENTS_DIR compose.codex-plugins.yml:C3C_CODEX_PLUGINS_SOURCE; do
+  # HOME_MOUNT の 2 本は 1 ファイル 2 変数なので、検査する変数だけを欠き、もう片方にはダミー値を与える。
+  for pair in compose.shared-home.yml:CLAUDE_SHARED_HOME_PATH compose.shared-host.yml:CLAUDE_SHARED_HOST_PATH compose.agents.yml:AGENTS_DIR compose.codex-plugins.yml:C3C_CODEX_PLUGINS_SOURCE \
+              compose.home-mount.yml:C3C_HOME_MOUNT_SOURCE compose.home-mount.yml:C3C_HOME_MOUNT_TARGET \
+              compose.home-mount-ro.yml:C3C_HOME_MOUNT_RO_SOURCE compose.home-mount-ro.yml:C3C_HOME_MOUNT_RO_TARGET; do
     file="${pair%%:*}"
     var="${pair#*:}"
     # shellcheck disable=SC2016 # 意図的にリテラル表示（変数展開ではなく compose 変数名の文字列）
     var_literal='${'"$var"':?}'
-    if env -u "$var" SHARED_MOUNT=/tmp podman compose -f compose.yml -f "$file" config >/dev/null 2>&1; then
+    # 検査する変数以外にダミー値を与える（env -u の後に同名の代入があると未設定にならないため除く）。
+    dummies=()
+    for dummy in SHARED_MOUNT=/tmp C3C_HOME_MOUNT_SOURCE=/tmp C3C_HOME_MOUNT_TARGET=/home/node/lint-home-mount \
+                 C3C_HOME_MOUNT_RO_SOURCE=/tmp C3C_HOME_MOUNT_RO_TARGET=/home/node/lint-home-mount-ro; do
+      [[ "${dummy%%=*}" == "$var" ]] || dummies+=("$dummy")
+    done
+    if env -u "$var" "${dummies[@]}" podman compose -f compose.yml -f "$file" config >/dev/null 2>&1; then
       printf 'ERROR: %s の %s が未設定を通しています（provider が :? を強制していません）\n' "$file" "$var_literal" >&2
       status=1
     fi
-    if env "$var=" SHARED_MOUNT=/tmp podman compose -f compose.yml -f "$file" config >/dev/null 2>&1; then
+    if env "${dummies[@]}" "$var=" podman compose -f compose.yml -f "$file" config >/dev/null 2>&1; then
       printf 'ERROR: %s の %s が空文字を通しています（provider が :? を強制していません）\n' "$file" "$var_literal" >&2
       status=1
     fi

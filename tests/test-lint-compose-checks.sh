@@ -9,7 +9,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 {
   printf '#!/bin/bash\nset -euo pipefail\n'
-  sed -n '/^compose_mount_is_ro()/,/^}/p; /^compose_tty_disabled()/,/^}/p; /^compose_merged_overrides_ok()/,/^}/p' "$ROOT/lint.sh"
+  sed -n '/^compose_mount_is_ro()/,/^}/p; /^compose_mount_is_rw()/,/^}/p; /^compose_tty_disabled()/,/^}/p; /^compose_merged_overrides_ok()/,/^}/p' "$ROOT/lint.sh"
   cat <<'TAIL'
 case "$1" in
   ro) compose_mount_is_ro "$2" ;;
@@ -125,7 +125,7 @@ long_quoted_tty="services:
     volumes: []"
 run_case "引用された 'true' も失敗" tty 1 "$long_quoted_tty"
 
-# --- 7 ファイル同時 config（lint.sh の compose_merged_overrides_ok、#174） ---
+# --- 9 ファイル同時 config（lint.sh の compose_merged_overrides_ok、#174・#259） ---
 # 関数の中の完全一致を部分一致（grep -F 等）へ戻すと、.agents-x の fixture が合格して赤になる。
 merged_short='services:
   claude-auth-workspace:
@@ -135,17 +135,19 @@ merged_short='services:
       - /tmp:/home/node/lint-shared-home:ro
       - /tmp:/tmp/lint-shared-host:ro
       - /tmp:/home/node/.agents:ro
-      - /tmp:/home/node/.codex/plugins/cache:ro'
-run_case '7 ファイル（短縮表記）: 5 つの :ro と network_mode があれば合格' merged 0 "$merged_short"
-run_case '7 ファイル（短縮表記）: .agents が .agents-x に化けていれば失敗' merged 1 "${merged_short/\/home\/node\/.agents:ro/\/home\/node\/.agents-x:ro}"
-run_case '7 ファイル（短縮表記）: 1 つが :rw なら失敗' merged 1 "${merged_short/lint-shared-host:ro/lint-shared-host:rw}"
+      - /tmp:/home/node/.codex/plugins/cache:ro
+      - /tmp:/home/node/lint-home-mount
+      - /tmp:/home/node/lint-home-mount-ro:ro'
+run_case '9 ファイル（短縮表記）: 6 つの :ro と rw の home-mount と network_mode があれば合格' merged 0 "$merged_short"
+run_case '9 ファイル（短縮表記）: .agents が .agents-x に化けていれば失敗' merged 1 "${merged_short/\/home\/node\/.agents:ro/\/home\/node\/.agents-x:ro}"
+run_case '9 ファイル（短縮表記）: 1 つが :rw なら失敗' merged 1 "${merged_short/lint-shared-host:ro/lint-shared-host:rw}"
 merged_no_ipv6=$(printf '%s\n' "$merged_short" | sed '/network_mode:/d')
-run_case '7 ファイル（短縮表記）: network_mode が無ければ失敗' merged 1 "$merged_no_ipv6"
+run_case '9 ファイル（短縮表記）: network_mode が無ければ失敗' merged 1 "$merged_no_ipv6"
 merged_long='services:
   claude-auth-workspace:
     network_mode: pasta:-g,fe80::1
     volumes:'
-for t in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache; do
+for t in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-host /home/node/.agents /home/node/.codex/plugins/cache /home/node/lint-home-mount-ro; do
   merged_long+="
       - type: bind
         source: /tmp
@@ -154,21 +156,44 @@ for t in /tmp/lint-plugins-alias /home/node/lint-shared-home /tmp/lint-shared-ho
         bind:
           create_host_path: true"
 done
-run_case '7 ファイル（long syntax）: 5 つの read_only と network_mode があれば合格' merged 0 "$merged_long"
-run_case '7 ファイル（long syntax）: .agents が .agents-x に化けていれば失敗' merged 1 "${merged_long/target: \/home\/node\/.agents$'\n'/target: \/home\/node\/.agents-x$'\n'}"
+# rw の home-mount は read_only を付けない別の要素として書く（ループの :ro と混ぜない）。
+merged_long+="
+      - type: bind
+        source: /tmp
+        target: /home/node/lint-home-mount
+        bind:
+          create_host_path: false"
+run_case '9 ファイル（long syntax）: 6 つの read_only と rw の home-mount と network_mode があれば合格' merged 0 "$merged_long"
+run_case '9 ファイル（long syntax）: .agents が .agents-x に化けていれば失敗' merged 1 "${merged_long/target: \/home\/node\/.agents$'\n'/target: \/home\/node\/.agents-x$'\n'}"
 [[ "${merged_short/\/home\/node\/.agents:ro/\/home\/node\/.agents-x:ro}" != "$merged_short" \
   && "${merged_long/target: \/home\/node\/.agents$'\n'/target: \/home\/node\/.agents-x$'\n'}" != "$merged_long" \
-  && "$merged_no_ipv6" != "$merged_short" ]] || { echo 'FAIL - 7 ファイルの対照 fixture の生成'; fail=$((fail + 1)); }
-# lint 本体の配線（#174）: 7 ファイル同時 config を取る if の直後の行が、関数の結果を status へ反映する呼び出しであること。
+  && "$merged_no_ipv6" != "$merged_short" ]] || { echo 'FAIL - 9 ファイルの対照 fixture の生成'; fail=$((fail + 1)); }
+# HOME_MOUNT（rw）と HOME_MOUNT_RO（:ro）の 2 本（#259）。rw の側は bind が残り、:ro が付かないこと
+# （合格の側は上の短縮表記と long syntax の合格ケースが兼ねる）。
+hm_cases=(
+  "lint-home-mount-ro が無ければ失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed '/lint-home-mount-ro:ro$/d')"
+  "lint-home-mount が無ければ失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed '/lint-home-mount$/d')"
+  "lint-home-mount-ro が rw なら失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed 's#lint-home-mount-ro:ro$#lint-home-mount-ro:rw#')"
+  "lint-home-mount が ro なら失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed 's#lint-home-mount$#lint-home-mount:ro#')"
+  "lint-home-mount が ro なら失敗（long syntax）|$(printf '%s\n' "$merged_long" | sed '/target: \/home\/node\/lint-home-mount$/a\        read_only: true')"
+  "lint-home-mount-ro の read_only が無ければ失敗（long syntax）|$(printf '%s\n' "$merged_long" | sed '/target: \/home\/node\/lint-home-mount-ro$/{n;d}')"
+  "lint-home-mount が無ければ失敗（long syntax）|$(printf '%s\n' "$merged_long" | sed 's#target: /home/node/lint-home-mount$#target: /home/node/other#')"
+)
+for hm_case in "${hm_cases[@]}"; do
+  hm_input="${hm_case#*|}"
+  [[ "$hm_input" != "$merged_short" && "$hm_input" != "$merged_long" ]] || { echo "FAIL - 対照 fixture の生成: ${hm_case%%|*}"; fail=$((fail + 1)); continue; }
+  run_case "9 ファイル: ${hm_case%%|*}" merged 1 "$hm_input"
+done
+# lint 本体の配線（#174）: 9 ファイル同時 config を取る if の直後の行が、関数の結果を status へ反映する呼び出しであること。
 # 偽の provider で lint.sh 全体を走らせる方式は採らない（lint.sh は他にも十数回 compose を呼び、${VAR:?} の検査は
 # config の失敗を期待するので、偽の provider がそれを全部まねる必要がある）。呼び出しを || true 等へ変えると赤になる。
-wiring=$(awk 'prev ~ /-f compose\.agents\.yml -f compose\.codex-plugins\.yml config\); then$/ { print; exit } { prev = $0 }' "$ROOT/lint.sh")
+wiring=$(awk 'prev ~ /-f compose\.codex-plugins\.yml -f compose\.home-mount\.yml -f compose\.home-mount-ro\.yml config\); then$/ { print; exit } { prev = $0 }' "$ROOT/lint.sh")
 count=$((count + 1))
 # shellcheck disable=SC2016 # 意図的にリテラル（lint.sh の 1 行と文字どおり比べる。変数展開ではない）
 if [[ "$wiring" == '    compose_merged_overrides_ok <<<"$merged" || status=1' ]]; then
-  echo 'ok - lint 本体: 7 ファイル同時 config の検査結果を status へ反映している'
+  echo 'ok - lint 本体: 9 ファイル同時 config の検査結果を status へ反映している'
 else
-  echo "FAIL - lint 本体: 7 ファイル同時 config の直後の行が想定と違う: ${wiring:-（見つからない）}"; fail=$((fail + 1))
+  echo "FAIL - lint 本体: 9 ファイル同時 config の直後の行が想定と違う: ${wiring:-（見つからない）}"; fail=$((fail + 1))
 fi
 
 echo "結果: $count ケース、失敗 $fail"

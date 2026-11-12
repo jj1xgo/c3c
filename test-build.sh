@@ -511,6 +511,35 @@ if echo x > /home/node/.codex/rw-probe 2>/dev/null; then echo "RW-OK .codex"; el
 exit $fail
 '
 
+# HOME_MOUNT（rw）と HOME_MOUNT_RO（:ro）の実構成（#259）。rw の側は書けてホストに残り、ro の側は読めて書けない。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+HOME_MOUNT_PROBE='
+set -u
+fail=0
+expect_ro() {
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+if echo x > /home/node/hm-probe/new 2>/dev/null; then echo "RW-OK hm"; else echo "RW-BROKEN hm"; fail=1; fi
+d=/home/node/hmro-probe
+if [ "$(cat "$d/seed" 2>/dev/null)" = seed ]; then echo "READ-OK $d"; else echo "READ-BROKEN $d"; fail=1; fi
+expect_ro "hmro/create"  sh -c "echo x > $d/probe-new"
+expect_ro "hmro/append"  sh -c "echo x >> $d/seed"
+expect_ro "hmro/delete"  rm -f "$d/seed"
+expect_ro "hmro/replace" sh -c "echo x > $d/seed.tmp && mv -f $d/seed.tmp $d/seed"
+exit $fail
+'
+# コンテナの中で flock -n を試し、取れたら FREE、取れなければ LOCKED を出す（ホストが持つ間の排他を見る）。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列
+HOME_MOUNT_FLOCK_PROBE='if flock -n /home/node/hm-probe/l true; then echo FREE; else echo "LOCKED rc=$?"; fi'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="${TEST_COMPOSE_PROJECT:-claude-test-config-ro}"
@@ -599,6 +628,35 @@ run_config_ro_tests() {
   check "書き込み試行後もホスト側 source が不変で、CODEX_DIR 側の書き込みだけ残る" \
     bash -c '[ "$(cat "$2/seed")" = seed ] && [ "$(ls -A "$2")" = seed ] && [ -e "$1/codex-home/rw-probe" ] && [ -d "$1/codex-home/plugins/.staging-probe" ]' _ "$root" "$codex_src"
   rm -rf "$codex_src"
+  # HOME_MOUNT と HOME_MOUNT_RO の実構成（#259）。source は CONTEXT（= $root）の外に置き、この override だけの経路を見る。
+  local hm hmro lfd
+  hm="$(mktemp -d)"; hmro="$(mktemp -d)"
+  echo seed > "$hm/seed"; echo seed > "$hmro/seed"
+  local hm_env=(CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root"
+    C3C_HOME_MOUNT_SOURCE="$hm" C3C_HOME_MOUNT_TARGET=/home/node/hm-probe
+    C3C_HOME_MOUNT_RO_SOURCE="$hmro" C3C_HOME_MOUNT_RO_TARGET=/home/node/hmro-probe)
+  local hm_compose=(podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.home-mount.yml"
+    -f "${SCRIPT_DIR}/compose.home-mount-ro.yml" -p "$proj" --in-pod false run --rm -T --entrypoint bash claude-auth-workspace -c)
+  check "HOME_MOUNT は書けて、HOME_MOUNT_RO は読めて書けない" env "${hm_env[@]}" "${hm_compose[@]}" "$HOME_MOUNT_PROBE"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "HOME_MOUNT の書き込みはホストに残り、HOME_MOUNT_RO のホスト側は不変" \
+    bash -c '[ "$(cat "$1/new")" = x ] && [ -O "$1/new" ] && [ "$(cat "$2/seed")" = seed ] && [ "$(ls -A "$2")" = seed ]' _ "$hm" "$hmro"
+  # ホストとコンテナの flock の排他。親シェルで同期的に取って保持し、コンテナの flock -n が取れないことを見る。
+  : > "$hm/l"
+  exec {lfd}>"$hm/l"
+  if flock "$lfd"; then
+    # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+    check "ホストが flock を持つ間、コンテナの flock -n は取れない" \
+      bash -c 'out=$(env "${@:2}" "$1") && [ "$out" = "LOCKED rc=1" ]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
+    flock -u "$lfd"
+  else
+    check "ホストで flock を取る" false
+  fi
+  exec {lfd}>&-
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "ホストが flock を放した後は、コンテナの flock -n が取れる" \
+    bash -c 'out=$(env "${@:2}" "$1") && [ "$out" = FREE ]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
+  rm -rf "$hm" "$hmro"
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
@@ -1025,6 +1083,7 @@ run_launcher_tests() {
   run_project_dir_launcher_tests
   run_plugins_alias_launcher_tests
   run_instruction_mount_launcher_tests
+  run_home_mount_launcher_tests
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
@@ -1972,7 +2031,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2428,6 +2487,318 @@ run_instruction_mount_launcher_tests() {
       bash -c '[ "$1" = 0 ] && [[ "$2" == *"WARNING:"*"AGENTS_DIR"*"rw"* ]]' _ "$rc" "$out"
     printf '%s\n' "$out" >> "$LOG_FILE"
   done
+  launcher_sandbox_cleanup
+}
+
+# HOME 配下のディレクトリを ~ の同じ位置に rw（HOME_MOUNT）か :ro（HOME_MOUNT_RO）でつなぐ（#259）。
+# 値は .c3c/env に書く。異常系は起動と --check の両方で、ERROR とキー名・compose へ到達しないことを見る。
+# shellcheck disable=SC2016,SC2088  # bash -c の検証式は子シェル内で評価する。~ は展開しない値として env に書く
+run_home_mount_launcher_tests() {
+  local root bin home proj out rc before_ctx value key real_home
+  launcher_sandbox_init
+  log "## HOME 配下を ~ の同じ位置につなぐ（HOME_MOUNT・HOME_MOUNT_RO、#259）"
+  mkdir -p "$proj/.c3c" "$home/data/pair" "$home/data/guard" "$home/.ssh" "$home/a:b" "$home/secrets/c3c" \
+    "$home/dot" "$home/agents/sub" "$home/x/agents" "$home/cfg/.claude" "$home/vault/sub" "$home/d/g" \
+    "$home/.local/state/c3c" "$home/f" "$root/outside" "$home/nl"$'\n' "$home/nl"
+  chmod 700 "$home/secrets/c3c"
+  printf '{}\n' > "$home/cfg/.claude.json"
+  printf '[user]\n' > "$home/dot/gitconfig"
+  ln -s "$home/data/pair" "$home/link"
+  ln -s "$home/.ssh" "$home/l-ssh"
+  ln -s "$root/outside" "$home/l-out"
+  ln -s / "$home/l-root"
+  ln -s "$home/.claude" "$home/l-claude"
+  ln -s "$home" "$home/l-home"
+  ln -s "$home/a:b" "$home/l-colon"
+  ln -s "$home/nl"$'\n' "$home/l-nl"
+  ln -s "$home/dot/gitconfig" "$home/gc-link"
+  ln -s "$home/data/guard" "$home/f/l"
+  ln -s "$home/data/pair" "$home/s1"
+  ln -s "$home/data/pair" "$home/s2"
+  real_home="$(cd "$home" && pwd -P)"
+
+  # 異常系: 起動は rc≠0・同じ ERROR 行にキー名が語として現れる（HOME_MOUNT は HOME_MOUNT_RO の一部に一致しない）・
+  # compose へ到達しない。--check も rc≠0 と同じ条件。別のガードの ERROR と INFO のキー名の一覧の組では通らない。
+  # 引数: $1=期待するキー名、$2=説明。env は呼び出し側が $proj/.c3c/env に書く。
+  hm_expect_reject() {
+    run_launcher
+    check "$2（起動）" \
+      bash -c '[ "$1" != 0 ] && grep -F "ERROR:" <<< "$2" | grep -qE "(^|[^A-Z_])$4([^A-Z_]|\$)" && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root" "$1"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "$2（--check）" \
+      bash -c '[ "$1" != 0 ] && grep -F "ERROR:" <<< "$2" | grep -qE "(^|[^A-Z_])$3([^A-Z_]|\$)"' _ "$rc" "$out" "$1"
+  }
+
+  # 正常系
+  printf 'HOME_MOUNT=~/data/pair\n' > "$proj/.c3c/env"
+  run_launcher
+  check "正常: HOME_MOUNT を /home/node の同じ位置に rw で渡す" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_SOURCE=$3/data/pair" "$2/compose-env" && grep -qxF "C3C_HOME_MOUNT_TARGET=/home/node/data/pair" "$2/compose-env" && grep -qxF "$4/compose.home-mount.yml" "$2/compose-args" && ! grep -qF "compose.home-mount-ro.yml" "$2/compose-args"' _ "$rc" "$root" "$real_home" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  printf 'HOME_MOUNT_RO=~/data/guard\n' > "$proj/.c3c/env"
+  run_launcher
+  check "正常: HOME_MOUNT_RO を ro で渡す" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_RO_SOURCE=$3/data/guard" "$2/compose-env" && grep -qxF "C3C_HOME_MOUNT_RO_TARGET=/home/node/data/guard" "$2/compose-env" && grep -qxF "$4/compose.home-mount-ro.yml" "$2/compose-args" && ! grep -qF "compose.home-mount.yml" "$2/compose-args"' _ "$rc" "$root" "$real_home" "$SCRIPT_DIR"
+
+  printf 'HOME_MOUNT=~/data/pair\nHOME_MOUNT_RO=~/data/guard\n' > "$proj/.c3c/env"
+  run_launcher
+  check "正常: 両方を並べて渡す" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "$3/compose.home-mount.yml" "$2/compose-args" && grep -qxF "$3/compose.home-mount-ro.yml" "$2/compose-args" && grep -qxF "C3C_HOME_MOUNT_TARGET=/home/node/data/pair" "$2/compose-env" && grep -qxF "C3C_HOME_MOUNT_RO_TARGET=/home/node/data/guard" "$2/compose-env"' _ "$rc" "$root" "$SCRIPT_DIR"
+  check "境界キーの一覧に出す" \
+    bash -c 'line=$(grep -F "境界に影響するキー" <<< "$1") && [[ " $line " == *" HOME_MOUNT "* && "$line" == *" HOME_MOUNT_RO"* ]]' _ "$out"
+
+  local snapshot_ok=1
+  snapshot_check_targets > "$root/before" 2>> "$LOG_FILE" || snapshot_ok=0
+  run_launcher_check
+  snapshot_check_targets > "$root/after" 2>> "$LOG_FILE" || snapshot_ok=0
+  check "正常: --check は両方を診断し対象を変えない" \
+    bash -c '[ "$1" -eq 1 ] && [ "$2" = 0 ] && [[ "$3" == *"HOME_MOUNT:"*"/home/node/data/pair"*"(rw)"* && "$3" == *"HOME_MOUNT_RO:"*"(ro)"* ]] && cmp -s "$4/before" "$4/after"' _ "$snapshot_ok" "$rc" "$out" "$root"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude -b "$proj" 2>&1) && rc=0 || rc=$?
+  check "-b でも build と run の両方に渡す" \
+    bash -c '[ "$1" = 0 ] && [ "$(cat "$2/compose-calls")" = 2 ] || exit 1
+      for n in 1 2; do
+        for f in home-mount home-mount-ro; do grep -qxF "$3/compose.$f.yml" "$2/compose-args.$n" || exit 1; done
+        for v in C3C_HOME_MOUNT_SOURCE C3C_HOME_MOUNT_TARGET C3C_HOME_MOUNT_RO_SOURCE C3C_HOME_MOUNT_RO_TARGET; do
+          grep -qE "^$v=." "$2/compose-env.$n" || exit 1
+        done
+      done' _ "$rc" "$root" "$SCRIPT_DIR"
+  printf '%s\n' "$out" >> "$LOG_FILE"
+
+  printf 'HOME_MOUNT=~/data//pair/\n' > "$proj/.c3c/env"
+  run_launcher
+  check "正常: 末尾の / と // を正規化する" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_TARGET=/home/node/data/pair" "$2/compose-env"' _ "$rc" "$root"
+
+  printf 'HOME_MOUNT=~/link\n' > "$proj/.c3c/env"
+  run_launcher
+  check "正常: HOME の中を指す symlink は実体を source にし、綴りを target にする" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_SOURCE=$3/data/pair" "$2/compose-env" && grep -qxF "C3C_HOME_MOUNT_TARGET=/home/node/link" "$2/compose-env"' _ "$rc" "$root" "$real_home"
+
+  local ok=1
+  for value in none empty; do
+    if [[ "$value" == none ]]; then : > "$proj/.c3c/env"; else printf 'HOME_MOUNT=\nHOME_MOUNT_RO=\n' > "$proj/.c3c/env"; fi
+    run_launcher
+    [[ "$rc" == 0 ]] && ! grep -qF "compose.home-mount" "$root/compose-args" && ! grep -q '^C3C_HOME_MOUNT' "$root/compose-env" || ok=0
+  done
+  check "既定: 未指定と空は何も渡さない" [ "$ok" -eq 1 ]
+
+  : > "$proj/.c3c/env"
+  run_launcher C3C_HOME_MOUNT_SOURCE=/ C3C_HOME_MOUNT_TARGET=/etc C3C_HOME_MOUNT_RO_SOURCE=/ C3C_HOME_MOUNT_RO_TARGET=/etc
+  check "内部変数の注入を捨てる" \
+    bash -c '[ "$1" = 0 ] && ! grep -q "^C3C_HOME_MOUNT" "$2/compose-env" && ! grep -qF "compose.home-mount" "$2/compose-args"' _ "$rc" "$root"
+
+  # rw の別マウントと source が重なると警告して起動する（止めない）。
+  mkdir -p "$home/data/pair/codex" "$home/data/guard/codex"
+  local other sub
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    if [[ "$key" == HOME_MOUNT ]]; then sub=pair; else sub=guard; fi
+    for other in "EXTRA_MOUNT=~/data" "SHARED_MOUNT=~/data" "EXTRA_MOUNT=/" "EXTRA_MOUNT=~"; do
+      printf '%s\n%s=~/data/%s\n' "$other" "$key" "$sub" > "$proj/.c3c/env"
+      run_launcher
+      check "rw の別マウントと重なると警告して起動する: $key と $other" \
+        bash -c '[ "$1" = 0 ] && grep -F "WARNING:" <<< "$2" | grep -F "$3" | grep -qF "重な"' _ "$rc" "$out" "$key"
+      printf '%s\n' "$out" >> "$LOG_FILE"
+    done
+  done
+
+  # 作業ディレクトリ（WORKING_DIR）との重なりも警告する。HOME 配下のプロジェクトから起動する。
+  mkdir -p "$home/data/guard/wproj/.c3c"
+  printf 'HOME_MOUNT_RO=~/data/guard\n' > "$home/data/guard/wproj/.c3c/env"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$home/data/guard/wproj" 2>&1) && rc=0 || rc=$?
+  check "rw の別マウントと重なると警告して起動する: HOME_MOUNT_RO と作業ディレクトリ" \
+    bash -c '[ "$1" = 0 ] && grep -F "WARNING:" <<< "$2" | grep -F "HOME_MOUNT_RO" | grep -qF "重な"' _ "$rc" "$out"
+
+  # HOME_MOUNT_RO は、秘密や認証の置き場でない守っている領域（AGENTS_DIR など）とは重なっても止めない。
+  printf 'AGENTS_DIR=~/x/agents\nHOME_MOUNT_RO=~/x\n' > "$proj/.c3c/env"
+  run_launcher
+  check "HOME_MOUNT_RO は守っている領域と重なっても止めない" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_RO_TARGET=/home/node/x" "$2/compose-env" && grep -qxF "$3/compose.home-mount-ro.yml" "$2/compose-args"' _ "$rc" "$root" "$SCRIPT_DIR"
+
+  # 秘密と認証の置き場（SECRETS_DIR・CODEX_DIR・Claude 設定の .claude）は、どちらのキーでも重なれば止める。
+  # 別の位置に見せると、パスで隠している Copilot の sandbox から読めるようになるため。
+  mkdir -p "$home/secrets/c3c/sub"
+  for pair in 'HOME_MOUNT_RO|SECRETS_DIR=~/secrets/c3c|~/secrets' 'HOME_MOUNT_RO|SECRETS_DIR=~/secrets|~/secrets/c3c/sub' \
+              'HOME_MOUNT_RO|CODEX_DIR=~/data/guard/codex|~/data/guard' 'HOME_MOUNT|CODEX_DIR=~/data/pair/codex|~/data/pair' \
+              'HOME_MOUNT_RO|CLAUDE_CONFIG_DIR=~/cfg|~/cfg'; do
+    key="${pair%%|*}"; value="${pair#*|}"
+    printf '%s\n%s=%s\n' "${value%%|*}" "$key" "${value#*|}" > "$proj/.c3c/env"
+    hm_expect_reject "$key" "秘密と認証の置き場と重なると止まる: ${value%%|*} と $key=${value#*|}"
+  done
+
+  # 守っている領域が / のとき（AGENTS_DIR=/ と、/ を指す symlink）も、HOME_MOUNT はその中にあるので止まる。
+  for value in / '~/l-root'; do
+    printf 'AGENTS_DIR=%s\nHOME_MOUNT=~/data/pair\n' "$value" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "守っている領域が / でも止まる: AGENTS_DIR=$value"
+  done
+
+  # 守っている領域を指す symlink が HOME_MOUNT（rw）の中にあると、コンテナから symlink を差し替えられるので止める。
+  mkdir -p "$home/lnk"
+  ln -s "$home/dot/gitconfig" "$home/lnk/gitconfig"
+  ln -s "$home/secrets/c3c" "$home/lnk/sec"
+  ln -s "$home/agents" "$home/lnk/ag"
+  ln -s "$home/cfg" "$home/lnk/cfg"
+  mkdir -p "$home/codexreal"
+  ln -s "$home/codexreal" "$home/lnk/codex"
+  for value in 'GITCONFIG_FILE=~/lnk/gitconfig' 'SECRETS_DIR=~/lnk/sec' 'AGENTS_DIR=~/lnk/ag' 'CLAUDE_CONFIG_DIR=~/lnk/cfg' 'CODEX_DIR=~/lnk/codex'; do
+    printf '%s\nHOME_MOUNT=~/lnk\n' "$value" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "守っている領域を指す symlink が HOME_MOUNT の中にあると止まる: $value"
+  done
+
+  # 解決の途中の段にある symlink が HOME_MOUNT の中にあっても止める（綴りと実体の両端は外にある。#260 の PR 後レビュー）。
+  mkdir -p "$home/mc" "$home/cc2" "$home/realcc"
+  printf '{}\n' > "$home/cc2/.claude.json"
+  ln -s "$home/mc/cmid" "$home/cc2/.claude"; ln -s "$home/realcc" "$home/mc/cmid"
+  ln -s "$home/mc/gmid" "$home/gc2"; ln -s "$home/dot/gitconfig" "$home/mc/gmid"
+  ln -s "$home/mc/smid" "$home/sec2"; ln -s "$home/secrets/c3c" "$home/mc/smid"
+  # symlink の先の .. で HOME_MOUNT の中を通って出る経路（~/mc/dsub は実のディレクトリ。コンテナが symlink に
+  # 差し替えると .. の行き先が変わる）。
+  mkdir -p "$home/mc/dsub" "$home/cc3" "$home/realcc3"
+  printf '{}\n' > "$home/cc3/.claude.json"
+  ln -s "$home/mc/dsub/../../realcc3" "$home/cc3/.claude"
+  for value in 'CLAUDE_CONFIG_DIR=~/cc2' 'GITCONFIG_FILE=~/gc2' 'SECRETS_DIR=~/sec2' 'CLAUDE_CONFIG_DIR=~/cc3'; do
+    printf '%s\nHOME_MOUNT=~/mc\n' "$value" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "解決の途中の symlink が HOME_MOUNT の中にあると止まる: $value"
+  done
+
+  # 途中の段が HOME_MOUNT の外（祖先や兄弟）にあるだけなら止めない（コンテナから差し替えられない。#260 の確認限定巡の N1）。
+  # 引数: $1=説明、$2=期待する source、$3=期待する destination、$4=キー名。env は呼び出し側が書く。
+  hm_expect_accept() {
+    run_launcher
+    check "$1（起動）" \
+      bash -c '[ "$1" = 0 ] && grep -qxF "C3C_${5}_SOURCE=$3" "$2/compose-env" && grep -qxF "C3C_${5}_TARGET=$4" "$2/compose-env"' _ "$rc" "$root" "$2" "$3" "$4"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "$1（--check）" bash -c '[ "$1" = 0 ] && [[ "$2" != *"ERROR:"* ]]' _ "$rc" "$out"
+  }
+  # B: HOME の中の symlink（~/work → ~/mntx）の下に、秘密の置き場と HOME_MOUNT が兄弟で並ぶ。
+  mkdir -p "$home/mntx/sec" "$home/mntx/data"; chmod 700 "$home/mntx/sec"
+  ln -s "$home/mntx" "$home/work"
+  printf 'SECRETS_DIR=~/work/sec\nHOME_MOUNT=~/work/data\n' > "$proj/.c3c/env"
+  hm_expect_accept "途中の symlink が HOME_MOUNT の祖先にあるだけなら止めない: SECRETS_DIR=~/work/sec と ~/work/data" \
+    "$real_home/mntx/data" /home/node/work/data HOME_MOUNT
+  # C: 秘密の置き場の symlink が .. で $HOME を出て入り直す（~/sec3 → ../home/realsec。.. で出るのは $HOME 自体）。
+  mkdir -p "$home/realsec"; chmod 700 "$home/realsec"
+  ln -s "../${home##*/}/realsec" "$home/sec3"
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    printf 'SECRETS_DIR=~/sec3\n%s=~/data/pair\n' "$key" > "$proj/.c3c/env"
+    hm_expect_accept ".. で出るディレクトリが HOME 自体なら止めない: SECRETS_DIR=~/sec3 と $key=~/data/pair" \
+      "$real_home/data/pair" /home/node/data/pair "$key"
+  done
+  # A: $HOME の祖先が symlink（$root/top → realtop、HOME=$root/top/h）。
+  hm_ancestor_link_case() {
+    mkdir -p "$root/realtop/h/.claude" "$root/realtop/h/data/pair" "$root/realtop/h/data/guard"
+    printf '{}\n' > "$root/realtop/h/.claude.json"
+    ln -s "$root/realtop" "$root/top"
+    local home="$root/top/h" real_top
+    real_top="$(cd "$root/realtop/h" && pwd -P)"
+    printf 'HOME_MOUNT=~/data/pair\n' > "$proj/.c3c/env"
+    hm_expect_accept "HOME の祖先が symlink でも止めない: HOME_MOUNT=~/data/pair" "$real_top/data/pair" /home/node/data/pair HOME_MOUNT
+    printf 'HOME_MOUNT_RO=~/data/guard\n' > "$proj/.c3c/env"
+    hm_expect_accept "HOME の祖先が symlink でも止めない: HOME_MOUNT_RO=~/data/guard" "$real_top/data/guard" /home/node/data/guard HOME_MOUNT_RO
+  }
+  hm_ancestor_link_case
+
+  # 相対パスの秘密の置き場などは、つなぐ範囲と比べられないので止める（#260 の PR 後レビュー）。
+  mkdir -p "$proj/rsec"; chmod 700 "$proj/rsec"; printf '[user]\n' > "$proj/rgc"
+  for value in 'SECRETS_DIR=rsec' 'GITCONFIG_FILE=rgc'; do
+    for key in HOME_MOUNT HOME_MOUNT_RO; do
+      printf '%s\n%s=~/data/pair\n' "$value" "$key" > "$proj/.c3c/env"
+      hm_expect_reject "$key" "相対パスの守っている領域があると止まる: $value と $key"
+    done
+  done
+
+  # 守っている領域のパスを解決できない（symlink のループ）と、比べずに通さず止める（#260 の PR 後レビュー）。
+  ln -s "$home/cxa" "$home/.codex"; ln -s "$home/.codex" "$home/cxa"
+  printf 'HOME_MOUNT=~/data/pair\n' > "$proj/.c3c/env"
+  hm_expect_reject HOME_MOUNT "守っている領域のパスが symlink のループで解決できないと止まる"
+  rm -- "$home/.codex" "$home/cxa"
+  # realpath 自体が失敗したときも止める（Sol I2 の再現の形。shim はこのパスのときだけ失敗し、ほかは本物に渡す）。
+  mkdir -p "$home/rpfail"; chmod 700 "$home/rpfail"
+  cat > "$bin/realpath" <<SHIM
+#!/bin/bash
+for a in "\$@"; do [[ "\$a" == *"/rpfail"* ]] && exit 1; done
+exec "$(command -v realpath)" "\$@"
+SHIM
+  chmod +x "$bin/realpath"
+  printf 'SECRETS_DIR=~/rpfail\nHOME_MOUNT_RO=~/data/guard\n' > "$proj/.c3c/env"
+  hm_expect_reject HOME_MOUNT_RO "守っている領域のパスを realpath が解決できないと止まる"
+  rm -- "$bin/realpath"
+
+  # 基点の .claude.json の実体も秘密と認証の置き場に入れる（dotfile 管理の symlink。#260 の PR 後レビュー）。
+  mkdir -p "$home/dotf"
+  mv -- "$home/.claude.json" "$home/dotf/claude.json"
+  ln -s "$home/dotf/claude.json" "$home/.claude.json"
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    printf '%s=~/dotf\n' "$key" > "$proj/.c3c/env"
+    hm_expect_reject "$key" "基点の .claude.json の実体と重なると止まる: $key=~/dotf"
+  done
+  rm -- "$home/.claude.json"; mv -- "$home/dotf/claude.json" "$home/.claude.json"
+
+  # 異常系（両方のキー）
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    for value in '~' '~/' "$home" "$root/outside" rel/path "$home/a/../b" "$home/missing" "$home/.ssh" "$home/.claude" \
+                 "$home/.local/state/c3c" "$home/a:b"; do
+      printf '%s=%s\n' "$key" "$value" > "$proj/.c3c/env"
+      hm_expect_reject "$key" "不正な値を拒否する: $key=${value#"$home"}"
+    done
+    for value in l-ssh l-out l-root l-claude l-home; do
+      printf '%s=~/%s\n' "$key" "$value" > "$proj/.c3c/env"
+      hm_expect_reject "$key" "symlink の実体が条件を外れる値を拒否する: $key=~/$value"
+    done
+    for value in l-colon l-nl; do
+      printf '%s=~/%s\n' "$key" "$value" > "$proj/.c3c/env"
+      hm_expect_reject "$key" "実体の名前のコロンと制御文字を拒否する: $key=~/$value"
+    done
+  done
+
+  # HOME_MOUNT が守っている領域を含むと止まる（HOME_MOUNT だけ）
+  local pair
+  for pair in 'SECRETS_DIR=~/secrets/c3c|~/secrets' 'GITCONFIG_FILE=~/dot/gitconfig|~/dot' 'GITCONFIG_FILE=~/gc-link|~/dot' \
+              'AGENTS_DIR=~/agents|~/agents/sub' 'AGENTS_DIR=~/x/agents|~/x' 'CLAUDE_CONFIG_DIR=~/cfg|~/cfg'; do
+    printf '%s\nHOME_MOUNT=%s\n' "${pair%%|*}" "${pair#*|}" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "HOME_MOUNT が守っている領域を含むと止まる: ${pair%%|*} と ${pair#*|}"
+  done
+  # RUN_DIR（c3c の checkout）が HOME 配下にある構成。隔離用コピーから起動する。
+  hm_run_dir_case() {
+    mkdir -p "$home/tools/c3c"
+    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
+      check "HOME_MOUNT が守っている領域を含むと止まる: RUN_DIR のコピーを作る" false
+      return
+    }
+    local SCRIPT_DIR="$home/tools/c3c"
+    printf 'HOME_MOUNT=~/tools\n' > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "HOME_MOUNT が守っている領域を含むと止まる: RUN_DIR と ~/tools"
+  }
+  hm_run_dir_case
+
+  # HOME_MOUNT と HOME_MOUNT_RO の重なり
+  for pair in '~/data/pair|~/data/pair' '~/d|~/d/g' '~/d/g|~/d' '~/f|~/f/l' '~/s1|~/s2'; do
+    printf 'HOME_MOUNT=%s\nHOME_MOUNT_RO=%s\n' "${pair%%|*}" "${pair#*|}" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "HOME_MOUNT と HOME_MOUNT_RO の重なりを拒否する: ${pair%%|*} と ${pair#*|}"
+  done
+
+  # 共有別名とマウント先の重なり
+  for pair in 'SHARED_MOUNT=~/vault|HOME_MOUNT=~/vault/sub' 'SHARED_MOUNT=~/vault|HOME_MOUNT_RO=~/vault' 'SHARED_MOUNT=~/vault/sub|HOME_MOUNT=~/vault'; do
+    printf '%s\nSHARED_MOUNT_HOME_ALIAS=1\n%s\n' "${pair%%|*}" "${pair#*|}" > "$proj/.c3c/env"
+    key="${pair#*|}"; key="${key%%=*}"
+    hm_expect_reject "$key" "共有別名とマウント先が重なると止まる: ${pair%%|*} と ${pair#*|}"
+  done
+
+  # 未作成の守っている領域（--check の前の state directory）の親が、HOME_MOUNT の中への symlink でも止まる。
+  rm -rf "$home/.local"
+  mkdir -p "$home/xdg/local"
+  ln -s "$home/xdg/local" "$home/.local"
+  printf 'HOME_MOUNT=~/xdg\n' > "$proj/.c3c/env"
+  run_launcher_check
+  check "未作成の state directory の親が HOME_MOUNT の中への symlink でも止まる（--check）" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"HOME_MOUNT"* ]] && [ ! -e "$3/xdg/local/state" ]' _ "$rc" "$out" "$home"
+  : > "$proj/.c3c/env"
   launcher_sandbox_cleanup
 }
 

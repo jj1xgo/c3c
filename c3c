@@ -2307,7 +2307,7 @@ home_mount_resolve() {
 }
 
 # 比べる対象のパスを、~ を展開して _hm_forms に足す: realpath -ms の綴り（symlink を解決しない）、
-# 解決の途中で通るすべての symlink の位置、realpath -m の実体（祖先の symlink も解決し、未作成でもよい）。
+# 解決の途中で通るすべての symlink の位置と .. で出ていくディレクトリ、realpath -m の実体（祖先の symlink も解決し、未作成でもよい）。
 # 綴りと途中の symlink も比べるのは、守っている領域へ向かう symlink が rw の中にあると、コンテナから
 # 差し替えて次の起動の参照先を変えられるため（#259 の PR 前レビュー、途中の段は #260 の PR 後レビュー）。
 # 両端は標準の realpath で出し、途中の段は readlink で 1 段ずつ辿って見つける。辿った終点が realpath -m と
@@ -2331,7 +2331,9 @@ home_mount_forms() {
     if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
     case "$part" in
       '' | .) continue ;;
-      ..) resolved="${resolved%/*}"; continue ;;
+      # .. で出ていくディレクトリも足す（rw の中の実のディレクトリを通って .. で出る経路は、コンテナがそれを
+      # symlink に差し替えると .. の行き先が変わる。#260 の PR 後レビューの後の確認）。
+      ..) [[ -n "$resolved" ]] && _hm_forms+=("$resolved"); resolved="${resolved%/*}"; continue ;;
     esac
     link="$resolved/$part"
     if [[ -L "$link" ]]; then

@@ -2656,7 +2656,12 @@ run_home_mount_launcher_tests() {
   ln -s "$home/mc/cmid" "$home/cc2/.claude"; ln -s "$home/realcc" "$home/mc/cmid"
   ln -s "$home/mc/gmid" "$home/gc2"; ln -s "$home/dot/gitconfig" "$home/mc/gmid"
   ln -s "$home/mc/smid" "$home/sec2"; ln -s "$home/secrets/c3c" "$home/mc/smid"
-  for value in 'CLAUDE_CONFIG_DIR=~/cc2' 'GITCONFIG_FILE=~/gc2' 'SECRETS_DIR=~/sec2'; do
+  # symlink の先の .. で HOME_MOUNT の中を通って出る経路（~/mc/dsub は実のディレクトリ。コンテナが symlink に
+  # 差し替えると .. の行き先が変わる）。
+  mkdir -p "$home/mc/dsub" "$home/cc3" "$home/realcc3"
+  printf '{}\n' > "$home/cc3/.claude.json"
+  ln -s "$home/mc/dsub/../../realcc3" "$home/cc3/.claude"
+  for value in 'CLAUDE_CONFIG_DIR=~/cc2' 'GITCONFIG_FILE=~/gc2' 'SECRETS_DIR=~/sec2' 'CLAUDE_CONFIG_DIR=~/cc3'; do
     printf '%s\nHOME_MOUNT=~/mc\n' "$value" > "$proj/.c3c/env"
     hm_expect_reject HOME_MOUNT "解決の途中の symlink が HOME_MOUNT の中にあると止まる: $value"
   done
@@ -2675,6 +2680,17 @@ run_home_mount_launcher_tests() {
   printf 'HOME_MOUNT=~/data/pair\n' > "$proj/.c3c/env"
   hm_expect_reject HOME_MOUNT "守っている領域のパスが symlink のループで解決できないと止まる"
   rm -- "$home/.codex" "$home/cxa"
+  # realpath 自体が失敗したときも止める（Sol I2 の再現の形。shim はこのパスのときだけ失敗し、ほかは本物に渡す）。
+  mkdir -p "$home/rpfail"; chmod 700 "$home/rpfail"
+  cat > "$bin/realpath" <<SHIM
+#!/bin/bash
+for a in "\$@"; do [[ "\$a" == *"/rpfail"* ]] && exit 1; done
+exec "$(command -v realpath)" "\$@"
+SHIM
+  chmod +x "$bin/realpath"
+  printf 'SECRETS_DIR=~/rpfail\nHOME_MOUNT_RO=~/data/guard\n' > "$proj/.c3c/env"
+  hm_expect_reject HOME_MOUNT_RO "守っている領域のパスを realpath が解決できないと止まる"
+  rm -- "$bin/realpath"
 
   # 基点の .claude.json の実体も秘密と認証の置き場に入れる（dotfile 管理の symlink。#260 の PR 後レビュー）。
   mkdir -p "$home/dotf"

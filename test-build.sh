@@ -511,6 +511,35 @@ if echo x > /home/node/.codex/rw-probe 2>/dev/null; then echo "RW-OK .codex"; el
 exit $fail
 '
 
+# HOME_MOUNT（rw）と HOME_MOUNT_RO（:ro）の実構成（#259）。rw の側は書けてホストに残り、ro の側は読めて書けない。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列。$ はコンテナ側で展開させる意図
+HOME_MOUNT_PROBE='
+set -u
+fail=0
+expect_ro() {
+  local label="$1"; shift
+  local out
+  if out=$("$@" 2>&1); then
+    echo "RW-LEAK $label (succeeded)"; fail=1; return
+  fi
+  case "$out" in
+    *"Read-only file system"*|*"Device or resource busy"*) echo "RO-OK $label" ;;
+    *) echo "RO-WRONG-REASON $label ($out)"; fail=1 ;;
+  esac
+}
+if echo x > /home/node/hm-probe/new 2>/dev/null; then echo "RW-OK hm"; else echo "RW-BROKEN hm"; fail=1; fi
+d=/home/node/hmro-probe
+if [ "$(cat "$d/seed" 2>/dev/null)" = seed ]; then echo "READ-OK $d"; else echo "READ-BROKEN $d"; fail=1; fi
+expect_ro "hmro/create"  sh -c "echo x > $d/probe-new"
+expect_ro "hmro/append"  sh -c "echo x >> $d/seed"
+expect_ro "hmro/delete"  rm -f "$d/seed"
+expect_ro "hmro/replace" sh -c "echo x > $d/seed.tmp && mv -f $d/seed.tmp $d/seed"
+exit $fail
+'
+# コンテナの中で flock -n を試し、取れたら FREE、取れなければ LOCKED を出す（ホストが持つ間の排他を見る）。
+# shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列
+HOME_MOUNT_FLOCK_PROBE='if flock -n /home/node/hm-probe/l true; then echo FREE; else echo "LOCKED rc=$?"; fi'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="${TEST_COMPOSE_PROJECT:-claude-test-config-ro}"
@@ -599,6 +628,35 @@ run_config_ro_tests() {
   check "書き込み試行後もホスト側 source が不変で、CODEX_DIR 側の書き込みだけ残る" \
     bash -c '[ "$(cat "$2/seed")" = seed ] && [ "$(ls -A "$2")" = seed ] && [ -e "$1/codex-home/rw-probe" ] && [ -d "$1/codex-home/plugins/.staging-probe" ]' _ "$root" "$codex_src"
   rm -rf "$codex_src"
+  # HOME_MOUNT と HOME_MOUNT_RO の実構成（#259）。source は CONTEXT（= $root）の外に置き、この override だけの経路を見る。
+  local hm hmro lfd
+  hm="$(mktemp -d)"; hmro="$(mktemp -d)"
+  echo seed > "$hm/seed"; echo seed > "$hmro/seed"
+  local hm_env=(CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root"
+    C3C_HOME_MOUNT_SOURCE="$hm" C3C_HOME_MOUNT_TARGET=/home/node/hm-probe
+    C3C_HOME_MOUNT_RO_SOURCE="$hmro" C3C_HOME_MOUNT_RO_TARGET=/home/node/hmro-probe)
+  local hm_compose=(podman compose "${compose_args[@]}" -f "${SCRIPT_DIR}/compose.home-mount.yml"
+    -f "${SCRIPT_DIR}/compose.home-mount-ro.yml" -p "$proj" --in-pod false run --rm -T --entrypoint bash claude-auth-workspace -c)
+  check "HOME_MOUNT は書けて、HOME_MOUNT_RO は読めて書けない" env "${hm_env[@]}" "${hm_compose[@]}" "$HOME_MOUNT_PROBE"
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "HOME_MOUNT の書き込みはホストに残り、HOME_MOUNT_RO のホスト側は不変" \
+    bash -c '[ "$(cat "$1/new")" = x ] && [ -O "$1/new" ] && [ "$(cat "$2/seed")" = seed ] && [ "$(ls -A "$2")" = seed ]' _ "$hm" "$hmro"
+  # ホストとコンテナの flock の排他。親シェルで同期的に取って保持し、コンテナの flock -n が取れないことを見る。
+  : > "$hm/l"
+  exec {lfd}>"$hm/l"
+  if flock "$lfd"; then
+    # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+    check "ホストが flock を持つ間、コンテナの flock -n は取れない" \
+      bash -c 'out=$(env "${@:2}" "$1") && [[ "$out" == LOCKED* ]]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
+    flock -u "$lfd"
+  else
+    check "ホストで flock を取る" false
+  fi
+  exec {lfd}>&-
+  # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
+  check "ホストが flock を放した後は、コンテナの flock -n が取れる" \
+    bash -c 'out=$(env "${@:2}" "$1") && [ "$out" = FREE ]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
+  rm -rf "$hm" "$hmro"
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \

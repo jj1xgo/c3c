@@ -53,7 +53,7 @@ exec {real} "$@"
 '''
 
 
-VERIFIED = '1.0.108'
+VERIFIED = '1.0.109'
 WARNING_PREFIX = f'WARNING: Copilot CLI {{}} は、c3c が sandbox を canary で確かめた版（{VERIFIED}）と違います。'
 
 

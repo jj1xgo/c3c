@@ -75,6 +75,13 @@
 - **マウント先の親**: `/home/node/<相対>` の親ディレクトリが無いと podman が作る。`/home/node` 直下の新しいディレクトリは podman が root 所有で作り、node から書けない。これは `SHARED_MOUNT_HOME_ALIAS` の `~` 側の別名と同じ挙動で、そのまま受け入れる（マウントした実体の中は書ける）。builder は実機でこの挙動を確かめ、README に書く。
 - **SemVer**: 新しい opt-in のキーで既定は変わらないので minor。実装の後にタグを提案する（root `AGENTS.md`）。
 
+## PR 前レビューで変えたこと（2026-11-12、実装者の判断。保守者は未確認）
+
+- 秘密と認証の置き場（`SECRETS_DIR`・`CODEX_DIR`・Claude 設定の `.claude`）と重なる値は、`HOME_MOUNT_RO` でも `guard_fail` にする。上の「`HOME_MOUNT_RO` の source が上の守っているものと重なるときは比べない」を、この 3 つについて改める。読むだけでも、`~` の別の位置に見せると、パスで隠している Copilot の起動口の sandbox（`SECRETS_DIR` のマウント先と `/home/node` を隠す）から作業ディレクトリ経由で読める（Claude の PR 前レビュー I1）。同じ理由で、`HOME_MOUNT` と `CODEX_DIR` の重なりも警告から `guard_fail` に上げる。
+- 守っている領域は、実体（`realpath -m`。未作成でも祖先の symlink を解決する）に加えて、綴り（`realpath -ms`）でも比べる。守っている領域を指す symlink が `HOME_MOUNT` の中にあると、コンテナから差し替えて次の起動の参照先を変えられる（Sol I2・carbon I2）。未作成の領域の親が symlink の場合も実体で比べる（carbon I1）。
+- `/` を指す守っている領域・rw のマウントは、すべてと重なるものとして扱う（Sol I1・carbon C1）。
+- ホストの `$HOME` が `/home/node` のときの、Claude 設定の綴りとのマウント先の比較はやめた（plugin 別名は `/home/node` の下に付かないので、比べる相手が無い。Claude の Minor 1・carbon の Minor 1）。`.claude` との重なりは上の秘密と認証の置き場の規則で止まる。
+
 ## builder に任せること
 
 - 関数の名前・分け方（`guard_shared_home_alias()` と検査を共有するかどうか）。

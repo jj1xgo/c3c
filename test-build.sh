@@ -647,7 +647,7 @@ run_config_ro_tests() {
   if flock "$lfd"; then
     # shellcheck disable=SC2016  # 検証式は親で展開せず、位置引数を子シェル内で評価する
     check "ホストが flock を持つ間、コンテナの flock -n は取れない" \
-      bash -c 'out=$(env "${@:2}" "$1") && [[ "$out" == LOCKED* ]]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
+      bash -c 'out=$(env "${@:2}" "$1") && [ "$out" = "LOCKED rc=1" ]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
     flock -u "$lfd"
   else
     check "ホストで flock を取る" false
@@ -2596,18 +2596,56 @@ run_home_mount_launcher_tests() {
   local other sub
   for key in HOME_MOUNT HOME_MOUNT_RO; do
     if [[ "$key" == HOME_MOUNT ]]; then sub=pair; else sub=guard; fi
-    for other in "EXTRA_MOUNT=~/data" "SHARED_MOUNT=~/data" "CODEX_DIR=~/data/$sub/codex"; do
+    for other in "EXTRA_MOUNT=~/data" "SHARED_MOUNT=~/data" "EXTRA_MOUNT=/" "EXTRA_MOUNT=~"; do
       printf '%s\n%s=~/data/%s\n' "$other" "$key" "$sub" > "$proj/.c3c/env"
       run_launcher
-      check "rw の別マウントと重なると警告して起動する: $key と ${other%%=*}" \
+      check "rw の別マウントと重なると警告して起動する: $key と $other" \
         bash -c '[ "$1" = 0 ] && grep -F "WARNING:" <<< "$2" | grep -F "$3" | grep -qF "重な"' _ "$rc" "$out" "$key"
       printf '%s\n' "$out" >> "$LOG_FILE"
     done
   done
 
-  printf 'SECRETS_DIR=~/secrets/c3c\nHOME_MOUNT_RO=~/secrets\n' > "$proj/.c3c/env"
+  # 作業ディレクトリ（WORKING_DIR）との重なりも警告する。HOME 配下のプロジェクトから起動する。
+  mkdir -p "$home/data/guard/wproj/.c3c"
+  printf 'HOME_MOUNT_RO=~/data/guard\n' > "$home/data/guard/wproj/.c3c/env"
+  launcher_sandbox_reset_records
+  out=$(env -i HOME="$home" PATH="$bin:$PATH" "${SCRIPT_DIR}/c3c" claude "$home/data/guard/wproj" 2>&1) && rc=0 || rc=$?
+  check "rw の別マウントと重なると警告して起動する: HOME_MOUNT_RO と作業ディレクトリ" \
+    bash -c '[ "$1" = 0 ] && grep -F "WARNING:" <<< "$2" | grep -F "HOME_MOUNT_RO" | grep -qF "重な"' _ "$rc" "$out"
+
+  # HOME_MOUNT_RO は、秘密や認証の置き場でない守っている領域（AGENTS_DIR など）とは重なっても止めない。
+  printf 'AGENTS_DIR=~/x/agents\nHOME_MOUNT_RO=~/x\n' > "$proj/.c3c/env"
   run_launcher
-  check "HOME_MOUNT_RO は守っている領域と重なっても止めない" [ "$rc" = 0 ]
+  check "HOME_MOUNT_RO は守っている領域と重なっても止めない" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_RO_TARGET=/home/node/x" "$2/compose-env" && grep -qxF "$3/compose.home-mount-ro.yml" "$2/compose-args"' _ "$rc" "$root" "$SCRIPT_DIR"
+
+  # 秘密と認証の置き場（SECRETS_DIR・CODEX_DIR・Claude 設定の .claude）は、どちらのキーでも重なれば止める。
+  # 別の位置に見せると、パスで隠している Copilot の sandbox から読めるようになるため。
+  mkdir -p "$home/secrets/c3c/sub"
+  for pair in 'HOME_MOUNT_RO|SECRETS_DIR=~/secrets/c3c|~/secrets' 'HOME_MOUNT_RO|SECRETS_DIR=~/secrets|~/secrets/c3c/sub' \
+              'HOME_MOUNT_RO|CODEX_DIR=~/data/guard/codex|~/data/guard' 'HOME_MOUNT|CODEX_DIR=~/data/pair/codex|~/data/pair' \
+              'HOME_MOUNT_RO|CLAUDE_CONFIG_DIR=~/cfg|~/cfg'; do
+    key="${pair%%|*}"; value="${pair#*|}"
+    printf '%s\n%s=%s\n' "${value%%|*}" "$key" "${value#*|}" > "$proj/.c3c/env"
+    hm_expect_reject "$key" "秘密と認証の置き場と重なると止まる: ${value%%|*} と $key=${value#*|}"
+  done
+
+  # 守っている領域が / のとき（AGENTS_DIR=/ と、/ を指す symlink）も、HOME_MOUNT はその中にあるので止まる。
+  for value in / '~/l-root'; do
+    printf 'AGENTS_DIR=%s\nHOME_MOUNT=~/data/pair\n' "$value" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "守っている領域が / でも止まる: AGENTS_DIR=$value"
+  done
+
+  # 守っている領域を指す symlink が HOME_MOUNT（rw）の中にあると、コンテナから symlink を差し替えられるので止める。
+  mkdir -p "$home/lnk"
+  ln -s "$home/dot/gitconfig" "$home/lnk/gitconfig"
+  ln -s "$home/secrets/c3c" "$home/lnk/sec"
+  ln -s "$home/agents" "$home/lnk/ag"
+  ln -s "$home/cfg" "$home/lnk/cfg"
+  for value in 'GITCONFIG_FILE=~/lnk/gitconfig' 'SECRETS_DIR=~/lnk/sec' 'AGENTS_DIR=~/lnk/ag' 'CLAUDE_CONFIG_DIR=~/lnk/cfg'; do
+    printf '%s\nHOME_MOUNT=~/lnk\n' "$value" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "守っている領域を指す symlink が HOME_MOUNT の中にあると止まる: $value"
+  done
 
   # 異常系（両方のキー）
   for key in HOME_MOUNT HOME_MOUNT_RO; do
@@ -2658,6 +2696,15 @@ run_home_mount_launcher_tests() {
     key="${pair#*|}"; key="${key%%=*}"
     hm_expect_reject "$key" "共有別名とマウント先が重なると止まる: ${pair%%|*} と ${pair#*|}"
   done
+
+  # 未作成の守っている領域（--check の前の state directory）の親が、HOME_MOUNT の中への symlink でも止まる。
+  rm -rf "$home/.local"
+  mkdir -p "$home/xdg/local"
+  ln -s "$home/xdg/local" "$home/.local"
+  printf 'HOME_MOUNT=~/xdg\n' > "$proj/.c3c/env"
+  run_launcher_check
+  check "未作成の state directory の親が HOME_MOUNT の中への symlink でも止まる（--check）" \
+    bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"HOME_MOUNT"* ]] && [ ! -e "$3/xdg/local/state" ]' _ "$rc" "$out" "$home"
   : > "$proj/.c3c/env"
   launcher_sandbox_cleanup
 }

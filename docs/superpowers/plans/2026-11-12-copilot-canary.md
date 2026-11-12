@@ -25,7 +25,7 @@
 - 保守者個人のもの（並走の台帳のパス、非公開のリポジトリの名前、ホストのパス）をスクリプト・試験・README・fixture に書かない。
 - モデルを呼ぶのは実機の確かめ（タスク 0 の手順 2 とタスク 4）だけで、これは CI に入れない。偽の起動口の試験（タスク 1・2）は `--launcher-only` に入るので CI でも走る（`bash`・`flock`・`python3` を要る）。
 - Copilot の起動の引数は README の勧める組に、`-p <プロンプト> -s --model <M> --session-id <uuid> --max-ai-credits <N>` を足したもの: `--available-tools=bash --allow-tool=shell --allow-all-paths --allow-all-urls --no-ask-user --no-auto-update`。
-- 既定値: 回数 `2`、モデル `gemini-4-argon`、1 回の上限 `--max-ai-credits 10`、作業ディレクトリ `/workspace`。
+- 既定値: 回数 `2`、モデル `gemini-4-argon`、1 回の上限 `--max-ai-credits 30`、作業ディレクトリ `/workspace`。上限は、承認の後にタスク 0 で Copilot 1.0.109 の下限が 30（`Use at least 30 AI credits`）と分かったので、10 から 30 に替えた（持ち主の決定、2026-11-12）。スクリプトは 30 未満をクレジットを使う前に rc 2 で断る。
 - 終了コード: 全部合格で 0、不合格か「確かめていない」があるか中断されたら 1、前提を満たさないか使い方の誤りは 2。
 - 編集したら、そのターン内で `./lint.sh` を rc 0・警告ゼロで通す（コンテナでは compose の検証の WARNING が出るので、その旨と compose の検証の `not run` を書く）。シェルスクリプトは shebang `#!/bin/bash`。日本語で書く。
 
@@ -107,7 +107,7 @@
 項目と表の行（この順。各行は `[合格]`・`[不合格]`・`[確かめていない]` と理由）: `canary 1`…`canary N`、`/home/node で止まる`、`弱めた設定が戻る`、`後片付け`。ある段を行う前に前の段が失敗してその段を行えなかったときは `[確かめていない]`（理由に、行えなかったわけ）。
 
 動き（この順）:
-1. 引数の検査（`--runs` は `^[1-5]$`、`--max-ai-credits` は `^[1-9][0-9]*$`〈`08` などの先頭 0 を断る〉、`--model` は空でない、作業ディレクトリは存在するディレクトリ、未知のオプション・値の欠けたオプション・2 つ目の位置引数は誤り。`--spent-log` は空でなく、既にあれば symlink でない通常のファイル、無ければ親のディレクトリがあって書ける）。誤りは使い方を出して rc 2（クレジットを使う前に止める）。作業ディレクトリは `cd "$dir" && pwd -P` で解決した値 `WORKDIR` を以後の全段で使う。
+1. 引数の検査（`--runs` は `^[1-5]$`、`--max-ai-credits` は `^[1-9][0-9]*$`〈`08` などの先頭 0 を断る〉で 30 以上（桁の多い値で bash の整数があふれないよう、桁数を先に見る）、`--model` は空でない、作業ディレクトリは存在するディレクトリ、未知のオプション・値の欠けたオプション・2 つ目の位置引数は誤り。`--spent-log` は空でなく、既にあれば symlink でない通常のファイル、無ければ親のディレクトリがあって書ける）。誤りは使い方を出して rc 2（クレジットを使う前に止める）。作業ディレクトリは `cd "$dir" && pwd -P` で解決した値 `WORKDIR` を以後の全段で使う。
 2. 前提（どれも欠ければ `ERROR:` と rc 2、何も変えない）:
    - `WORKDIR` が起動口の拒む場所でない: `/`、`/home/node` とその祖先、`/home/node/.` で始まるエントリとその下、`/tmp` とその下、`SECRETS_DIR` とその下（`copilot-launcher.sh` の作業ディレクトリの検査と同じ規則）。`WORKDIR` に書ける（`[ -w ]`。書けない場所では `w_rc` の合格に意味が無いため）。
    - `COPILOT_BIN` が通常のファイルで `readonly VERIFIED_COPILOT_VERSION=` の行を含む。`SETTINGS_TEMPLATE` がある。`TOKEN_FILE` が読める通常のファイル（中身は読まない）。`COPILOT_BIN` は symlink でない。`COPILOT_HOME` は、あれば symlink でないディレクトリ。無ければ（作り直した直後のコンテナ）、起動口と同じく `mkdir -m 700` で作る（これだけは前提の確認の中で変えてよい）。
@@ -124,7 +124,7 @@
 10. rc は 0／1（全体の制約）。
 
 - [ ] **手順 1: 失敗する試験を書く** — `tests/test_copilot_canary.py`。`setUp` で一時ディレクトリに `home/node/.copilot`・`home/node/.config/c3c/secrets/COPILOT_PAT`（ダミーの 1 行）・雛形の写し・作業ディレクトリを作り、`tests/copilot-canary.sh` の写しの固定パス（`/usr/local/bin/copilot`・`/home/node`・`/etc/c3c/copilot-settings.json`・`/usr/bin/python3`・`/usr/bin/flock`・`/tmp` の拒否の規則）を一時ディレクトリや実物の `python3`・`flock` へ置換する（`CANARY_COMMAND` の中の `/home/node` も同じく置換されるので、偽の起動口はその置換後のコマンドを記録に書く）。ヘルパーも写しの隣に置く。偽の起動口（bash）は `readonly VERIFIED_COPILOT_VERSION=1.0.109` の行を含み、呼ばれた argv を記録し、次をする: 作業ディレクトリが置換後の `/home/node` なら `ERROR: 作業ディレクトリ … では起動しません` を出して rc 1。`--version` なら `settings.json` を雛形＋`readonlyPaths: [cwd]` で書いて `GitHub Copilot CLI 1.0.109.` を出す。`-p` なら `--session-id` の値の `session-state/<id>/events.jsonl` に、タスク 0 の fixture の形で、環境変数 `FAKE_MODE` で選ぶ記録を書く（既定は合格の出力で、名前空間は外と違う数字）。試験:
-  - `test_all_pass`: rc 0、出力に `全体: 合格`、`[合格]` が 2 回分＋3 項目、目印と試しのファイルが残らない、`settings.json` が雛形＋`readonlyPaths` と等しい、argv に 全体の制約の組と `--model gemini-4-argon`・`--max-ai-credits 10`・`--session-id <uuid>` がある。
+  - `test_all_pass`: rc 0、出力に `全体: 合格`、`[合格]` が 2 回分＋3 項目、目印と試しのファイルが残らない、`settings.json` が雛形＋`readonlyPaths` と等しい、argv に 全体の制約の組と `--model gemini-4-argon`・`--max-ai-credits 30`・`--session-id <uuid>` がある。
   - `test_model_claims_without_running`（`FAKE_MODE=no_tool`、`assistant.message` だけ）: rc 1、`全体: 不合格`。
   - `test_ns_same_as_outer`（`FAKE_MODE=same_ns`: 偽の起動口が自分で `readlink /proc/self/ns/user /proc/self/ns/net` を打ち、その出力をそのまま記録に書く）: rc 1。
   - `test_write_file_created`（偽の起動口が `.c3c-copilot-w` を作る）: 2 回とも不合格（各回でその場で消える）、rc 1、最後にファイルが無い。
@@ -136,9 +136,9 @@
   - `test_existing_mark`（`HOME_MARK` を先に置く）: rc 2、目印の中身が変わっていない、偽の起動口が呼ばれていない。
   - `test_lock_held`（試験が lock を持ったまま）: rc 2。`test_lock_missing`（lock のファイルが無い）: rc 0。`test_copilot_home_missing`（`home/node/.copilot` が無い）: rc 0、後で `.copilot` が mode 700 のディレクトリ。
   - `test_dangling_mark`（`HOME_MARK` が壊れた symlink）: rc 2、symlink が残っている。
-  - `test_bad_args`（`--runs 0`、`--runs x`、`--runs 08`、`--max-ai-credits 0`、`--model ''`、未知のオプション、位置引数 2 つ、親の無い `--spent-log`、symlink の `--spent-log`、無い作業ディレクトリ、置換後の `/home/node/.x`、置換後の `/tmp/w`、書けない作業ディレクトリ、`/home/node` の祖先への symlink）: rc 2、偽の起動口が呼ばれていない、`settings.json` が変わっていない。
-  - `test_spent_log`: `--spent-log` を渡すと 1 行増え、`credits` が 2 回分の合計（5.0）。`FAKE_MODE=no_shutdown` では上限×2＝20.0 で、`what` に「上限で数えた」を含む。渡さなければファイルを作らない。記録先が symlink なら rc 1 で `ERROR:`。
-  - `test_interrupted`（`FAKE_MODE=hang` の 2 回目で、試験がスクリプトへ SIGTERM を送る）: rc 1、目印が残らず、`settings.json` が雛形に戻り、`--spent-log` に 1 行だけで `credits` が 1 回目の値＋上限（12.5）、`what` に「中断」。
+  - `test_bad_args`（`--runs 0`、`--runs x`、`--runs 08`、`--max-ai-credits 0`、`--max-ai-credits 29`、`--model ''`、未知のオプション、位置引数 2 つ、親の無い `--spent-log`、symlink の `--spent-log`、無い作業ディレクトリ、置換後の `/home/node/.x`、置換後の `/tmp/w`、書けない作業ディレクトリ、`/home/node` の祖先への symlink）: rc 2、偽の起動口が呼ばれていない、`settings.json` が変わっていない。
+  - `test_spent_log`: `--spent-log` を渡すと 1 行増え、`credits` が 2 回分の合計（5.0）。`FAKE_MODE=no_shutdown` では上限×2＝60.0 で、`what` に「上限で数えた」を含む。渡さなければファイルを作らない。記録先が symlink なら rc 1 で `ERROR:`。
+  - `test_interrupted`（`FAKE_MODE=hang` の 2 回目で、試験がスクリプトへ SIGTERM を送る）: rc 1、目印が残らず、`settings.json` が雛形に戻り、`--spent-log` に 1 行だけで `credits` が 1 回目の値＋上限（32.5）、`what` に「中断」。
   - `test_cleanup_on_failure`（偽の起動口の `-p` が rc 1）: rc 1、目印が残らない。
 - [ ] **手順 2: 試験が落ちることを確かめる** — Run: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_copilot_canary.py'` / Expected: スクリプトが無いので FAIL か ERROR。
 - [ ] **手順 3: `tests/copilot-canary.sh` を実装する** — 上の「動き」。`set -u`、`set -o pipefail`（`-e` は使わず、各段の rc を見る）。shebang `#!/bin/bash`。
@@ -152,13 +152,13 @@
 - 直す: `README.md`（「変更後の確認」の、Copilot CLI を変えた場合の段落。「さらに、モデルを呼ぶ実機の受け入れ（CI には入れない）を行う: …」の文を含む段落）
 
 - [ ] **手順 1: test-build.sh に 2 行足す** — `check "Copilot の canary の判定（bash の実行がちょうど 1 回・ほかの道具で不合格・コマンドの一致・出力の期待値・モデルの文を見ない・クレジット・設定の弱めと型まで含む一致・消費の 1 行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary_helper.py"` と、同じ形で `"Copilot の canary の段取り（前提と拒む作業ディレクトリ・目印・名前空間・/home/node での停止・弱めた設定の戻り・後片付けの確認・中断・引数の組・消費の記録）"` の `test_copilot_canary.py`。
-- [ ] **手順 2: README を直す** — 実機の受け入れの文の後に、次の趣旨を足す: 「この受け入れは、opt-in のコンテナの入力欄で `! bash tests/copilot-canary.sh` と打つと全部走る（既定は gemini-4-argon で 2 回、1 回の上限 10 クレジット。`--runs`・`--model`・`--max-ai-credits`・`--spent-log FILE`・作業ディレクトリを渡せる）。合否は Copilot のセッション記録に残った実際のコマンドと出力から判定し、項目ごとの表と使ったクレジットを出す。合格しても `VERIFIED_COPILOT_VERSION` は変えない。」 その段落とは別の 1 文で、「`tests/copilot-canary.sh`・`tests/copilot_canary_helper.py` を変えたときは、`./lint.sh`、その試験 2 つを含む `--launcher-only`、実機の canary を行う（イメージのビルドの確認と全体実行は要らない）」と書く（Copilot CLI を変えた場合の一覧には入れない）。
+- [ ] **手順 2: README を直す** — 実機の受け入れの文の後に、次の趣旨を足す: 「この受け入れは、opt-in のコンテナの入力欄で `! bash tests/copilot-canary.sh` と打つと全部走る（既定は gemini-4-argon で 2 回、1 回の上限 30 クレジット。Copilot 1.0.109 の下限が 30 のため。`--runs`・`--model`・`--max-ai-credits`・`--spent-log FILE`・作業ディレクトリを渡せる）。合否は Copilot のセッション記録に残った実際のコマンドと出力から判定し、項目ごとの表と使ったクレジットを出す。合格しても `VERIFIED_COPILOT_VERSION` は変えない。」 その段落とは別の 1 文で、「`tests/copilot-canary.sh`・`tests/copilot_canary_helper.py` を変えたときは、`./lint.sh`、その試験 2 つを含む `--launcher-only`、実機の canary を行う（イメージのビルドの確認と全体実行は要らない）」と書く（Copilot CLI を変えた場合の一覧には入れない）。
 - [ ] **手順 3: 確かめる** — Run: `TMPDIR=/tmp ./test-build.sh --launcher-only` / Expected: 新しい 2 つの `check` が PASS、FAIL=0。`./lint.sh` が rc 0。
 - [ ] **手順 4: commit** — `git add test-build.sh README.md && git commit -m "docs: Copilot の受け入れをスクリプトで行えることを書く"`
 
 ### タスク 4: 実機の受け入れと仕上げ
 
-- [ ] **手順 1: 実機の受け入れを頼む** — 保守者に、opt-in のコンテナ（このブランチの checkout。`-b` は不要。スクリプトは `/workspace` から読む）の入力欄で `! bash tests/copilot-canary.sh --spent-log <保守者の記録先>` を打ってもらい、出力を受け取る（記録先は保守者が決め、公開の文書に書かない）。Expected: rc 0、`全体: 合格`、各回のクレジットが上限 10 以下で「クレジット不明」の行が無い。不合格の項目が出たら、止まって保守者に報告する（スクリプトの誤りか sandbox の問題かを先に切り分けない）。
+- [ ] **手順 1: 実機の受け入れを頼む** — 保守者に、opt-in のコンテナ（このブランチの checkout。`-b` は不要。スクリプトは `/workspace` から読む）の入力欄で `! bash tests/copilot-canary.sh --spent-log <保守者の記録先>` を打ってもらい、出力を受け取る（記録先は保守者が決め、公開の文書に書かない）。Expected: rc 0、`全体: 合格`、各回のクレジットが上限 30 以下で「クレジット不明」の行が無い。不合格の項目が出たら、止まって保守者に報告する（スクリプトの誤りか sandbox の問題かを先に切り分けない）。
 - [ ] **手順 2: 全体の検証** — `./lint.sh` rc 0、`TMPDIR=/tmp ./test-build.sh --launcher-only` FAIL=0。全体実行（`./test-build.sh`）は要らない（イメージに入るファイルも起動口も変えないため。タスク 3 の README の文のとおり、このスクリプトの変更で要るのは `./lint.sh`・`--launcher-only`・実機の canary）。コンテナで `./lint.sh` を走らせたときは、compose の検証の `not run` を書く。
 - [ ] **手順 3: 実装完了時（PR 前）の二重レビュー**（区分が境界のため）— **REQUIRED SUB-SKILL:** Use superpowers:receiving-code-review（結果を受け取って反映するとき）。グローバル `AGENTS.md` のとおり Claude（claude-review skill）と Codex（codex-review skill、Sol）。Sol を Claude のセッションから起動する回は、グローバル `AGENTS.md`「Copilot の並走」も行う。Critical・Important を直し、確認限定巡を終えてから PR を作る。
 - [ ] **手順 4: PR を作る** — **REQUIRED SUB-SKILL:** Use superpowers:verification-before-completion → superpowers:finishing-a-development-branch（push は保守者に確かめてから）。PR 本文に、受け入れの表、PR 前のレビューの判定、未対応の Minor、`not run` の検証と理由を書き、Claude と Codex のレビューの全文を PR コメントに投稿する。タグは提案しない（`tests/` の道具と README の追記で、利用者から見えるインターフェースは変わらない）。

@@ -136,7 +136,7 @@
   - `test_existing_mark`（`HOME_MARK` を先に置く）: rc 2、目印の中身が変わっていない、偽の起動口が呼ばれていない。
   - `test_lock_held`（試験が lock を持ったまま）: rc 2。`test_lock_missing`（lock のファイルが無い）: rc 0。`test_copilot_home_missing`（`home/node/.copilot` が無い）: rc 0、後で `.copilot` が mode 700 のディレクトリ。
   - `test_dangling_mark`（`HOME_MARK` が壊れた symlink）: rc 2、symlink が残っている。
-  - `test_bad_args`（`--runs 0`、`--runs x`、`--runs 08`、`--max-ai-credits 0`、`--model ''`、未知のオプション、位置引数 2 つ、親の無い `--spent-log`、symlink の `--spent-log`、無い作業ディレクトリ、置換後の `/home/node/.x`、置換後の （非公開の場所に保存）、書けない作業ディレクトリ、`/home/node` の祖先への symlink）: rc 2、偽の起動口が呼ばれていない、`settings.json` が変わっていない。
+  - `test_bad_args`（`--runs 0`、`--runs x`、`--runs 08`、`--max-ai-credits 0`、`--model ''`、未知のオプション、位置引数 2 つ、親の無い `--spent-log`、symlink の `--spent-log`、無い作業ディレクトリ、置換後の `/home/node/.x`、置換後の `/tmp/w`、書けない作業ディレクトリ、`/home/node` の祖先への symlink）: rc 2、偽の起動口が呼ばれていない、`settings.json` が変わっていない。
   - `test_spent_log`: `--spent-log` を渡すと 1 行増え、`credits` が 2 回分の合計（5.0）。`FAKE_MODE=no_shutdown` では上限×2＝20.0 で、`what` に「上限で数えた」を含む。渡さなければファイルを作らない。記録先が symlink なら rc 1 で `ERROR:`。
   - `test_interrupted`（`FAKE_MODE=hang` の 2 回目で、試験がスクリプトへ SIGTERM を送る）: rc 1、目印が残らず、`settings.json` が雛形に戻り、`--spent-log` に 1 行だけで `credits` が 1 回目の値＋上限（12.5）、`what` に「中断」。
   - `test_cleanup_on_failure`（偽の起動口の `-p` が rc 1）: rc 1、目印が残らない。
@@ -194,6 +194,8 @@
   - I3 引数の誤りをクレジットの前に止める → 採用（`--spent-log`・未知のオプション・`08` など）。`events.jsonl` が無いときの `credits=unknown` → 反映済み。小数の合計 → 採用（python3）
   - I5 verification-before-completion の位置・タスク 1 の lint → 反映済み。全体実行の判断を委ねている・README の文 → 採用（要らないと明記）
   - M1 型の検査 → 採用 / M2 `--version` の WARNING を混ぜない・時刻を 1 回・id に PID → 採用 / M3 `sys.path` → 採用
+- 確認限定巡 4: Codex（carbon の採った C3・I2・I3・I5、所要 26 秒）→ 全部直った。実装に渡せる。生の出力 （非公開の場所に保存）
+- carbon（並走、正式外）の確認限定巡 1: 前回の全部（C1〜C3・I1〜I5・M1〜M3）が直った。16.6853 クレジット、所要 137 秒、9634347 に対して。生の出力 （非公開の場所に保存）。あわせて、公開版を作るときの置き換えが試験の値 `/tmp/w` まで消していたことを指摘 → 採用（戻した）
 - 承認の後に行うこと: 生の出力と版を保守者の非公開の場所に写す → carbon の並走（`plan-initial.md` を送る、`-c <spec の commit>`）→ carbon の完了の後に計画を公開の置き場へ写して commit
 - 確認限定巡 1: Claude（C1・I1〜I4、所要 27 秒）→ 全部直った。実装に渡せる（任意の残り: 目印が書けない場合の試験）。生の出力 （非公開の場所に保存）
 

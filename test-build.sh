@@ -2666,6 +2666,44 @@ run_home_mount_launcher_tests() {
     hm_expect_reject HOME_MOUNT "解決の途中の symlink が HOME_MOUNT の中にあると止まる: $value"
   done
 
+  # 途中の段が HOME_MOUNT の外（祖先や兄弟）にあるだけなら止めない（コンテナから差し替えられない。#260 の確認限定巡の N1）。
+  # 引数: $1=説明、$2=期待する source、$3=期待する destination、$4=キー名。env は呼び出し側が書く。
+  hm_expect_accept() {
+    run_launcher
+    check "$1（起動）" \
+      bash -c '[ "$1" = 0 ] && grep -qxF "C3C_${5}_SOURCE=$3" "$2/compose-env" && grep -qxF "C3C_${5}_TARGET=$4" "$2/compose-env"' _ "$rc" "$root" "$2" "$3" "$4"
+    printf '%s\n' "$out" >> "$LOG_FILE"
+    run_launcher_check
+    check "$1（--check）" bash -c '[ "$1" = 0 ] && [[ "$2" != *"ERROR:"* ]]' _ "$rc" "$out"
+  }
+  # B: HOME の中の symlink（~/work → ~/mntx）の下に、秘密の置き場と HOME_MOUNT が兄弟で並ぶ。
+  mkdir -p "$home/mntx/sec" "$home/mntx/data"; chmod 700 "$home/mntx/sec"
+  ln -s "$home/mntx" "$home/work"
+  printf 'SECRETS_DIR=~/work/sec\nHOME_MOUNT=~/work/data\n' > "$proj/.c3c/env"
+  hm_expect_accept "途中の symlink が HOME_MOUNT の祖先にあるだけなら止めない: SECRETS_DIR=~/work/sec と ~/work/data" \
+    "$real_home/mntx/data" /home/node/work/data HOME_MOUNT
+  # C: 秘密の置き場の symlink が .. で $HOME を出て入り直す（~/sec3 → ../home/realsec。.. で出るのは $HOME 自体）。
+  mkdir -p "$home/realsec"; chmod 700 "$home/realsec"
+  ln -s "../${home##*/}/realsec" "$home/sec3"
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    printf 'SECRETS_DIR=~/sec3\n%s=~/data/pair\n' "$key" > "$proj/.c3c/env"
+    hm_expect_accept ".. で出るディレクトリが HOME 自体なら止めない: SECRETS_DIR=~/sec3 と $key=~/data/pair" \
+      "$real_home/data/pair" /home/node/data/pair "$key"
+  done
+  # A: $HOME の祖先が symlink（$root/top → realtop、HOME=$root/top/h）。
+  hm_ancestor_link_case() {
+    mkdir -p "$root/realtop/h/.claude" "$root/realtop/h/data/pair" "$root/realtop/h/data/guard"
+    printf '{}\n' > "$root/realtop/h/.claude.json"
+    ln -s "$root/realtop" "$root/top"
+    local home="$root/top/h" real_top
+    real_top="$(cd "$root/realtop/h" && pwd -P)"
+    printf 'HOME_MOUNT=~/data/pair\n' > "$proj/.c3c/env"
+    hm_expect_accept "HOME の祖先が symlink でも止めない: HOME_MOUNT=~/data/pair" "$real_top/data/pair" /home/node/data/pair HOME_MOUNT
+    printf 'HOME_MOUNT_RO=~/data/guard\n' > "$proj/.c3c/env"
+    hm_expect_accept "HOME の祖先が symlink でも止めない: HOME_MOUNT_RO=~/data/guard" "$real_top/data/guard" /home/node/data/guard HOME_MOUNT_RO
+  }
+  hm_ancestor_link_case
+
   # 相対パスの秘密の置き場などは、つなぐ範囲と比べられないので止める（#260 の PR 後レビュー）。
   mkdir -p "$proj/rsec"; chmod 700 "$proj/rsec"; printf '[user]\n' > "$proj/rgc"
   for value in 'SECRETS_DIR=rsec' 'GITCONFIG_FILE=rgc'; do

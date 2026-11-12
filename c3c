@@ -2306,18 +2306,62 @@ home_mount_resolve() {
   return 0
 }
 
-# 比べる対象のパスを、~ を展開して 2 つの形で出す（1 行ずつ）: realpath -m の実体（祖先の symlink も解決し、
-# 未作成でもよい）と、realpath -ms の綴り（symlink を解決しない）。空か相対パスなら何も出さない。
-# 綴りも比べるのは、守っている領域を指す symlink が rw の中にあると、コンテナから symlink を差し替えて
-# 次の起動の参照先を変えられるため（#259 の PR 前レビュー）。
-home_mount_paths() {
-  local path="$1" form
+# 比べる対象のパスを、~ を展開して _hm_forms に足す: realpath -ms の綴り（symlink を解決しない）、
+# 解決の途中で通るすべての symlink の位置、realpath -m の実体（祖先の symlink も解決し、未作成でもよい）。
+# 綴りと途中の symlink も比べるのは、守っている領域へ向かう symlink が rw の中にあると、コンテナから
+# 差し替えて次の起動の参照先を変えられるため（#259 の PR 前レビュー、途中の段は #260 の PR 後レビュー）。
+# 両端は標準の realpath で出し、途中の段は readlink で 1 段ずつ辿って見つける。辿った終点が realpath -m と
+# 一致しなければ失敗にする（自前の辿り方が標準の解決とずれたら、比べずに通さない）。
+# 空なら何もしない。失敗は rc で返し、表示は呼び出し側がする: 2 = 相対パス、3 = 解決できない。
+home_mount_forms() {
+  local path="$1" spelled real resolved="" rest part link target hops=0
+  [[ -n "$path" ]] || return 0
   [[ "$path" == "~" ]] && path="$HOME"
   path="${path/#\~\//$HOME/}"
-  [[ "$path" == /* ]] || return 0
-  for form in -m -ms; do
-    realpath "$form" -- "$path" 2>/dev/null || true
+  [[ "$path" == /* ]] || return 2
+  # 末尾の改行を落とさないよう番兵を付ける（#112）。realpath は 1 行を出して改行で終える。
+  spelled=$(realpath -ms -- "$path" && printf .) || return 3
+  real=$(realpath -m -- "$path" && printf .) || return 3
+  spelled="${spelled%$'\n.'}"; real="${real%$'\n.'}"
+  [[ -n "$spelled" && -n "$real" ]] || return 3
+  _hm_forms+=("$spelled")
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$part" in
+      '' | .) continue ;;
+      ..) resolved="${resolved%/*}"; continue ;;
+    esac
+    link="$resolved/$part"
+    if [[ -L "$link" ]]; then
+      _hm_forms+=("$link")
+      (( ++hops <= 40 )) || return 3
+      target=$(readlink -- "$link" && printf .) || return 3
+      target="${target%$'\n.'}"
+      [[ -n "$target" ]] || return 3
+      [[ "$target" == /* ]] && resolved=""
+      rest="$target/$rest"
+      continue
+    fi
+    resolved="$link"
   done
+  [[ "${resolved:-/}" == "$real" ]] || return 3
+  _hm_forms+=("$real")
+}
+
+# home_mount_forms() の結果を _hm_forms に置き直す。失敗したら止める（比べる対象を欠いたまま通さない）。
+# $1 = 表示に使うキー名、$2 = パス。
+home_mount_collect() {
+  local label="$1" path="$2" rc=0
+  _hm_forms=()
+  home_mount_forms "$path" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2) guard_fail "ERROR: HOME_MOUNT か HOME_MOUNT_RO を使うときは、$label=$path を絶対パスか ~/ 始まりで指定してください（相対パスでは、つなぐ範囲と重なるかを比べられません）。起動を中止します。" || return 1 ;;
+    *) guard_fail "ERROR: $label=$path のパスを解決できません（symlink のループなど）。HOME_MOUNT・HOME_MOUNT_RO と重なるかを比べられないため、起動を中止します。" || return 1 ;;
+  esac
+  return 1
 }
 
 # 2 つの絶対パスが一致するか、片方がもう片方を含むか。/ はすべてと重なる。
@@ -2331,9 +2375,10 @@ guard_home_mounts() {
   unset C3C_HOME_MOUNT_SOURCE C3C_HOME_MOUNT_TARGET C3C_HOME_MOUNT_RO_SOURCE C3C_HOME_MOUNT_RO_TARGET
   [[ -n "${HOME_MOUNT:-}" || -n "${HOME_MOUNT_RO:-}" ]] || return 0
   local _hm_source _hm_target _hm_spelled
+  local -a _hm_forms=()
   local rw_source rw_target rw_spelled ro_source ro_target ro_spelled key source spelled target alias
   local item path mine other config_rc=0
-  local -a protected=() credentials=() own=() forms=()
+  local -a protected=() credentials=() own=()
   home_mount_resolve HOME_MOUNT || return 1
   rw_source="$_hm_source"; rw_target="$_hm_target"; rw_spelled="$_hm_spelled"
   home_mount_resolve HOME_MOUNT_RO || return 1
@@ -2363,18 +2408,26 @@ guard_home_mounts() {
   resolve_claude_config_base || config_rc=$?
   # 秘密と認証の置き場。どちらのキーでも、重なれば止める（別の位置に見せると、パスで隠している Copilot の
   # sandbox から読めるようになるため。#259 の PR 前レビュー）。
+  # 基点の .claude.json も入れる（通常ファイルへの symlink を許すので、実体が別の位置にありうる。#260 の PR 後レビュー）。
   if [[ "$config_rc" == 0 ]]; then
-    mapfile -t -O "${#credentials[@]}" credentials < <(
-      home_mount_paths "$CLAUDE_CONFIG_BASE_REAL/.claude"; home_mount_paths "${CLAUDE_CONFIG_BASE_HOST%/}/.claude")
+    for item in "$CLAUDE_CONFIG_BASE_REAL/.claude" "${CLAUDE_CONFIG_BASE_HOST%/}/.claude" \
+                "$CLAUDE_CONFIG_BASE_REAL/.claude.json" "${CLAUDE_CONFIG_BASE_HOST%/}/.claude.json"; do
+      home_mount_collect CLAUDE_CONFIG_DIR "$item" || return 1
+      credentials+=("${_hm_forms[@]}")
+    done
   fi
-  for item in "${SECRETS_DIR:-}" "${CODEX_DIR:-}" "${CODEX_DIR_SPELLED:-}"; do
-    mapfile -t -O "${#credentials[@]}" credentials < <(home_mount_paths "$item")
+  for item in "SECRETS_DIR|${SECRETS_DIR:-}" "CODEX_DIR|${CODEX_DIR:-}" "CODEX_DIR|${CODEX_DIR_SPELLED:-}"; do
+    home_mount_collect "${item%%|*}" "${item#*|}" || return 1
+    credentials+=("${_hm_forms[@]}")
   done
   # HOME_MOUNT（rw）だけが止まる、:ro で守っているものとホストで実行・参照されるもの。既存の rw マウントは
   # 警告に留めている（README「ホストの Claude Code 設定の読み取り専用保護」の限界 (1)）が、新しいキーは最初から塞ぐ。
-  for item in "${GITCONFIG_FILE:-}" "${AGENTS_DIR:-}" "${AGENTS_DIR_SPELLED:-}" "$HOME/.codex/plugins/cache" \
-              "$RUN_DIR" "$CC_STATE_DIR" "$ro_source" "$ro_spelled"; do
-    mapfile -t -O "${#protected[@]}" protected < <(home_mount_paths "$item")
+  # 相対パスの GITCONFIG_FILE も、HOME_MOUNT_RO だけのときを含めて止める（比べられないため）。
+  for item in "GITCONFIG_FILE|${GITCONFIG_FILE:-}" "AGENTS_DIR|${AGENTS_DIR:-}" "AGENTS_DIR|${AGENTS_DIR_SPELLED:-}" \
+              "HOME の .codex/plugins/cache|$HOME/.codex/plugins/cache" "RUN_DIR|$RUN_DIR" "state directory|$CC_STATE_DIR" \
+              "HOME_MOUNT_RO|$ro_source" "HOME_MOUNT_RO|$ro_spelled"; do
+    home_mount_collect "${item%%|*}" "${item#*|}" || return 1
+    protected+=("${_hm_forms[@]}")
   done
 
   for key in HOME_MOUNT HOME_MOUNT_RO; do
@@ -2404,8 +2457,10 @@ guard_home_mounts() {
     [[ -n "$source" ]] || continue
     for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}"; do
       [[ -n "$other" ]] || continue
-      mapfile -t forms < <(home_mount_paths "$other")
-      path="${forms[0]:-}"
+      # 警告だけの比較なので、解決できない値（相対パスなど）は比べずに飛ばす。
+      _hm_forms=()
+      home_mount_forms "$other" || continue
+      path="${_hm_forms[-1]:-}"
       [[ -n "$path" && -d "$path" ]] || continue
       if home_mount_overlap "$source" "$path"; then
         guard_warn "WARNING: $key=$source と $other の範囲が重なるため、別の rw マウント経由でも書けます。"

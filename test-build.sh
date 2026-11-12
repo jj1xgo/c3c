@@ -2517,16 +2517,17 @@ run_home_mount_launcher_tests() {
   ln -s "$home/data/pair" "$home/s2"
   real_home="$(cd "$home" && pwd -P)"
 
-  # 異常系: 起動は rc≠0・ERROR に続いてキー名・compose へ到達しない。--check も rc≠0 と同じ文字列。
+  # 異常系: 起動は rc≠0・同じ ERROR 行にキー名が語として現れる（HOME_MOUNT は HOME_MOUNT_RO の一部に一致しない）・
+  # compose へ到達しない。--check も rc≠0 と同じ条件。別のガードの ERROR と INFO のキー名の一覧の組では通らない。
   # 引数: $1=期待するキー名、$2=説明。env は呼び出し側が $proj/.c3c/env に書く。
   hm_expect_reject() {
     run_launcher
     check "$2（起動）" \
-      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"$4"* ]] && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root" "$1"
+      bash -c '[ "$1" != 0 ] && grep -F "ERROR:" <<< "$2" | grep -qE "(^|[^A-Z_])$4([^A-Z_]|\$)" && [ ! -e "$3/compose-env" ]' _ "$rc" "$out" "$root" "$1"
     printf '%s\n' "$out" >> "$LOG_FILE"
     run_launcher_check
     check "$2（--check）" \
-      bash -c '[ "$1" != 0 ] && [[ "$2" == *"ERROR:"*"$3"* ]]' _ "$rc" "$out" "$1"
+      bash -c '[ "$1" != 0 ] && grep -F "ERROR:" <<< "$2" | grep -qE "(^|[^A-Z_])$3([^A-Z_]|\$)"' _ "$rc" "$out" "$1"
   }
 
   # 正常系
@@ -2648,6 +2649,42 @@ run_home_mount_launcher_tests() {
     printf '%s\nHOME_MOUNT=~/lnk\n' "$value" > "$proj/.c3c/env"
     hm_expect_reject HOME_MOUNT "守っている領域を指す symlink が HOME_MOUNT の中にあると止まる: $value"
   done
+
+  # 解決の途中の段にある symlink が HOME_MOUNT の中にあっても止める（綴りと実体の両端は外にある。#260 の PR 後レビュー）。
+  mkdir -p "$home/mc" "$home/cc2" "$home/realcc"
+  printf '{}\n' > "$home/cc2/.claude.json"
+  ln -s "$home/mc/cmid" "$home/cc2/.claude"; ln -s "$home/realcc" "$home/mc/cmid"
+  ln -s "$home/mc/gmid" "$home/gc2"; ln -s "$home/dot/gitconfig" "$home/mc/gmid"
+  ln -s "$home/mc/smid" "$home/sec2"; ln -s "$home/secrets/c3c" "$home/mc/smid"
+  for value in 'CLAUDE_CONFIG_DIR=~/cc2' 'GITCONFIG_FILE=~/gc2' 'SECRETS_DIR=~/sec2'; do
+    printf '%s\nHOME_MOUNT=~/mc\n' "$value" > "$proj/.c3c/env"
+    hm_expect_reject HOME_MOUNT "解決の途中の symlink が HOME_MOUNT の中にあると止まる: $value"
+  done
+
+  # 相対パスの秘密の置き場などは、つなぐ範囲と比べられないので止める（#260 の PR 後レビュー）。
+  mkdir -p "$proj/rsec"; chmod 700 "$proj/rsec"; printf '[user]\n' > "$proj/rgc"
+  for value in 'SECRETS_DIR=rsec' 'GITCONFIG_FILE=rgc'; do
+    for key in HOME_MOUNT HOME_MOUNT_RO; do
+      printf '%s\n%s=~/data/pair\n' "$value" "$key" > "$proj/.c3c/env"
+      hm_expect_reject "$key" "相対パスの守っている領域があると止まる: $value と $key"
+    done
+  done
+
+  # 守っている領域のパスを解決できない（symlink のループ）と、比べずに通さず止める（#260 の PR 後レビュー）。
+  ln -s "$home/cxa" "$home/.codex"; ln -s "$home/.codex" "$home/cxa"
+  printf 'HOME_MOUNT=~/data/pair\n' > "$proj/.c3c/env"
+  hm_expect_reject HOME_MOUNT "守っている領域のパスが symlink のループで解決できないと止まる"
+  rm -- "$home/.codex" "$home/cxa"
+
+  # 基点の .claude.json の実体も秘密と認証の置き場に入れる（dotfile 管理の symlink。#260 の PR 後レビュー）。
+  mkdir -p "$home/dotf"
+  mv -- "$home/.claude.json" "$home/dotf/claude.json"
+  ln -s "$home/dotf/claude.json" "$home/.claude.json"
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    printf '%s=~/dotf\n' "$key" > "$proj/.c3c/env"
+    hm_expect_reject "$key" "基点の .claude.json の実体と重なると止まる: $key=~/dotf"
+  done
+  rm -- "$home/.claude.json"; mv -- "$home/dotf/claude.json" "$home/.claude.json"
 
   # 異常系（両方のキー）
   for key in HOME_MOUNT HOME_MOUNT_RO; do

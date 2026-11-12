@@ -168,15 +168,15 @@ run_case '9 ファイル（long syntax）: .agents が .agents-x に化けてい
 [[ "${merged_short/\/home\/node\/.agents:ro/\/home\/node\/.agents-x:ro}" != "$merged_short" \
   && "${merged_long/target: \/home\/node\/.agents$'\n'/target: \/home\/node\/.agents-x$'\n'}" != "$merged_long" \
   && "$merged_no_ipv6" != "$merged_short" ]] || { echo 'FAIL - 9 ファイルの対照 fixture の生成'; fail=$((fail + 1)); }
-# HOME_MOUNT（rw）と HOME_MOUNT_RO（:ro）の 2 本（#259）。rw の側は bind が残り、:ro が付かないこと。
-run_case '9 ファイル: 2 つの home-mount があれば合格（短縮表記）' merged 0 "$merged_short"
-run_case '9 ファイル: 2 つの home-mount があれば合格（long syntax）' merged 0 "$merged_long"
+# HOME_MOUNT（rw）と HOME_MOUNT_RO（:ro）の 2 本（#259）。rw の側は bind が残り、:ro が付かないこと
+# （合格の側は上の短縮表記と long syntax の合格ケースが兼ねる）。
 hm_cases=(
   "lint-home-mount-ro が無ければ失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed '/lint-home-mount-ro:ro$/d')"
   "lint-home-mount が無ければ失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed '/lint-home-mount$/d')"
   "lint-home-mount-ro が rw なら失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed 's#lint-home-mount-ro:ro$#lint-home-mount-ro:rw#')"
   "lint-home-mount が ro なら失敗（短縮表記）|$(printf '%s\n' "$merged_short" | sed 's#lint-home-mount$#lint-home-mount:ro#')"
   "lint-home-mount が ro なら失敗（long syntax）|$(printf '%s\n' "$merged_long" | sed '/target: \/home\/node\/lint-home-mount$/a\        read_only: true')"
+  "lint-home-mount-ro の read_only が無ければ失敗（long syntax）|$(printf '%s\n' "$merged_long" | sed '/target: \/home\/node\/lint-home-mount-ro$/{n;d}')"
   "lint-home-mount が無ければ失敗（long syntax）|$(printf '%s\n' "$merged_long" | sed 's#target: /home/node/lint-home-mount$#target: /home/node/other#')"
 )
 for hm_case in "${hm_cases[@]}"; do

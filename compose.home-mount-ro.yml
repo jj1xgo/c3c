@@ -1,0 +1,16 @@
+# launcher が guard_home_mounts() で HOME_MOUNT_RO を検証したときだけ追加する固定設定（#259）。
+# ホストの $HOME 配下のディレクトリ 1 つを、コンテナ内の ~（/home/node）配下の同じ相対位置に :ro で付ける。
+# この :ro はこのマウント経由の書き換えを防ぐだけで、同じ実体が別の rw マウントからも見えれば書ける
+# （launcher が WARNING を出す）。HOME_MOUNT（rw）との入れ子は launcher が拒否する。
+# source は launcher が実体解決して export した値、target は launcher が綴りから算出して export する。
+# ${VAR:?} は export 漏れを config 段階で失敗させるための保険で、compose provider によっては
+# 空文字として通す可能性がある。保護の本体は launcher 側の unset と、検証後だけの export にある。
+services:
+  claude-auth-workspace:
+    volumes:
+      - type: bind
+        source: ${C3C_HOME_MOUNT_RO_SOURCE:?launcher が export する}
+        target: ${C3C_HOME_MOUNT_RO_TARGET:?launcher が export する}
+        read_only: true
+        bind:
+          create_host_path: false

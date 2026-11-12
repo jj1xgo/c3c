@@ -52,8 +52,9 @@ CHECK_HAS_ERROR=0
 CHECK_HAS_WARN=0
 
 # launcher が設定から選ぶ固定 Compose override の -f 引数列（compose.ipv6.yml・
-# compose.plugins-alias.yml・compose.shared-home.yml・compose.shared-host.yml・compose.agents.yml・compose.codex-plugins.yml）。
-# guard_ipv6()・guard_plugins_alias()・guard_shared_home_alias()・guard_agents_dir()・guard_codex_host_plugins() が += で積み、
+# compose.plugins-alias.yml・compose.shared-home.yml・compose.shared-host.yml・compose.agents.yml・compose.codex-plugins.yml・
+# compose.home-mount.yml・compose.home-mount-ro.yml）。guard_ipv6()・guard_plugins_alias()・guard_shared_home_alias()・
+# guard_agents_dir()・guard_codex_host_plugins()・guard_home_mounts() が += で積み、
 # dispatch の build と run の両方へ同じ配列を渡す（片方だけだと -b の build と直後の
 # run で構成が食い違う）。--check は check_one_project() の冒頭でプロジェクトごとに
 # リセットする。任意の podman 引数は受け付けない。
@@ -759,6 +760,8 @@ ENV_FILE_ALLOWED_KEYS=(
   SECRETS_DIR
   CODEX_DIR
   CODEX_HOST_PLUGINS
+  HOME_MOUNT
+  HOME_MOUNT_RO
 )
 readonly -a ENV_FILE_ALLOWED_KEYS
 load_env_file() {
@@ -2240,6 +2243,164 @@ prepare_codex_host_plugins() {
   return 0
 }
 
+# HOME 配下のディレクトリ 1 つを、コンテナ内の ~（/home/node）配下の同じ相対位置に rw（HOME_MOUNT）か
+# :ro（HOME_MOUNT_RO）で付ける opt-in（#259）。ホストの絶対パスの別名は作らない。
+# 綴りは guard_shared_home_alias() と同じ規則（HOME 配下・HOME 自体と . で始まる設定領域を除く・..・相対・
+# コロン・制御文字の拒否）で検査し、cd -P で解決した実体にも同じ条件を課す（HOME 配下の symlink で
+# ~/.ssh や / を見せる経路を塞ぐ。代わりに HOME の外を指す symlink は使えない）。
+# destination は symlink 未解決の綴りから算出し、source は実体にする。
+# 結果は _hm_source と _hm_target に置く（値が空なら両方とも空）。
+home_mount_resolve() {
+  local key="$1" value spelled host_home relative real real_home real_relative
+  _hm_source=""
+  _hm_target=""
+  value="${!key:-}"
+  [[ -n "$value" ]] || return 0
+  local usage="$key は HOME 配下の存在するディレクトリ（HOME 自体と . で始まる設定領域を除く）を、絶対パスか ~/ 始まりで 1 つ指定してください。..・相対パス・コロン・制御文字は使えません。起動を中止します。"
+  # shellcheck disable=SC2088  # 展開前の値そのもの（~ と ~/）との比較が意図
+  if [[ "$value" == "~" || "$value" == "~/" ]]; then
+    guard_fail "ERROR: $key=$value は HOME 自体です。$usage" || return 1
+  fi
+  value="${value/#\~\//$HOME/}"
+  if ! spelled=$(normalize_instruction_path "$value") ||
+     ! host_home=$(normalize_instruction_path "$HOME") ||
+     [[ "$spelled" != "$host_home"/* ]]; then
+    guard_fail "ERROR: $key=${!key} を使えません。$usage" || return 1
+  fi
+  relative="${spelled#"$host_home"/}"
+  if [[ "$relative" == .* ]]; then
+    guard_fail "ERROR: $key=${!key} は HOME の設定領域（. で始まる項目）です。$usage" || return 1
+  fi
+  if [[ ! -d "$spelled" ]]; then
+    guard_fail "ERROR: $key=$spelled が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+  fi
+  # 実体の末尾の改行を落とさないよう、コマンド置換の中で $PWD に番兵を付ける（#112）。
+  if ! real=$(CDPATH='' cd -P -- "$spelled" 2>/dev/null && printf '%s.' "$PWD") ||
+     ! real_home=$(CDPATH='' cd -P -- "$HOME" 2>/dev/null && printf '%s.' "$PWD"); then
+    guard_fail "ERROR: $key=$spelled を解決できません。起動を中止します。" || return 1
+  fi
+  real="${real%.}"
+  real_home="${real_home%.}"
+  if [[ "$real" == *:* || "$real" =~ [[:cntrl:]] ]]; then
+    guard_fail "ERROR: $key=$spelled の実体の名前にコロンか制御文字が含まれます。実体の名前を変えてください。起動を中止します。" || return 1
+  fi
+  # pwd -P は先頭 // を保持するので / に正規化する（guard_codex_host_plugins() と同じ）。末尾 / は / 自体だけ。
+  while [[ "$real" == //* ]]; do real="${real#/}"; done
+  while [[ "$real_home" == //* ]]; do real_home="${real_home#/}"; done
+  real_home="${real_home%/}"
+  real_relative="${real#"$real_home"/}"
+  if [[ -z "$real_home" || "$real" != "$real_home"/* || "$real_relative" == .* ]]; then
+    guard_fail "ERROR: $key=$spelled の実体（$real）が HOME 配下にないか、HOME 自体か、HOME の設定領域（. で始まる項目）です。HOME の外を指す symlink は使えません。起動を中止します。" || return 1
+  fi
+  _hm_source="$real"
+  _hm_target="/home/node/$relative"
+  return 0
+}
+
+# 比べる対象のパスを実体にする（存在しなければ ~/ を展開した綴りのまま。空なら空）。先頭 // と末尾 / を除く。
+home_mount_compare_path() {
+  local path="${1/#\~\//$HOME/}"
+  [[ -n "$path" ]] || return 0
+  if [[ -d "$path" ]]; then
+    path=$(CDPATH='' cd -P -- "$path" 2>/dev/null && pwd) || path="${1/#\~\//$HOME/}"
+  fi
+  while [[ "$path" == //* ]]; do path="${path#/}"; done
+  printf '%s\n' "${path%/}"
+}
+
+guard_home_mounts() {
+  unset C3C_HOME_MOUNT_SOURCE C3C_HOME_MOUNT_TARGET C3C_HOME_MOUNT_RO_SOURCE C3C_HOME_MOUNT_RO_TARGET
+  [[ -n "${HOME_MOUNT:-}" || -n "${HOME_MOUNT_RO:-}" ]] || return 0
+  local rw_source rw_target ro_source ro_target key source target alias protected other other_real git_real
+  local config_rc=0 config_claude=""
+  home_mount_resolve HOME_MOUNT || return 1
+  rw_source="$_hm_source"; rw_target="$_hm_target"
+  home_mount_resolve HOME_MOUNT_RO || return 1
+  ro_source="$_hm_source"; ro_target="$_hm_target"
+
+  # 2 つのキーの入れ子は拒否する。rw 側から中身を symlink に差し替えて :ro を外せるため。
+  if [[ -n "$rw_source" && -n "$ro_source" ]] &&
+     { instruction_paths_overlap "$rw_source" "$ro_source" || instruction_paths_overlap "$rw_target" "$ro_target"; }; then
+    guard_fail "ERROR: HOME_MOUNT（$rw_source -> $rw_target）と HOME_MOUNT_RO（$ro_source -> $ro_target）の source かマウント先が重なります。重ならない 2 つのディレクトリを指定してください。起動を中止します。" || return 1
+  fi
+
+  # Claude 設定の基点（CLAUDE_CONFIG_DIR）は prepare_claude_config_ro() と同じ関数で解決する。
+  resolve_claude_config_base || config_rc=$?
+  if [[ "$config_rc" == 0 ]]; then
+    config_claude=$(home_mount_compare_path "$CLAUDE_CONFIG_BASE_REAL/.claude")
+  fi
+
+  # マウント先が SHARED_MOUNT の ~ 側の別名と重なると、互いの内容を隠す。ホストの HOME が /home/node なら
+  # ホスト絶対パスの別名と plugin 別名（どちらも Claude 設定の .claude の下か、SHARED_MOUNT の綴り）も同じ場所に来る。
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    if [[ "$key" == HOME_MOUNT ]]; then target="$rw_target"; else target="$ro_target"; fi
+    [[ -n "$target" ]] || continue
+    for alias in "${CLAUDE_SHARED_HOME_PATH:-}" "${CLAUDE_SHARED_HOST_PATH:-}"; do
+      [[ -n "$alias" ]] || continue
+      if instruction_paths_overlap "$target" "${alias%/}"; then
+        guard_fail "ERROR: $key のマウント先 $target が SHARED_MOUNT の別名 $alias と重なります。起動を中止します。" || return 1
+      fi
+    done
+    if [[ "$(normalize_instruction_path "$HOME" 2>/dev/null)" == /home/node && "$config_rc" == 0 ]] &&
+       instruction_paths_overlap "$target" "${CLAUDE_CONFIG_BASE_HOST%/}/.claude"; then
+      guard_fail "ERROR: $key のマウント先 $target が Claude の設定（${CLAUDE_CONFIG_BASE_HOST%/}/.claude）と重なります。起動を中止します。" || return 1
+    fi
+  done
+
+  # HOME_MOUNT（rw）は、:ro で守っているものとホストで実行・参照されるものを含んでも、その中にあっても止める。
+  # 既存の rw マウントは警告に留めている（README「ホストの Claude Code 設定の読み取り専用保護」の限界 (1)）が、
+  # 新しいキーは最初から塞ぐ。HOME_MOUNT_RO は読むだけなので比べない。
+  if [[ -n "$rw_source" ]]; then
+    for protected in "$config_claude" \
+                     "$(home_mount_compare_path "${SECRETS_DIR:-}")" \
+                     "$(home_mount_compare_path "${AGENTS_DIR:-}")" \
+                     "$(home_mount_compare_path "$HOME/.codex/plugins/cache")" \
+                     "$(home_mount_compare_path "$RUN_DIR")" \
+                     "$(home_mount_compare_path "$CC_STATE_DIR")" \
+                     "$ro_source"; do
+      [[ -n "$protected" ]] || continue
+      if instruction_paths_overlap "$rw_source" "$protected"; then
+        guard_fail "ERROR: HOME_MOUNT=$rw_source が c3c の守っている領域（$protected）と重なります。コンテナから書けると :ro の保護やホストの設定・秘密を壊せるため、重ならないディレクトリを指定してください。起動を中止します。" || return 1
+      fi
+    done
+    # GITCONFIG_FILE はファイル。ファイル自身の symlink も解決し、HOME_MOUNT が含む側だけを比べる。
+    if [[ -n "${GITCONFIG_FILE:-}" ]] && git_real=$(realpath -e -- "${GITCONFIG_FILE/#\~\//$HOME/}" 2>/dev/null); then
+      while [[ "$git_real" == //* ]]; do git_real="${git_real#/}"; done
+      if [[ "$git_real" == "$rw_source"/* ]]; then
+        guard_fail "ERROR: HOME_MOUNT=$rw_source が GITCONFIG_FILE の実体（$git_real）を含みます。コンテナから書けるとホストの git 設定を壊せるため、重ならないディレクトリを指定してください。起動を中止します。" || return 1
+      fi
+    fi
+  fi
+
+  # 別の rw マウントと source が重なると、そちらの経路から書ける（guard_agents_dir() と同じく警告だけ）。
+  for key in HOME_MOUNT HOME_MOUNT_RO; do
+    if [[ "$key" == HOME_MOUNT ]]; then source="$rw_source"; else source="$ro_source"; fi
+    [[ -n "$source" ]] || continue
+    for other in "${WORKING_DIR:-}" "${EXTRA_MOUNT:-}" "${SHARED_MOUNT:-}" "${CODEX_DIR:-}"; do
+      other_real=$(home_mount_compare_path "$other")
+      [[ -n "$other_real" && -d "$other_real" ]] || continue
+      if instruction_paths_overlap "$source" "$other_real"; then
+        guard_warn "WARNING: $key=$source と $other の範囲が重なるため、別の rw マウント経由でも書けます。"
+      fi
+    done
+    if [[ "$key" == HOME_MOUNT_RO && -n "$config_claude" ]] && instruction_paths_overlap "$source" "$config_claude"; then
+      guard_warn "WARNING: $key=$source と $config_claude の範囲が重なるため、別の rw マウント経由でも書けます。"
+    fi
+  done
+
+  if [[ -n "$rw_source" ]]; then
+    export C3C_HOME_MOUNT_SOURCE="$rw_source" C3C_HOME_MOUNT_TARGET="$rw_target"
+    COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.home-mount.yml")
+    [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[OK]   HOME_MOUNT: $rw_source -> $rw_target (rw)"
+  fi
+  if [[ -n "$ro_source" ]]; then
+    export C3C_HOME_MOUNT_RO_SOURCE="$ro_source" C3C_HOME_MOUNT_RO_TARGET="$ro_target"
+    COMPOSE_OVERRIDE_ARGS+=(-f "$RUN_DIR/compose.home-mount-ro.yml")
+    [[ "${CHECK_MODE:-0}" == 1 ]] && echo "[OK]   HOME_MOUNT_RO: $ro_source -> $ro_target (ro)"
+  fi
+  return 0
+}
+
 # プロジェクト設定の env（.c3c/env）は運用者が書く信頼入力として扱う（`#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
@@ -2252,7 +2413,7 @@ guard_env_boundary_keys() {
     guard_warn "WARNING: $ENV_FILE で ${nf_key%%=*}=1 が設定されています。エグレスファイアウォールは無効化されます。"
   fi
   local -a boundary_keys_found=()
-  for key in EXTRA_MOUNT SHARED_MOUNT SHARED_MOUNT_HOME_ALIAS AGENTS_DIR SECRETS_DIR GITCONFIG_FILE CODEX_DIR CODEX_HOST_PLUGINS CLAUDE_CONFIG_DIR; do
+  for key in EXTRA_MOUNT SHARED_MOUNT SHARED_MOUNT_HOME_ALIAS AGENTS_DIR SECRETS_DIR GITCONFIG_FILE CODEX_DIR CODEX_HOST_PLUGINS HOME_MOUNT HOME_MOUNT_RO CLAUDE_CONFIG_DIR; do
     if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
       boundary_keys_found+=("$key")
     fi
@@ -2472,7 +2633,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | copilot-bwrap-shim.sh | copilot-launcher.sh | copilot-settings.json | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.codex-preflight.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | copilot-bwrap-shim.sh | copilot-launcher.sh | copilot-settings.json | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.home-mount.yml | compose.home-mount-ro.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -2520,6 +2681,8 @@ ASSET_HASH_TARGETS=(
   compose.shared-host.yml
   compose.agents.yml
   compose.codex-plugins.yml
+  compose.home-mount.yml
+  compose.home-mount-ro.yml
   compose.codex-preflight.yml
   git-askpass.sh
   Dockerfile.claude
@@ -2805,6 +2968,7 @@ check_one_project() {
   guard_shared_home_alias || true
   guard_agents_dir || true
   guard_codex_host_plugins || true
+  guard_home_mounts || true
   guard_env_boundary_keys || true
   guard_base_image || true
   guard_ipv6 || true
@@ -3205,6 +3369,7 @@ guard_shared_mount
 guard_shared_home_alias
 guard_agents_dir
 guard_codex_host_plugins
+guard_home_mounts
 guard_env_boundary_keys
 guard_base_image
 guard_ipv6

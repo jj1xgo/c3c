@@ -449,7 +449,7 @@ class ResolverConsistencyTests(ConfigCase):
         baseline_run, baseline_staged = self.run_and_capture('claude', str(self.proj))
         for name in ('entrypoint.sh', 'init-firewall.sh', 'git-askpass.sh', 'validate-build-input.sh',
                      'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'ipv6-firewall.py', 'firewall-refresh.py',
-                     'compose.ipv6.yml', 'compose.codex-preflight.yml'):
+                     'compose.ipv6.yml', 'compose.codex-preflight.yml', 'compose.home-mount.yml', 'compose.home-mount-ro.yml'):
             (self.new / name).write_text('#!/bin/sh\nexit 99\n')
         run, staged = self.run_and_capture('claude', str(self.proj))
         self.assertEqual(staged, baseline_staged, 'project 側の同名ファイルはステージされない')

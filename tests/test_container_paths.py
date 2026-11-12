@@ -10,7 +10,7 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 CONTAINER_SIDE = ('Dockerfile.claude', 'compose.yml', 'compose.ipv6.yml', 'compose.codex-preflight.yml',
                   'compose.plugins-alias.yml', 'compose.shared-home.yml', 'compose.shared-host.yml',
-                  'compose.agents.yml', 'compose.codex-plugins.yml', 'entrypoint.sh', 'init-firewall.sh',
+                  'compose.agents.yml', 'compose.codex-plugins.yml', 'compose.home-mount.yml', 'compose.home-mount-ro.yml', 'entrypoint.sh', 'init-firewall.sh',
                   'ipv6-firewall.py', 'firewall-refresh.py', 'git-askpass.sh', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json',
                   'codex-mcp-audit.py', 'claude-project-audit.py')
 LEGACY = re.compile(r'/etc/claude-container|\.config/claude-container|CLAUDE_CONTAINER_|claude-container\.')

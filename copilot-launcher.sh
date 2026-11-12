@@ -28,7 +28,7 @@ readonly CONTAINER_HOME=/home/node
 readonly COPILOT_BWRAP_DIR=/usr/local/libexec/c3c/copilot-bwrap
 readonly COPILOT_JS=/usr/local/lib/node_modules/@github/copilot/npm-loader.js
 # c3c が sandbox を canary で確かめた Copilot の版（README「変更後の確認」の Copilot の受け入れ）。合格した版でだけ上げる。
-readonly VERIFIED_COPILOT_VERSION=1.0.108
+readonly VERIFIED_COPILOT_VERSION=1.0.109
 readonly COPILOT_HOME=/home/node/.copilot
 readonly SETTINGS_TEMPLATE=/etc/c3c/copilot-settings.json
 readonly TOKEN_FILE=/home/node/.config/c3c/secrets/COPILOT_PAT

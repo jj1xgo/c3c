@@ -45,6 +45,11 @@ MONTH_RE = re.compile(r'[0-9]{4}-[0-9]{2}', re.ASCII)
 # 行があるときだけ塞いだ結果と読む（sandbox で /dev/null に書けないと、読めても redirect で rc 1 になるため）。
 CAT_RC_RE = re.compile(r'cat (\S+) >/dev/null; echo "(' + '|'.join(RC_KEYS) + r')=\$\?"')
 CAT_DENIED = ('No such file or directory', 'Permission denied')
+# curl の出力の行の始まり: stderr の「curl: (N) …」（前に stdout の状態コードが付くことがある）か、
+# stdout の「<状態コード> curl_rc=…」。名前に curl を含むインターフェースの行（curl0 など）とは分ける。
+CURL_START_RE = re.compile(r'(?:[0-9]{3})?curl: \(|[0-9]{3} curl_rc=', re.ASCII)
+# curl -w "%{http_code}" の状態コード。続く echo " curl_rc=$?" か、間に挟まった stderr の「curl: (」の直前の 3 桁。
+HTTP_CODE_RE = re.compile(r'(?<![0-9])([0-9]{3})(?= curl_rc=|curl: \()', re.ASCII)
 CREDITS_RE = re.compile(r'[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?', re.ASCII)
 
 
@@ -83,13 +88,13 @@ def _judge_output(content, outer_user, outer_net, command):
             reasons.append(f'{name} の名前空間の行が {len(found)} 個')
         elif found[0] == outer:
             reasons.append(f'{name} の名前空間が外側と同じ')
-    # ip -brief link の出力は、net: の行の次から、curl の出力（stderr の「curl: (6) …」か「000 curl_rc=…」）の
+    # ip -brief link の出力は、net: の行の次から、curl の出力（stderr の「curl: (6) …」か「000 curl_rc=…」の形）の
     # 行の前まで。その範囲の行は、どれもインターフェースの行として読めなければならない。
     net_rows = [i for i, line in enumerate(lines) if NET_RE.fullmatch(line.strip())]
     if len(net_rows) == 1:
         section = []
         for line in lines[net_rows[0] + 1:]:
-            if 'curl' in line:
+            if CURL_START_RE.match(line):
                 break
             section.append(line.rstrip())
         unreadable = [line for line in section if not IFACE_RE.fullmatch(line)]
@@ -98,6 +103,11 @@ def _judge_output(content, outer_user, outer_net, command):
             reasons.append(f'ip -brief link の範囲に読めない行がある: {_one_line(repr(unreadable))}')
         elif ifaces != ['lo']:
             reasons.append(f'インターフェースが lo の 1 つだけでない: {_one_line(repr(ifaces))}')
+    # 状態コードが 000（通信できなかった）でなければ、curl_rc が 0 でなくても塞いだ結果と読まない
+    # （/dev/null に書けないと 200 curl_rc=23、ボディの途中の打ち切りで 200 curl_rc=28 になる）。
+    codes = HTTP_CODE_RE.findall(content)
+    if codes != ['000']:
+        reasons.append(f'curl の状態コードが 000 の 1 つだけでない: {_one_line(repr(codes))}')
     values = {}
     for match in KV_RE.finditer(content):
         values.setdefault(match.group(1), []).append(int(match.group(2)))

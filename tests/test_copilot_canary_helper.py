@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,11 @@ PASS_VALUES = {
     'environ': 'outer_environ=0',
     'w': 'w_rc=1',
 }
+
+
+def with_rc(key, name, code):
+    """合格の出力の key の行の rc だけを code に替える（ほかの条件で落ちないように、状態コードや cat の行は残す）。"""
+    return re.sub(rf'{name}=[0-9]+', f'{name}={code}', PASS_VALUES[key])
 
 
 def output(**overrides):
@@ -197,6 +203,29 @@ class JudgeTest(unittest.TestCase):
             with self.subTest(extra=extra):
                 self.assert_fail(make_events(output(link=LO_LINE + '\n' + extra)))
 
+    def test_interface_named_like_curl(self):
+        # 範囲の終わりは curl の出力の形の行だけで決める。名前に curl を含むインターフェースで範囲を切らない
+        # （切ると、その行と後ろの eth0 を読まずに lo だけと判定してしまう）。
+        for extra in ('curl0            UP             02:00:00:00:00:01 <BROADCAST,UP,LOWER_UP> ',
+                      'curl0            UP             02:00:00:00:00:01 <BROADCAST,UP,LOWER_UP> \n'
+                      'eth0             UP             02:00:00:00:00:02 <BROADCAST,UP,LOWER_UP> '):
+            with self.subTest(extra=extra):
+                self.assert_fail(make_events(output(link=LO_LINE + '\n' + extra)))
+
+    def test_http_code_not_000(self):
+        # 通信できた（状態コードが 000 でない）のに curl の rc が 0 でない形は、塞いだ結果と読まない。
+        # 例: sandbox で /dev/null に書けないと 200 curl_rc=23、ボディの途中で打ち切られると 200 curl_rc=28。
+        cases = {
+            '23': 'curl: (23) Failure writing output to destination\n200 curl_rc=23',
+            '28': 'curl: (28) Operation timed out after 5000 milliseconds\n200 curl_rc=28',
+            'stderr の後ろ': '200curl: (23) Failure writing output to destination\n curl_rc=23',
+            '状態コードが無い': 'curl: (6) Could not resolve host: api.github.com\ncurl_rc=6',
+            '状態コードが 2 つ': '000 curl_rc=6\n000curl: (6) Could not resolve host: api.github.com',
+        }
+        for name, curl in cases.items():
+            with self.subTest(name=name):
+                self.assert_fail(make_events(output(curl=curl)))
+
     def test_real_container_output(self):
         # 2026-11-13 に opt-in のコンテナ（Copilot 1.0.109）で実際に出た bash の出力（名前空間の番号は外側と違う）。
         real = ('user:[4026533232]\nnet:[4026533179]\n'
@@ -253,13 +282,13 @@ class JudgeTest(unittest.TestCase):
     def test_rc_zero(self):
         for key, name in (('curl', 'curl_rc'), ('secret', 'secret_rc'), ('home', 'home_rc'), ('w', 'w_rc')):
             with self.subTest(key=name):
-                self.assert_fail(make_events(output(**{key: f'{name}=0'})))
+                self.assert_fail(make_events(output(**{key: with_rc(key, name, 0)})))
 
     def test_rc_127(self):
         for code in ('126', '127'):
             for key, name in (('curl', 'curl_rc'), ('secret', 'secret_rc'), ('home', 'home_rc'), ('w', 'w_rc')):
                 with self.subTest(key=name, code=code):
-                    self.assert_fail(make_events(output(**{key: f'{name}={code}'})))
+                    self.assert_fail(make_events(output(**{key: with_rc(key, name, code)})))
 
     def test_tok_len_nonzero(self):
         for tok in ('tok_len=40 gh_len=0', 'tok_len=0 gh_len=40'):

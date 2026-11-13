@@ -14,6 +14,8 @@
 # トークンは読まない（sandbox の中のコマンドが COPILOT_PAT を読めないことを確かめるだけ）。
 set -u
 set -o pipefail
+# 相対パスの cd が CDPATH で別の場所へ行き、パスを stdout に出すのを止める。
+unset -v CDPATH
 
 # 固定パスは環境変数で差し替えない。
 readonly COPILOT_BIN=/usr/local/bin/copilot
@@ -25,6 +27,9 @@ readonly SECRETS_DIR=/home/node/.config/c3c/secrets
 readonly HOME_MARK=/home/node/.copilot/.c3c-canary-mark
 readonly PYTHON3=/usr/bin/python3
 readonly FLOCK=/usr/bin/flock
+readonly SETSID=/usr/bin/setsid
+# 中断のとき、Copilot のプロセスのグループが TERM で終わるのを待つ上限（0.1 秒単位）。過ぎたら KILL する。
+readonly STOP_WAIT_TENTHS=50
 # 起動口が作業ディレクトリとして拒む sandbox の隠し場所（copilot-launcher.sh と同じ）。
 readonly SANDBOX_TMP=/tmp
 readonly MIN_CREDITS=30
@@ -39,7 +44,7 @@ case "${BASH_SOURCE[0]}" in
   */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
   *) script_dir=. ;;
 esac
-if ! script_dir="$(cd "$script_dir" && pwd -P)"; then
+if ! script_dir="$(cd -- "$script_dir" && pwd -P)"; then
   echo "ERROR: スクリプトの場所を解決できません。" >&2
   exit 2
 fi
@@ -96,8 +101,8 @@ fi
 if [ "$spent_log_set" -eq 1 ]; then
   [ -n "$spent_log" ] || usage "--spent-log が空です。"
   if [ -e "$spent_log" ] || [ -L "$spent_log" ]; then
-    if [ -L "$spent_log" ] || [ ! -f "$spent_log" ]; then
-      usage "--spent-log $spent_log は symlink でない通常のファイルにしてください。"
+    if [ -L "$spent_log" ] || [ ! -f "$spent_log" ] || [ ! -w "$spent_log" ]; then
+      usage "--spent-log $spent_log は symlink でない、書ける通常のファイルにしてください。"
     fi
   else
     case "$spent_log" in
@@ -110,8 +115,14 @@ if [ "$spent_log_set" -eq 1 ]; then
   fi
 fi
 [ -d "$dir" ] || usage "作業ディレクトリ $dir がありません。"
-if ! WORKDIR="$(cd "$dir" && pwd -P)" || [ -z "$WORKDIR" ]; then
+# 末尾の改行を $(...) に落とさせないよう番兵を付ける（copilot-launcher.sh と同じ）。
+if ! WORKDIR="$(cd -- "$dir" && pwd -P && printf x)" || [ "${WORKDIR%x}" = "$WORKDIR" ]; then
   usage "作業ディレクトリ $dir を解決できません。"
+fi
+WORKDIR="${WORKDIR%x}"
+WORKDIR="${WORKDIR%$'\n'}"
+if [ -z "$WORKDIR" ] || [ "${WORKDIR#/}" = "$WORKDIR" ] || [[ "$WORKDIR" == *[[:cntrl:]]* ]]; then
+  usage "作業ディレクトリに制御文字（改行・タブなど）を含む場所は使えません（起動口が拒むため）。"
 fi
 readonly WORKDIR
 readonly W_FILE="$WORKDIR/$W_FILE_NAME"
@@ -160,6 +171,13 @@ for leftover in "$HOME_MARK" "$W_FILE"; do
     fail_pre "$leftover が既にあります（前の受け入れの残りかもしれません。中身を見てから消してください）。"
   fi
 done
+# 陽性対照: 外側からは作業ディレクトリに試しのファイルを作れる（作れない場所では w_rc の合格に意味が無い）。
+if ! ( set -C; : > "$W_FILE" ) 2>/dev/null; then
+  fail_pre "作業ディレクトリ $WORKDIR に試しのファイルを作れません（書けない場所では、書き込みが塞がれたことを確かめられないため）。"
+fi
+if ! rm -f "$W_FILE" 2>/dev/null || [ -e "$W_FILE" ] || [ -L "$W_FILE" ]; then
+  fail_pre "試しのファイル $W_FILE を消せません。"
+fi
 readonly LOCK_FILE="$COPILOT_HOME/.c3c-launch.lock"
 if [ -L "$LOCK_FILE" ] || { [ -e "$LOCK_FILE" ] && [ ! -f "$LOCK_FILE" ]; }; then
   fail_pre "$LOCK_FILE が通常のファイルではありません（symlink を含む）。"
@@ -196,10 +214,33 @@ child_pid=""
 finished=0
 mark_written=0
 
+mark_intact() {
+  [ -f "$HOME_MARK" ] && [ ! -L "$HOME_MARK" ] && [ -r "$HOME_MARK" ]
+}
+
+# shellcheck disable=SC2329  # trap から呼ぶ on_interrupt が使う。
+stop_child() {
+  # Copilot を起こした setsid のプロセスのグループ（グループの番号は child_pid）を止める。
+  # 起動口は npm-loader.js を exec し、それが子を起こすので、直下の 1 つだけでなくグループに送る。
+  # TERM で終わらなければ上限の後に KILL する。グループの頭を wait で刈る前に送るので、番号は使い回されない。
+  local pid="$child_pid" i stat state
+  [ -n "$pid" ] || return 0
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+  for (( i = 0; i < STOP_WAIT_TENTHS; i++ )); do
+    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || break
+    state="${stat##*) }"
+    [ "${state:0:1}" = Z ] && break
+    sleep 0.1
+  done
+  kill -KILL -- "-$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  child_pid=""
+}
+
 run_launcher_version() {
   # 起動口を作業ディレクトリ $1 で --version で呼ぶ。stdout の 1 行目を version_out に入れ、rc を返す。
   local out rc
-  out="$(cd "$1" && "$COPILOT_BIN" --version 2>/dev/null)"
+  out="$(cd -- "$1" && "$COPILOT_BIN" --version 2>/dev/null)"
   rc=$?
   version_out="${out%%$'\n'*}"
   return "$rc"
@@ -270,11 +311,7 @@ on_interrupt() {
   # 後片付けの最中に 2 度目の Ctrl-C や TERM が来ても、片付けと記録を終える。
   trap '' INT TERM
   trap - EXIT
-  if [ -n "$child_pid" ]; then
-    kill -TERM "$child_pid" 2>/dev/null
-    wait "$child_pid" 2>/dev/null
-    child_pid=""
-  fi
+  stop_child
   echo "中断されました。後片付けをします。" >&2
   cleanup
   if [ "${#cleanup_reasons[@]}" -gt 0 ]; then
@@ -282,6 +319,9 @@ on_interrupt() {
   else
     echo "[合格] 後片付け"
   fi
+  for line in "${session_lines[@]}"; do
+    echo "$line"
+  done
   record_spent 不合格 1
   echo "全体: 不合格（中断）"
   exit 1
@@ -312,14 +352,20 @@ fi
 # 5. canary を N 回。
 prompt="$PROMPT_HEAD"$'\n'"$CANARY_COMMAND"
 for (( n = 1; n <= runs; n++ )); do
+  if ! mark_intact; then
+    # 目印が無いと cat が失敗して home_rc が合格に見えるので、打たずに確かめていないにする。
+    add_row "canary $n" 確かめていない "目印 $HOME_MARK が無い"
+    continue
+  fi
   if ! sid="$("$PYTHON3" -I -c 'import uuid; print(uuid.uuid4())')" || [ -z "$sid" ]; then
-    add_row "canary $n" 不合格 "session ID を作れない"
+    add_row "canary $n" 確かめていない "session ID を作れない"
     continue
   fi
   events="$COPILOT_HOME/session-state/$sid/events.jsonl"
   session_lines+=("canary $n: session $sid  $events")
   started=$(( started + 1 ))
-  ( cd "$WORKDIR" && exec "$COPILOT_BIN" -p "$prompt" -s --model "$model" --session-id "$sid" \
+  # setsid で別のプロセスのグループにし、中断のときにグループごと止められるようにする。
+  ( cd -- "$WORKDIR" && exec "$SETSID" "$COPILOT_BIN" -p "$prompt" -s --model "$model" --session-id "$sid" \
       --max-ai-credits "$cap" "${COPILOT_ARGS[@]}" ) >/dev/null &
   child_pid=$!
   wait "$child_pid"
@@ -340,18 +386,15 @@ for (( n = 1; n <= runs; n++ )); do
     reasons+=("作業ディレクトリに $W_FILE_NAME ができた")
     rm -f "$W_FILE" 2>/dev/null
   fi
-  note=""
-  case "$credits_line" in
-    credits=unknown | "")
-      credits_list+=("$cap")
-      unknown_credits=1
-      note="クレジット不明（上限で数えた）"
-      ;;
-    credits=*)
-      credits_list+=("${credits_line#credits=}")
-      note="${credits_line#credits=} クレジット"
-      ;;
-  esac
+  mark_intact || reasons+=("目印 $HOME_MARK が消えた")
+  if [[ "$credits_line" =~ ^credits=([0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)$ ]]; then
+    credits_list+=("${BASH_REMATCH[1]}")
+    note="${BASH_REMATCH[1]} クレジット"
+  else
+    credits_list+=("$cap")
+    unknown_credits=1
+    note="クレジット不明（上限で数えた）"
+  fi
   if [ "${#reasons[@]}" -eq 0 ]; then
     add_row "canary $n" 合格 "$note"
   else
@@ -360,7 +403,7 @@ for (( n = 1; n <= runs; n++ )); do
 done
 
 # 6. 作業ディレクトリ /home/node で起動口が止まる（モデルを呼ばない）。
-home_err="$(cd "$CONTAINER_HOME" && "$COPILOT_BIN" --version 2>&1 >/dev/null)"
+home_err="$(cd -- "$CONTAINER_HOME" && "$COPILOT_BIN" --version 2>&1 >/dev/null)"
 home_rc=$?
 if [ "$home_rc" -eq 1 ] && [[ "$home_err" == *"ERROR: 作業ディレクトリ $CONTAINER_HOME では起動しません"* ]]; then
   add_row "/home/node で止まる" 合格 ""
@@ -372,7 +415,12 @@ fi
 if [ ! -e "$COPILOT_HOME/settings.json" ]; then
   run_launcher_version "$WORKDIR"
 fi
-if ! helper weaken "$COPILOT_HOME/settings.json" >/dev/null 2>&1; then
+# 弱めるのは、起動口の lock を持っている間だけにする（動いている別の copilot の足元で弱めない）。
+"$FLOCK" -n -E 75 "$LOCK_FILE" "$PYTHON3" -I "$HELPER" weaken "$COPILOT_HOME/settings.json" >/dev/null 2>&1
+weaken_rc=$?
+if [ "$weaken_rc" -eq 75 ]; then
+  add_row "弱めた設定が戻る" 確かめていない "別の copilot が動いていて lock を取れなかった（弱めていない）"
+elif [ "$weaken_rc" -ne 0 ]; then
   add_row "弱めた設定が戻る" 確かめていない "settings.json を弱められなかった"
 else
   restore_reasons=()

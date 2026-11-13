@@ -33,9 +33,11 @@ FIXED_HOME = '/home/node'
 FIXED_TEMPLATE = '/etc/c3c/copilot-settings.json'
 FIXED_PYTHON = '/usr/bin/python3'
 FIXED_FLOCK = '/usr/bin/flock'
+FIXED_SETSID = '/usr/bin/setsid'
 FIXED_TMP_LINE = 'readonly SANDBOX_TMP=/tmp\n'
 REAL_PYTHON = sys.executable
 REAL_FLOCK = shutil.which('flock')
+REAL_SETSID = shutil.which('setsid')
 
 # spec「項目」2 のプロンプトとコマンド（目印は .c3c-canary-mark）。スクリプトの定数から作らずに逐語で置く。
 PROMPT = ('Run exactly this one bash command with the shell tool, then report its full output verbatim '
@@ -104,9 +106,9 @@ write_settings() {
   "@PY@" -I -c 'import json, sys; d = json.load(open(sys.argv[1])); d["sandbox"]["userPolicy"]["filesystem"]["readonlyPaths"] = [sys.argv[3]]; open(sys.argv[2], "w").write(json.dumps(d))' "@TEMPLATE@" "@HOME@/.copilot/settings.json" "$cwd"
 }
 if [ "$1" = --version ]; then
-  [ "$mode" = hang ] && sleep 1
+  [ "${mode#hang}" != "$mode" ] && sleep 1
   case "$mode" in
-    no_restore) ;;
+    no_restore | hold_lock) ;;
     version_fails) write_settings; exit 1 ;;
     *) write_settings ;;
   esac
@@ -123,7 +125,11 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-if [ "$mode" = hang ] && [ "$nth" -ge 2 ]; then
+if [ "${mode#hang}" != "$mode" ] && [ "$nth" -ge 2 ]; then
+  # 本物の起動口は npm-loader.js を exec し、それが子のプロセスを起こす。孫を 1 つ残す形にする。
+  [ "$mode" = hang_ignore_term ] && trap '' TERM
+  sleep 60 &
+  [ "$mode" = hang_ignore_term ] && { while :; do sleep 1; done; }
   exec sleep 60
 fi
 "@PY@" -I "@FAKE_EVENTS@" "@HOME@/.copilot/session-state/$sid/events.jsonl" "$sid" "$prompt" "$mode" "$cwd" "$nth" "@FIXTURE@"
@@ -136,6 +142,13 @@ case "$mode" in
     fi ;;
   bad_settings) [ "$nth" -ge 2 ] && printf '{' > "@HOME@/.copilot/settings.json" ;;
   spent_symlink) rm -f "$FAKE_SPENT" && ln -s "$FAKE_SPENT.target" "$FAKE_SPENT" ;;
+  rm_mark) [ "$nth" -eq 1 ] && rm -f "@HOME@/.copilot/.c3c-canary-mark" ;;
+  hold_lock)
+    if [ "$nth" -ge 2 ]; then
+      : >> "@HOME@/.copilot/.c3c-launch.lock"
+      setsid "@FLOCK@" "@HOME@/.copilot/.c3c-launch.lock" sleep 3 < /dev/null > /dev/null 2>&1 &
+      sleep 0.3
+    fi ;;
 esac
 exit 0
 '''
@@ -144,6 +157,7 @@ exit 0
 class CopilotCanaryTest(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(REAL_FLOCK, 'flock が要る（skip にしない）')
+        self.assertIsNotNone(REAL_SETSID, 'setsid が要る（skip にしない）')
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.home = self.root / 'home' / 'node'
@@ -169,18 +183,20 @@ class CopilotCanaryTest(unittest.TestCase):
         self.bin.parent.mkdir()
         self.bin.write_text(FAKE_LAUNCHER.replace('@PY@', REAL_PYTHON).replace('@RECORD@', str(self.record))
                             .replace('@HOME@', str(self.home)).replace('@TEMPLATE@', str(self.template))
-                            .replace('@FAKE_EVENTS@', str(fake_events)).replace('@FIXTURE@', str(FIXTURE)))
+                            .replace('@FAKE_EVENTS@', str(fake_events)).replace('@FIXTURE@', str(FIXTURE))
+                            .replace('@FLOCK@', REAL_FLOCK))
         self.bin.chmod(0o755)
         scripts = self.root / 'scripts'
         scripts.mkdir()
         text = SCRIPT.read_text()
-        for fixed in (FIXED_BIN, FIXED_TEMPLATE, FIXED_PYTHON, FIXED_FLOCK, FIXED_HOME):
+        for fixed in (FIXED_BIN, FIXED_TEMPLATE, FIXED_PYTHON, FIXED_FLOCK, FIXED_SETSID, FIXED_HOME):
             self.assertIn(fixed, text)
         self.assertIn(FIXED_TMP_LINE, text)
         text = (text.replace(FIXED_BIN, str(self.bin))
                 .replace(FIXED_TEMPLATE, str(self.template))
                 .replace(FIXED_PYTHON, REAL_PYTHON)
                 .replace(FIXED_FLOCK, REAL_FLOCK)
+                .replace(FIXED_SETSID, REAL_SETSID)
                 .replace(FIXED_TMP_LINE, f'readonly SANDBOX_TMP={self.fake_tmp}\n')
                 .replace(FIXED_HOME, str(self.home)))
         self.script = scripts / 'copilot-canary.sh'
@@ -194,6 +210,25 @@ class CopilotCanaryTest(unittest.TestCase):
                 path.chmod(0o755)
         self.tmp.cleanup()
 
+    @staticmethod
+    def kill_fake(mode):
+        """試験が失敗したときに残った偽の起動口のプロセスを止める（次の試験を巻き込まない）。"""
+        found = []
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if f'FAKE_MODE={mode}\0'.encode() in (entry / 'environ').read_bytes():
+                    found.append(int(entry.name))
+            except OSError:
+                continue
+        for pid in found:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        return found
+
     def write_settings(self, cwd):
         doc = json.loads(self.template.read_text())
         doc['sandbox']['userPolicy']['filesystem']['readonlyPaths'] = [str(cwd)]
@@ -204,7 +239,7 @@ class CopilotCanaryTest(unittest.TestCase):
         doc['sandbox']['userPolicy']['filesystem']['readonlyPaths'] = [str(cwd or self.work)]
         return doc
 
-    def run_script(self, *args, mode=None, workdir=None, env_extra=None):
+    def run_script(self, *args, mode=None, workdir=None, env_extra=None, cwd=None):
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
                'PYTHONDONTWRITEBYTECODE': '1'}
         if mode:
@@ -213,7 +248,7 @@ class CopilotCanaryTest(unittest.TestCase):
         argv = ['bash', str(self.script), *args]
         if workdir is not False:
             argv.append(str(workdir or self.work))
-        return subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60)
+        return subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60, cwd=cwd)
 
     def calls(self):
         if not self.record.exists():
@@ -371,6 +406,46 @@ class CopilotCanaryTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_mark_removed_during_run(self):
+        # 1 回目の最中に目印が消えたら、その回は不合格、以後の回は確かめていない（cat が無いファイルで失敗して合格に見えるため）。
+        r = self.run_script(mode='rm_mark')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('[不合格]', self.row(r.stdout, 'canary 1'))
+        self.assertIn('[確かめていない]', self.row(r.stdout, 'canary 2'))
+        self.assertEqual(len(self.p_calls()), 1)
+        self.assert_clean()
+
+    def test_lock_taken_before_weaken(self):
+        # 弱める直前に別の copilot が lock を持っていたら、弱めずに確かめていないにする。
+        r = self.run_script(mode='hold_lock')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('[確かめていない]', self.row(r.stdout, '弱めた設定が戻る'))
+        doc = json.loads(self.settings.read_text())
+        self.assertIs(doc['sandbox']['userPolicy']['network']['allowOutbound'], False)
+
+    def test_cdpath_and_relative_workdir(self):
+        r = self.run_script(workdir=False, env_extra={'CDPATH': '.:' + str(self.fake_tmp)}, cwd=str(self.root))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # 既定の /workspace は試験に無い
+        r = self.run_script('work', workdir=False, env_extra={'CDPATH': '.'}, cwd=str(self.root))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.p_calls()[0]['cwd'], str(self.work))
+
+    def test_bad_judge_credits_line(self):
+        # 判定の 2 行目が数の形でなければ、上限で数える。
+        stub = self.script.parent / 'copilot_canary_helper.py'
+        real = stub.with_name('real_helper.py')
+        stub.rename(real)
+        stub.write_text('import runpy, sys\n'
+                        'if sys.argv[1:2] == ["judge"]:\n'
+                        '    print("PASS"); print("credits=1;2"); sys.exit(0)\n'
+                        f'sys.argv[0] = {str(real)!r}\n'
+                        f'runpy.run_path({str(real)!r}, run_name="__main__")\n')
+        log = self.root / 'spent.jsonl'
+        r = self.run_script('--spent-log', str(log))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(log.read_text())['credits'], 60.0)
+        self.assertIn('クレジット不明', self.row(r.stdout, 'canary 1'))
+
     def test_token_symlink_accepted(self):
         # 起動口と同じく、COPILOT_PAT は読める通常のファイルなら symlink でもよい。
         token = self.home / '.config' / 'c3c' / 'secrets' / 'COPILOT_PAT'
@@ -389,6 +464,13 @@ class CopilotCanaryTest(unittest.TestCase):
         (self.fake_tmp / 'w').mkdir()
         ancestor_link = self.root / 'to-home'
         ancestor_link.symlink_to(self.root / 'home')
+        tab_dir = self.root / 'a\tb'
+        tab_dir.mkdir()
+        newline_dir = self.root / 'work\n'
+        newline_dir.mkdir()
+        spent_ro = self.root / 'spent-ro.jsonl'
+        spent_ro.write_text('')
+        spent_ro.chmod(0o444)
         spent_link = self.root / 'spent-link.jsonl'
         spent_link.symlink_to(self.root / 'spent-target.jsonl')
         cases = {
@@ -414,9 +496,12 @@ class CopilotCanaryTest(unittest.TestCase):
             'workdir /tmp/w': ([], self.fake_tmp / 'w'),
             'workdir secrets': ([], self.home / '.config' / 'c3c' / 'secrets'),
             'workdir ancestor symlink': ([], ancestor_link),
+            'workdir with tab': ([], tab_dir),
+            'workdir with trailing newline': ([], newline_dir),
         }
         if os.geteuid() != 0:
             cases['workdir unwritable'] = ([], unwritable)
+            cases['spent-log not writable'] = (['--spent-log', str(spent_ro)], None)
         for name, (args, workdir) in cases.items():
             with self.subTest(name=name):
                 r = self.run_script(*args, workdir=workdir)
@@ -463,11 +548,19 @@ class CopilotCanaryTest(unittest.TestCase):
         self.assertFalse(os.path.lexists(str(log) + '.target'))
 
     def test_interrupted(self):
+        self.interrupted('hang')
+
+    def test_interrupted_child_ignores_term(self):
+        self.interrupted('hang_ignore_term')
+
+    def interrupted(self, mode):
+        self.addCleanup(self.kill_fake, mode)
         log = self.root / 'spent.jsonl'
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
-               'PYTHONDONTWRITEBYTECODE': '1', 'FAKE_MODE': 'hang'}
+               'PYTHONDONTWRITEBYTECODE': '1', 'FAKE_MODE': mode}
         proc = subprocess.Popen(['bash', str(self.script), '--spent-log', str(log), str(self.work)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                                start_new_session=True)
         try:
             deadline = time.monotonic() + 30
             while len(self.p_calls()) < 2:
@@ -478,11 +571,11 @@ class CopilotCanaryTest(unittest.TestCase):
             # 後片付けの最中（偽の起動口の --version が 1 秒かかる）にもう 1 度送っても、片付けと記録を終える。
             time.sleep(0.5)
             proc.send_signal(signal.SIGTERM)
-            out, err = proc.communicate(timeout=30)
+            out, err = proc.communicate(timeout=60)
         finally:
             if proc.poll() is None:
-                proc.kill()
-                proc.communicate()
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=10)
         self.assertEqual(proc.returncode, 1, out + err)
         self.assert_clean()
         self.assertEqual(json.loads(self.settings.read_text()), self.expected_settings())
@@ -492,14 +585,11 @@ class CopilotCanaryTest(unittest.TestCase):
         self.assertEqual(entry['credits'], 32.5)
         self.assertIn('中断', entry['what'])
         self.assertIn('全体: 不合格', out)
-        for entry in Path('/proc').iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                environ = (entry / 'environ').read_bytes()
-            except OSError:
-                continue
-            self.assertNotIn(b'FAKE_MODE=hang', environ, f'偽の起動口が残っている（pid {entry.name}）')
+        for call in self.p_calls():
+            argv = call['argv']
+            self.assertIn(argv[argv.index('--session-id') + 1], out)
+        time.sleep(0.2)
+        self.assertEqual(self.kill_fake(mode), [], '偽の起動口のプロセスが残っている')
 
     def test_cleanup_on_failure(self):
         r = self.run_script(mode='fail_rc')

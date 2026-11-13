@@ -29,15 +29,25 @@ import tempfile
 KEYS = ('curl_rc', 'secret_rc', 'home_rc', 'tok_len', 'gh_len', 'outer_environ', 'w_rc')
 RC_KEYS = ('curl_rc', 'secret_rc', 'home_rc', 'w_rc')
 ZERO_KEYS = ('tok_len', 'gh_len', 'outer_environ')
-# rc の値のうち、塞いだ結果と読めないもの（成功、コマンドが実行できない、コマンドが無い）。
-BAD_RC = {0, 126, 127}
+# rc の値のうち、塞いだ結果と読めるもの。0（成功）、126・127（コマンドが実行できない・無い）、
+# 128 以上（信号での終了）は、塞いだ証拠にならない。
+GOOD_RC = range(1, 126)
 
-USER_RE = re.compile(r'^user:\[(\d+)\]$')
-NET_RE = re.compile(r'^net:\[(\d+)\]$')
-IFACE_RE = re.compile(r'^(\S+)\s+(UNKNOWN|UP|DOWN|DORMANT|LOWERLAYERDOWN|NOTPRESENT)\b')
-KV_RE = re.compile(r'(?:(?<=\s)|^)(' + '|'.join(KEYS) + r')=(\d+)(?=\s|$)', re.MULTILINE)
-DIGITS_RE = re.compile(r'^\d+$')
-MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
+# 数字は ASCII だけ（全角の数字を通さない）。行全体で当てる（$ が末尾の改行の前でも当たるのを避ける）。
+USER_RE = re.compile(r'user:\[([0-9]+)\]', re.ASCII)
+NET_RE = re.compile(r'net:\[([0-9]+)\]', re.ASCII)
+# ip -brief link の行: 名前、大文字の状態（一覧で当てない。TESTING など知らない状態も数える）、残り。
+IFACE_RE = re.compile(r'(\S+)\s+([A-Z][A-Z_]*)(?:\s.*)?', re.ASCII)
+KV_RE = re.compile(r'(?:(?<=\s)|^)(' + '|'.join(KEYS) + r')=([0-9]+)(?=\s|$)', re.MULTILINE | re.ASCII)
+DIGITS_RE = re.compile(r'[0-9]+', re.ASCII)
+MONTH_RE = re.compile(r'[0-9]{4}-[0-9]{2}', re.ASCII)
+CREDITS_RE = re.compile(r'[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?', re.ASCII)
+
+
+def _one_line(value):
+    """理由に埋め込む値を 1 行にする（改行で出力の 2 行目を偽造させない）。"""
+    text = value if isinstance(value, str) else repr(value)
+    return re.sub(r'[\x00-\x1f\x7f\u0085\u2028\u2029]', '?', text)
 
 
 def _dict(value):
@@ -60,12 +70,12 @@ def _judge_output(content, outer_user, outer_net):
     reasons = []
     lines = content.splitlines()
     for name, regex, outer in (('user', USER_RE, outer_user), ('net', NET_RE, outer_net)):
-        found = [m.group(1) for m in (regex.match(line.strip()) for line in lines) if m]
+        found = [m.group(1) for m in (regex.fullmatch(line.strip()) for line in lines) if m]
         if len(found) != 1:
             reasons.append(f'{name} の名前空間の行が {len(found)} 個')
         elif found[0] == outer:
             reasons.append(f'{name} の名前空間が外側と同じ')
-    ifaces = [m.group(1) for m in (IFACE_RE.match(line) for line in lines) if m]
+    ifaces = [m.group(1) for m in (IFACE_RE.fullmatch(line.rstrip()) for line in lines) if m]
     if ifaces != ['lo']:
         reasons.append(f'インターフェースが lo の 1 つだけでない: {ifaces}')
     values = {}
@@ -77,7 +87,7 @@ def _judge_output(content, outer_user, outer_net):
             reasons.append(f'{key} が {len(got)} 回')
             continue
         value = got[0]
-        if key in RC_KEYS and value in BAD_RC:
+        if key in RC_KEYS and value not in GOOD_RC:
             reasons.append(f'{key}={value}')
         if key in ZERO_KEYS and value != 0:
             reasons.append(f'{key}={value}')
@@ -121,7 +131,7 @@ def judge(events_path, expected_command, outer_user, outer_net, session_id):
         if name == 'bash':
             bash_calls.append(data)
         else:
-            reasons.append(f'bash 以外の道具 {name} が走った')
+            reasons.append(f'bash 以外の道具 {_one_line(name)} が走った')
     if len(bash_calls) != 1:
         reasons.append(f'bash の実行が {len(bash_calls)} 回')
     else:
@@ -169,11 +179,11 @@ def cmd_judge(args):
     if len(args) != 5:
         return _usage()
     events, command, outer_user, outer_net, session_id = args
-    if not DIGITS_RE.match(outer_user) or not DIGITS_RE.match(outer_net) or not session_id:
+    if not DIGITS_RE.fullmatch(outer_user) or not DIGITS_RE.fullmatch(outer_net) or not session_id:
         print('ERROR: OUTER_USER・OUTER_NET は数字だけ、SESSION_ID は空でない値', file=sys.stderr)
         return 2
     reasons, credits = judge(events, command, outer_user, outer_net, session_id)
-    print('PASS' if not reasons else 'FAIL: ' + '; '.join(reasons))
+    print('PASS' if not reasons else 'FAIL: ' + _one_line('; '.join(reasons)))
     print('credits=unknown' if credits is None else f'credits={credits!r}')
     return 0 if not reasons else 1
 
@@ -226,11 +236,8 @@ def cmd_spent_log(args):
     if len(args) != 5:
         return _usage()
     path, entry_id, month, credits_text, what = args
-    try:
-        credits = float(credits_text)
-    except ValueError:
-        credits = math.nan
-    if not entry_id or not MONTH_RE.match(month) or not math.isfinite(credits) or credits < 0:
+    credits = float(credits_text) if CREDITS_RE.fullmatch(credits_text) else math.nan
+    if not entry_id or not MONTH_RE.fullmatch(month) or not math.isfinite(credits) or credits < 0:
         print('ERROR: spent-log の値が不正', file=sys.stderr)
         return 2
     try:

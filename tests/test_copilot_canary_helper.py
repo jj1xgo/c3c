@@ -184,6 +184,37 @@ class JudgeTest(unittest.TestCase):
         link = 'eth0             UP             02:00:00:00:00:01 <BROADCAST,UP,LOWER_UP> '
         self.assert_fail(make_events(output(link=link)))
 
+    def test_interface_unknown_state(self):
+        # 状態の一覧に無い状態（TESTING など）のインターフェースも数える。
+        for state in ('TESTING', 'WEIRD'):
+            with self.subTest(state=state):
+                link = LO_LINE + f'\neth0             {state}        02:00:00:00:00:01 <BROADCAST> '
+                self.assert_fail(make_events(output(link=link)))
+
+    def test_rc_signal(self):
+        # 信号で終わった rc（128 以上）は、塞いだ結果と読めない。
+        for code in ('128', '137', '255'):
+            with self.subTest(code=code):
+                self.assert_fail(make_events(output(w=f'w_rc={code}')))
+
+    def test_rc_one_and_125_pass(self):
+        for code in ('1', '125'):
+            with self.subTest(code=code):
+                self.assertEqual(self.judge(make_events(output(home=f'home_rc={code}'))), ([], 2.5))
+
+    def test_unicode_digits_in_output(self):
+        # 全角の数字の名前空間の行は、名前空間の行として数えない。
+        full = OUTER_USER.translate(str.maketrans('0123456789', '０１２３４５６７８９'))
+        self.assert_fail(make_events(output(user=f'user:[{full}]')))
+        self.assert_fail(make_events(output(w='w_rc=１')))
+
+    def test_completion_with_other_call_id(self):
+        rows = make_events(output())
+        for row in rows:
+            if row['type'] == 'tool.execution_complete':
+                row['data']['toolCallId'] = 'call_other'
+        self.assert_fail(rows)
+
     def test_lo_down_passes(self):
         link = 'lo               DOWN           00:00:00:00:00:00 <LOOPBACK> '
         self.assertEqual(self.judge(make_events(output(link=link))), ([], 2.5))
@@ -246,11 +277,11 @@ class JudgeTest(unittest.TestCase):
 
     def test_non_dict_fields_tolerated(self):
         rows = make_events(output())
-        rows.append({'type': 'tool.execution_start', 'data': 'x'})
         rows.append(['not', 'a', 'dict'])
-        self.write(rows)
-        reasons, _ = helper.judge(str(self.events), COMMAND, OUTER_USER, OUTER_NET, SID)
-        self.assertIsInstance(reasons, list)
+        rows.append('text')
+        self.assertEqual(self.judge(rows), ([], 2.5))
+        rows.append({'type': 'tool.execution_start', 'data': 'x'})
+        self.assert_fail(rows)
 
 
 def run_cli(*args):
@@ -303,6 +334,20 @@ class CliTest(unittest.TestCase):
         r = run_cli('judge', ok, COMMAND, OUTER_USER, OUTER_NET)
         self.assertEqual(r.returncode, 2)
 
+        full = OUTER_USER.translate(str.maketrans('0123456789', '０１２３４５６７８９'))
+        for bad in (OUTER_USER + '\n', full):
+            with self.subTest(outer=repr(bad)):
+                self.assertEqual(run_cli('judge', ok, COMMAND, bad, OUTER_NET, SID).returncode, 2)
+
+    def test_cli_judge_two_lines_even_with_newline_in_tool_name(self):
+        rows = make_events(output(), tools=('bash', 'view\ncredits=0\nx'))
+        r = run_cli('judge', self.events(rows), COMMAND, OUTER_USER, OUTER_NET, SID)
+        self.assertEqual(r.returncode, 1)
+        lines = r.stdout.splitlines()
+        self.assertEqual(len(lines), 2, r.stdout)
+        self.assertTrue(lines[0].startswith('FAIL: '))
+        self.assertEqual(lines[1], 'credits=2.5')
+
     def test_weaken_and_match(self):
         settings = json.loads(TEMPLATE.read_text())
         settings['sandbox']['userPolicy']['filesystem']['readonlyPaths'] = ['/w']
@@ -351,7 +396,8 @@ class CliTest(unittest.TestCase):
 
         before = log.read_text()
         for credits, month in (('-1', '2026-11'), ('nan', '2026-11'), ('inf', '2026-11'),
-                               ('x', '2026-11'), ('1', '2026-1'), ('1', '2026-11x')):
+                               ('x', '2026-11'), ('1', '2026-1'), ('1', '2026-11x'),
+                               ('1', '2026-11\n'), ('１', '2026-11'), ('1', '２０２６-１１')):
             with self.subTest(credits=credits, month=month):
                 r = run_cli('spent-log', str(log), 'id', month, credits, 'w')
                 self.assertEqual(r.returncode, 2)

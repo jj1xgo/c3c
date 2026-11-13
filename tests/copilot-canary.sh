@@ -145,7 +145,7 @@ if [ -L "$COPILOT_BIN" ] || [ ! -f "$COPILOT_BIN" ] || ! grep -q '^readonly VERI
   fail_pre "$COPILOT_BIN が c3c の Copilot の起動口ではありません（opt-in のコンテナの中で打ってください）。"
 fi
 [ -f "$SETTINGS_TEMPLATE" ] || fail_pre "$SETTINGS_TEMPLATE がありません。"
-if [ -L "$TOKEN_FILE" ] || [ ! -f "$TOKEN_FILE" ] || [ ! -r "$TOKEN_FILE" ]; then
+if [ ! -f "$TOKEN_FILE" ] || [ ! -r "$TOKEN_FILE" ]; then
   fail_pre "$TOKEN_FILE が読める通常のファイルではありません。"
 fi
 [ -f "$HELPER" ] || fail_pre "$HELPER がありません。"
@@ -267,7 +267,9 @@ record_spent() {
 on_interrupt() {
   [ "$finished" -eq 1 ] && exit 1
   finished=1
-  trap - INT TERM EXIT
+  # 後片付けの最中に 2 度目の Ctrl-C や TERM が来ても、片付けと記録を終える。
+  trap '' INT TERM
+  trap - EXIT
   if [ -n "$child_pid" ]; then
     kill -TERM "$child_pid" 2>/dev/null
     wait "$child_pid" 2>/dev/null
@@ -318,7 +320,7 @@ for (( n = 1; n <= runs; n++ )); do
   session_lines+=("canary $n: session $sid  $events")
   started=$(( started + 1 ))
   ( cd "$WORKDIR" && exec "$COPILOT_BIN" -p "$prompt" -s --model "$model" --session-id "$sid" \
-      --max-ai-credits "$cap" "${COPILOT_ARGS[@]}" ) >/dev/null 2>&1 &
+      --max-ai-credits "$cap" "${COPILOT_ARGS[@]}" ) >/dev/null &
   child_pid=$!
   wait "$child_pid"
   copilot_rc=$?

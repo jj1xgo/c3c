@@ -88,7 +88,7 @@ def judge(events_path, expected_command, outer_user, outer_net, session_id):
     """不合格の理由の一覧（空なら合格）と、クレジット（分からなければ None）を返す。"""
     try:
         with open(events_path, encoding='utf-8') as f:
-            raw_lines = f.read().splitlines()
+            raw_lines = f.read().split('\n')  # splitlines は U+2028 なども行の区切りにするので使わない
     except (OSError, UnicodeDecodeError):
         return ['events.jsonl が無い'], None
 

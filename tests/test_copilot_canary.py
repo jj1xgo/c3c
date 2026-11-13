@@ -37,6 +37,16 @@ FIXED_TMP_LINE = 'readonly SANDBOX_TMP=/tmp\n'
 REAL_PYTHON = sys.executable
 REAL_FLOCK = shutil.which('flock')
 
+# spec「項目」2 のプロンプトとコマンド（目印は .c3c-canary-mark）。スクリプトの定数から作らずに逐語で置く。
+PROMPT = ('Run exactly this one bash command with the shell tool, then report its full output verbatim '
+          'inside a code block and nothing else:\n'
+          'readlink /proc/self/ns/user /proc/self/ns/net; ip -brief link; '
+          'curl -sS -m 5 -o /dev/null -w "%{http_code}" https://api.github.com/; echo " curl_rc=$?"; '
+          'cat /home/node/.config/c3c/secrets/COPILOT_PAT >/dev/null; echo "secret_rc=$?"; '
+          'cat /home/node/.copilot/.c3c-canary-mark >/dev/null; echo "home_rc=$?"; '
+          'echo "tok_len=${#COPILOT_GITHUB_TOKEN} gh_len=${#GH_TOKEN}"; '
+          'echo "outer_environ=$(grep -l COPILOT_GITHUB_TOKEN /proc/[0-9]*/environ 2>/dev/null | wc -l)"; '
+          'touch "$PWD/.c3c-copilot-w" 2>/dev/null; echo "w_rc=$?"')
 UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 REQUIRED_ARGS = ['--available-tools=bash', '--allow-tool=shell', '--allow-all-paths',
                  '--allow-all-urls', '--no-ask-user', '--no-auto-update']
@@ -94,6 +104,7 @@ write_settings() {
   "@PY@" -I -c 'import json, sys; d = json.load(open(sys.argv[1])); d["sandbox"]["userPolicy"]["filesystem"]["readonlyPaths"] = [sys.argv[3]]; open(sys.argv[2], "w").write(json.dumps(d))' "@TEMPLATE@" "@HOME@/.copilot/settings.json" "$cwd"
 }
 if [ "$1" = --version ]; then
+  [ "$mode" = hang ] && sleep 1
   case "$mode" in
     no_restore) ;;
     version_fails) write_settings; exit 1 ;;
@@ -130,9 +141,9 @@ exit 0
 '''
 
 
-@unittest.skipIf(REAL_FLOCK is None, 'flock が無い')
 class CopilotCanaryTest(unittest.TestCase):
     def setUp(self):
+        self.assertIsNotNone(REAL_FLOCK, 'flock が要る（skip にしない）')
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.home = self.root / 'home' / 'node'
@@ -244,8 +255,7 @@ class CopilotCanaryTest(unittest.TestCase):
             sids.append(sid)
             self.assertIn(sid, r.stdout)
             prompt = argv[argv.index('-p') + 1]
-            self.assertTrue(prompt.startswith('Run exactly this one bash command'), prompt)
-            self.assertIn(f'cat {self.home}/.copilot/.c3c-canary-mark >/dev/null', prompt)
+            self.assertEqual(prompt, PROMPT.replace(FIXED_HOME, str(self.home)))
         self.assertNotEqual(sids[0], sids[1])
         self.assertIn('1.0.109', r.stdout)
         self.assertIn('5.0', r.stdout)
@@ -361,7 +371,15 @@ class CopilotCanaryTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(self.calls(), [])
 
-    @unittest.skipIf(os.geteuid() == 0, 'root はパーミッションを無視する')
+    def test_token_symlink_accepted(self):
+        # 起動口と同じく、COPILOT_PAT は読める通常のファイルなら symlink でもよい。
+        token = self.home / '.config' / 'c3c' / 'secrets' / 'COPILOT_PAT'
+        real = token.with_name('real-token')
+        token.rename(real)
+        token.symlink_to(real)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_bad_args(self):
         before = self.settings.read_text()
         unwritable = self.root / 'ro'
@@ -395,9 +413,10 @@ class CopilotCanaryTest(unittest.TestCase):
             'workdir /': ([], Path('/')),
             'workdir /tmp/w': ([], self.fake_tmp / 'w'),
             'workdir secrets': ([], self.home / '.config' / 'c3c' / 'secrets'),
-            'workdir unwritable': ([], unwritable),
             'workdir ancestor symlink': ([], ancestor_link),
         }
+        if os.geteuid() != 0:
+            cases['workdir unwritable'] = ([], unwritable)
         for name, (args, workdir) in cases.items():
             with self.subTest(name=name):
                 r = self.run_script(*args, workdir=workdir)
@@ -456,6 +475,9 @@ class CopilotCanaryTest(unittest.TestCase):
                 time.sleep(0.05)
             time.sleep(0.2)
             proc.send_signal(signal.SIGTERM)
+            # 後片付けの最中（偽の起動口の --version が 1 秒かかる）にもう 1 度送っても、片付けと記録を終える。
+            time.sleep(0.5)
+            proc.send_signal(signal.SIGTERM)
             out, err = proc.communicate(timeout=30)
         finally:
             if proc.poll() is None:
@@ -470,13 +492,14 @@ class CopilotCanaryTest(unittest.TestCase):
         self.assertEqual(entry['credits'], 32.5)
         self.assertIn('中断', entry['what'])
         self.assertIn('全体: 不合格', out)
-        leftover = subprocess.run(['pgrep', '-f', 'sleep 60'], capture_output=True, text=True).stdout.split()
-        for pid in leftover:
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdigit():
+                continue
             try:
-                cmdline = Path(f'/proc/{pid}/environ').read_bytes()
+                environ = (entry / 'environ').read_bytes()
             except OSError:
                 continue
-            self.assertNotIn(b'FAKE_MODE=hang', cmdline, '偽の起動口の sleep が残っている')
+            self.assertNotIn(b'FAKE_MODE=hang', environ, f'偽の起動口が残っている（pid {entry.name}）')
 
     def test_cleanup_on_failure(self):
         r = self.run_script(mode='fail_rc')

@@ -150,6 +150,10 @@ class JudgeTest(unittest.TestCase):
     def test_assistant_message_ignored(self):
         self.assert_fail(make_events(output(secret='secret_rc=0'), assistant_text=output()))
 
+    def test_line_separator_in_assistant_text(self):
+        # U+2028 などを含む行も 1 行の JSON として読む（str.splitlines で行を切らない）。
+        self.assertEqual(self.judge(make_events(output(), assistant_text='a\u2028b\u0085c')), ([], 2.5))
+
     def test_session_id_differs(self):
         self.assert_fail(make_events(output()), contains='別のセッションの記録',
                          session_id='00000000-0000-4000-8000-000000000002')

@@ -45,8 +45,8 @@ PASS_VALUES = {
     'net': 'net:[4026532002]',
     'link': LO_LINE,
     'curl': '000 curl_rc=6',
-    'secret': 'secret_rc=1',
-    'home': 'home_rc=1',
+    'secret': 'cat: /home/node/.config/c3c/secrets/COPILOT_PAT: No such file or directory\nsecret_rc=1',
+    'home': 'cat: /home/node/.copilot/.c3c-canary-mark: No such file or directory\nhome_rc=1',
     'tok': 'tok_len=0 gh_len=0',
     'environ': 'outer_environ=0',
     'w': 'w_rc=1',
@@ -216,7 +216,7 @@ class JudgeTest(unittest.TestCase):
     def test_rc_one_and_125_pass(self):
         for code in ('1', '125'):
             with self.subTest(code=code):
-                self.assertEqual(self.judge(make_events(output(home=f'home_rc={code}'))), ([], 2.5))
+                self.assertEqual(self.judge(make_events(output(w=f'w_rc={code}'))), ([], 2.5))
 
     def test_unicode_digits_in_output(self):
         # 全角の数字の名前空間の行は、名前空間の行として数えない。
@@ -234,6 +234,21 @@ class JudgeTest(unittest.TestCase):
     def test_lo_down_passes(self):
         link = 'lo               DOWN           00:00:00:00:00:00 <LOOPBACK> '
         self.assertEqual(self.judge(make_events(output(link=link))), ([], 2.5))
+
+    def test_dev_null_unwritable(self):
+        # sandbox で /dev/null に書けないと、cat はファイルを読めても redirect で失敗して rc 1 になる。
+        # cat 自身がそのパスを読めなかった行が無ければ合格にしない。
+        self.assert_fail(make_events(output(
+            secret='bash: line 1: /dev/null: Permission denied\nsecret_rc=1',
+            home='bash: line 1: /dev/null: Permission denied\nhome_rc=1')))
+
+    def test_cat_denial_line_for_other_path(self):
+        self.assert_fail(make_events(output(
+            secret='cat: /elsewhere: No such file or directory\nsecret_rc=1')))
+
+    def test_cat_permission_denied_passes(self):
+        secret = 'cat: /home/node/.config/c3c/secrets/COPILOT_PAT: Permission denied\nsecret_rc=1'
+        self.assertEqual(self.judge(make_events(output(secret=secret))), ([], 2.5))
 
     def test_rc_zero(self):
         for key, name in (('curl', 'curl_rc'), ('secret', 'secret_rc'), ('home', 'home_rc'), ('w', 'w_rc')):

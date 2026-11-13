@@ -41,6 +41,10 @@ IFACE_RE = re.compile(r'(\S+)\s+([A-Z][A-Z_]*)(?:\s.*)?', re.ASCII)
 KV_RE = re.compile(r'(?:(?<=\s)|^)(' + '|'.join(KEYS) + r')=([0-9]+)(?=\s|$)', re.MULTILINE | re.ASCII)
 DIGITS_RE = re.compile(r'[0-9]+', re.ASCII)
 MONTH_RE = re.compile(r'[0-9]{4}-[0-9]{2}', re.ASCII)
+# コマンドの中の「cat <パス> >/dev/null; echo "<key>=$?"」。その key の rc は、cat 自身がそのパスを読めなかった
+# 行があるときだけ塞いだ結果と読む（sandbox で /dev/null に書けないと、読めても redirect で rc 1 になるため）。
+CAT_RC_RE = re.compile(r'cat (\S+) >/dev/null; echo "(' + '|'.join(RC_KEYS) + r')=\$\?"')
+CAT_DENIED = ('No such file or directory', 'Permission denied')
 CREDITS_RE = re.compile(r'[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?', re.ASCII)
 
 
@@ -66,9 +70,13 @@ def _credits(snapshot):
     return nano / 1e9
 
 
-def _judge_output(content, outer_user, outer_net):
+def _judge_output(content, outer_user, outer_net, command):
     reasons = []
-    lines = content.splitlines()
+    lines = content.split('\n')
+    for path, key in CAT_RC_RE.findall(command):
+        expected = {f'cat: {path}: {why}' for why in CAT_DENIED}
+        if not any(line.rstrip() in expected for line in lines):
+            reasons.append(f'{key}: cat が {_one_line(path)} を読めなかった行が無い')
     for name, regex, outer in (('user', USER_RE, outer_user), ('net', NET_RE, outer_net)):
         found = [m.group(1) for m in (regex.fullmatch(line.strip()) for line in lines) if m]
         if len(found) != 1:
@@ -162,7 +170,7 @@ def judge(events_path, expected_command, outer_user, outer_net, session_id):
             if not isinstance(content, str):
                 reasons.append('bash の実行の出力が無い')
             else:
-                reasons.extend(_judge_output(content, outer_user, outer_net))
+                reasons.extend(_judge_output(content, outer_user, outer_net, expected_command))
 
     credits = None
     shutdowns = of_type('session.shutdown')

@@ -68,9 +68,12 @@ ns = subprocess.run(['readlink', '/proc/self/ns/user', '/proc/self/ns/net'],
                     capture_output=True, text=True).stdout.split()
 if mode != 'same_ns':
     ns = ['user:[%d]' % (int(ns[0][6:-1]) + 1000), 'net:[%d]' % (int(ns[1][5:-1]) + 1000)]
+import re
+cats = re.findall(r'cat (\S+) >/dev/null', command)
+denied = ['cat: %s: No such file or directory' % path for path in cats] + ['', '']
 out = '\n'.join(ns + ['lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> ',
                       'curl: (6) Could not resolve host: api.github.com', '000 curl_rc=6',
-                      'secret_rc=1', 'home_rc=1', 'tok_len=0 gh_len=0', 'outer_environ=0', 'w_rc=1',
+                      denied[0], 'secret_rc=1', denied[1], 'home_rc=1', 'tok_len=0 gh_len=0', 'outer_environ=0', 'w_rc=1',
                       '<shellId: 0 completed with exit code 0>'])
 start = dict(base['session.start'])
 start['data'] = dict(start['data'], sessionId=sid)

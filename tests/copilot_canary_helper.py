@@ -75,9 +75,21 @@ def _judge_output(content, outer_user, outer_net):
             reasons.append(f'{name} の名前空間の行が {len(found)} 個')
         elif found[0] == outer:
             reasons.append(f'{name} の名前空間が外側と同じ')
-    ifaces = [m.group(1) for m in (IFACE_RE.fullmatch(line.rstrip()) for line in lines) if m]
-    if ifaces != ['lo']:
-        reasons.append(f'インターフェースが lo の 1 つだけでない: {ifaces}')
+    # ip -brief link の出力は、net: の行の次から、curl の出力（stderr の「curl: (6) …」か「000 curl_rc=…」）の
+    # 行の前まで。その範囲の行は、どれもインターフェースの行として読めなければならない。
+    net_rows = [i for i, line in enumerate(lines) if NET_RE.fullmatch(line.strip())]
+    if len(net_rows) == 1:
+        section = []
+        for line in lines[net_rows[0] + 1:]:
+            if 'curl' in line:
+                break
+            section.append(line.rstrip())
+        unreadable = [line for line in section if not IFACE_RE.fullmatch(line)]
+        ifaces = [IFACE_RE.fullmatch(line).group(1) for line in section if IFACE_RE.fullmatch(line)]
+        if unreadable:
+            reasons.append(f'ip -brief link の範囲に読めない行がある: {_one_line(repr(unreadable))}')
+        elif ifaces != ['lo']:
+            reasons.append(f'インターフェースが lo の 1 つだけでない: {_one_line(repr(ifaces))}')
     values = {}
     for match in KV_RE.finditer(content):
         values.setdefault(match.group(1), []).append(int(match.group(2)))

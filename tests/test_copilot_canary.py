@@ -446,6 +446,26 @@ class CopilotCanaryTest(unittest.TestCase):
         self.assertEqual(json.loads(log.read_text())['credits'], 60.0)
         self.assertIn('クレジット不明', self.row(r.stdout, 'canary 1'))
 
+    def test_total_credits_rounded(self):
+        # 1.1 + 2.2 を浮動小数で足すと 3.3000000000000003 になる。表と記録には丸めた値を出す。
+        stub = self.script.parent / 'copilot_canary_helper.py'
+        real = stub.with_name('real_helper.py')
+        stub.rename(real)
+        counter = self.root / 'judge-count'
+        stub.write_text('import runpy, sys\n'
+                        'if sys.argv[1:2] == ["judge"]:\n'
+                        f'    p = {str(counter)!r}\n'
+                        '    n = len(open(p).read()) if __import__("os").path.exists(p) else 0\n'
+                        '    open(p, "a").write("x")\n'
+                        '    print("PASS"); print("credits=" + ("1.1", "2.2")[n]); sys.exit(0)\n'
+                        f'sys.argv[0] = {str(real)!r}\n'
+                        f'runpy.run_path({str(real)!r}, run_name="__main__")\n')
+        log = self.root / 'spent.jsonl'
+        r = self.run_script('--spent-log', str(log))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('使ったクレジットの合計: 3.3\n', r.stdout)
+        self.assertEqual(json.loads(log.read_text())['credits'], 3.3)
+
     def test_token_symlink_accepted(self):
         # 起動口と同じく、COPILOT_PAT は読める通常のファイルなら symlink でもよい。
         token = self.home / '.config' / 'c3c' / 'secrets' / 'COPILOT_PAT'

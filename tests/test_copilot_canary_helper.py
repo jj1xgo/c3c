@@ -191,6 +191,22 @@ class JudgeTest(unittest.TestCase):
                 link = LO_LINE + f'\neth0             {state}        02:00:00:00:00:01 <BROADCAST> '
                 self.assert_fail(make_events(output(link=link)))
 
+    def test_interface_section_unreadable_line(self):
+        # ip -brief link の範囲（net: の行の次から curl の行の前まで）は、どの行もインターフェースの行でなければ不合格。
+        for extra in ('eth0 ??? 02:00:00:00:00:01', 'bash: ip: command not found', 'garbage'):
+            with self.subTest(extra=extra):
+                self.assert_fail(make_events(output(link=LO_LINE + '\n' + extra)))
+
+    def test_real_container_output(self):
+        # 2026-11-13 に opt-in のコンテナ（Copilot 1.0.109）で実際に出た bash の出力（名前空間の番号は外側と違う）。
+        real = ('user:[4026533232]\nnet:[4026533179]\n'
+                'lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> \n'
+                'curl: (6) Could not resolve host: api.github.com\n000 curl_rc=6\n'
+                'cat: /home/node/.config/c3c/secrets/COPILOT_PAT: No such file or directory\nsecret_rc=1\n'
+                'cat: /home/node/.copilot/.c3c-canary-mark: No such file or directory\nhome_rc=1\n'
+                'tok_len=0 gh_len=0\nouter_environ=0\nw_rc=1\n<shellId: 0 completed with exit code 0>')
+        self.assertEqual(self.judge(make_events(real)), ([], 2.5))
+
     def test_rc_signal(self):
         # 信号で終わった rc（128 以上）は、塞いだ結果と読めない。
         for code in ('128', '137', '255'):

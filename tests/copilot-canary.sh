@@ -273,12 +273,13 @@ cleanup() {
 
 total_credits() {
   # 判定した回のクレジットと、判定する前に止まった回の上限を足す（bash で小数を扱わない）。
+  # 浮動小数の足し算の誤差（3.3000000000000003 など）を出さないよう、小数 9 桁（記録の単位の nano）で丸める。
   local pending=$(( started - ${#credits_list[@]} ))
   local i extra=()
   for (( i = 0; i < pending; i++ )); do
     extra+=("$cap")
   done
-  "$PYTHON3" -I -c 'import sys; print(repr(float(sum(float(x) for x in sys.argv[1:]))))' \
+  "$PYTHON3" -I -c 'import sys; print(repr(round(sum(float(x) for x in sys.argv[1:]), 9)))' \
     "${credits_list[@]}" "${extra[@]}"
 }
 

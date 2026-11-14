@@ -138,10 +138,10 @@ Expected: `OK`（既存の試験も含めて全部）
 
 - [ ] **手順 5: README の「Copilot CLI を使う」節を直す**
   - 「起動口が止める条件」の一覧に 1 行: 第 1 引数の `--c3c-fusion-tier` の値が無いか `standard`・`high`・`max` 以外、`--c3c-fusion-tier=<値>` の形、2 回続けた。
-  - 「sandbox の設定」の段落の後に、**Copilot Fusion の段階** の段落を足す: Fusion の段階（`fusionTier`）は Copilot CLI 1.0.109 では設定ファイルでしか渡せず、起動口が `settings.json` を毎回作り直すので、`copilot --c3c-fusion-tier max --model fusion -p …` のように第 1 引数で渡す。起動口が取り除いてその回の `settings.json` に書き、次の起動では雛形どおりに戻る。指定しなければ書かない（Copilot の既定）。第 2 引数以降の同じ文字列はそのまま Copilot に渡す。High と Max は契約によっては使えない（GitHub Docs「About GitHub Copilot Fusion」 https://docs.github.com/en/copilot/concepts/models/copilot-fusion へのリンク）。
+  - 「sandbox の設定」の段落の後に、**Copilot Fusion の段階** の段落を足す: Fusion の段階（`fusionTier`）は Copilot CLI 1.0.109 では設定ファイルでしか渡せず、起動口が `settings.json` を毎回作り直すので、`copilot --c3c-fusion-tier max --model fusion -p …` のように第 1 引数で渡す。起動口が取り除いてその回の `settings.json` に書き、次の起動では雛形どおりに戻る。指定しなければ書かない（Copilot の既定）。第 2 引数以降の同じ文字列はそのまま Copilot に渡す（ただし段階の直後に `--c3c-fusion-tier` か `--c3c-fusion-tier=<値>` を続けた二重の指定は止める）。High と Max は契約によっては使えない（GitHub Docs「About GitHub Copilot Fusion」 https://docs.github.com/en/copilot/concepts/models/copilot-fusion へのリンク）。
 - [ ] **手順 6: README の「変更後の確認」の Copilot の段落の末尾に 1 文を足す**: 起動口の段階の口を変えたときは、opt-in のイメージで `--c3c-fusion-tier` を付け、`--session-id` に新しい UUID を渡して `--model fusion` で起動し、その回の `~/.copilot/session-state/<UUID>/events.jsonl` の `session.fusion_resolved` の `data.policy` が指定した段階になることを確かめる。
 - [ ] **手順 7: `docs/development-invariants.md` を直す**
-  - 「順序」の行を「段階の引数の解釈 → 中継と実体の検査 → 版の比較 → …」にし、段階の引数は第 1 引数だけを `case` で解釈し、決まった形以外は何も作らずに rc 1、第 2 引数以降は変えずに渡す、と書く。
+  - 「順序」の行を「段階の引数の解釈 → 中継と実体の検査 → 版の比較 → …」にし、段階の引数は第 1 引数だけを `case` で解釈し、決まった形以外は何も作らずに rc 1、第 2 引数以降は変えずに渡す（段階を取り除いた直後の二重の指定は止める）、と書く。
   - `settings.json` の作り直しの行に、段階を受けたときだけ `fusionTier` を書く、書いた後に作り直した内容と全体が一致することを照合する、指定なしでは雛形の写しのまま、を足す。
 - [ ] **手順 8: lint**
 
@@ -231,6 +231,8 @@ push は保守者に確かめてから行う。PR 本文に `Closes #265`、手�
   - I1（README を別の commit）・I2（Red にならない試験）・I3（セッションの特定）・I4（レビューの後の検証）→ Codex の I1・I2、Claude の I1・I3 で反映済み。I2 の「`tail -20` を外す」は不採用（Red は出力で判定でき、手順 4 の Expected で rc を見ない）
   - I5 実行の場所の食い違い（手順 6 の作り直しはホスト）→ 採用（「実行の場所」と手順 6）
   - M1 失敗したときに止まるか切り分けるか → 採用（控えて報告して止まる、に統一） / M2 二重の指定の例外の書き方 → 採用（全体の制約に明記。`high high` の拒否は不採用: 直後が値の形なら二重の指定ではなく、Copilot へ渡す引数のため。`max --c3c-fusion-tier=high` は試験に有る） / M3 タグの提案の時期 → 採用（PR を作った時点の報告と handover に）
+- 確認限定巡 2: Codex（fusion の I5、所要 16 秒）→ 直った。実装に渡せる。生の出力 （非公開の場所に保存）
+- fusion（並走、正式外）の確認限定巡 1: I1〜I5・M1・M3 は直った、M2 は一部（README と不変条件の文を直す手順に二重の指定の例外が無い）→ 採用（タスク 1 の手順 5・7 に例外を足した）。実装に渡せる。依頼した段階 high・実際の段階 high（policy の記録は standard、degraded true、degradedReason なし。PR #267 の 2・3 巡目と同じ食い違い）、claude-opus-5.5 ×5、11.9627 クレジット、所要 29 秒、bb2bf93 に対して。生の出力 （非公開の場所に保存）
 
 ## 区分と推奨実装
 

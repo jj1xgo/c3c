@@ -186,6 +186,8 @@ Critical・Important を直して commit し、確認限定巡で直ったこと
 
 - [ ] **手順 7: 段階の実機の確かめ**（保守者が opt-in のコンテナの入力欄で打つ。作業ディレクトリは `/workspace`。各回の上限 30 クレジット）
 
+  > **実装中の変更（2026-11-14、持ち主の判断）**: 1.0.112 の実機で、起動口は 3 段階とも `fusionTier` を指定どおりに書いたが、Copilot は `max` だけ指定どおりに動き、`high` は `policy: standard` に下がり（下がった理由なし。1.0.109 の並走でも同じ形を観測済み）、`standard` は `session.fusion_resolved` が出ず Auto の振り分けで動いた。合格の基準を「`max` で `policy: max`、各段階で `settings.json` の `fusionTier` が指定どおり」に改め、README の「Copilot Fusion の段階」と「変更後の確認」に観測を版付きで書いた。下のコマンドの standard の回が `NG:` になるのはこのためで、起動口の欠陥ではない。
+
 ```bash
 ! cd /workspace && for t in standard max; do sid=$(python3 -I -c 'import uuid; print(uuid.uuid4())') && copilot --c3c-fusion-tier "$t" -p '1+1 の答えだけを書いてください' -s --model fusion --session-id "$sid" --no-ask-user --no-auto-update --max-ai-credits 30 && python3 -I -c 'import json,sys; t,p=sys.argv[1:3]; ps=[e["data"].get("policy") for e in map(json.loads, open(p)) if e.get("type")=="session.fusion_resolved"]; print(t, ps); sys.exit(0 if ps and all(x==t for x in ps) else 1)' "$t" ~/.copilot/session-state/"$sid"/events.jsonl || { echo "NG: $t"; break; }; done
 ```

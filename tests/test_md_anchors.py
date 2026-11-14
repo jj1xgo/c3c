@@ -180,13 +180,13 @@ class MdAnchorsTest(unittest.TestCase):
                 self.assert_broken(self.write(name, text), expect=f'{name}:{line}:')
 
     def test_lazy_continuation_underline_at_the_paragraph_depth_still_works(self):
-        # 段落は繋げて 1 つの見出しになる（GitHub の id は行を空白で繋いだ文から作る）。
+        # 段落は繋げて 1 つの見出しになる（GitHub の実物では行の間の改行が消えて繋がる。foo/bar は #foobar）。
         for name, text in (
-            ('two-lazy-two.md', '> > a\n> b\n> > ---\n[x](#a-b)\n'),
-            ('one-lazy-one.md', '> a\nb\n> ---\n[x](#a-b)\n'),
-            ('three-lazy-three.md', '> > > a\n> b\n> > > ---\n[x](#a-b)\n'),
+            ('two-lazy-two.md', '> > a\n> b\n> > ---\n[x](#ab)\n'),
+            ('one-lazy-one.md', '> a\nb\n> ---\n[x](#ab)\n'),
+            ('three-lazy-three.md', '> > > a\n> b\n> > > ---\n[x](#ab)\n'),
             ('plain.md', '平文\n---\n[x](#平文)\n'),
-            ('plain-two-lines.md', 'a\nb\n---\n[x](#a-b)\n'),
+            ('plain-two-lines.md', 'a\nb\n---\n[x](#ab)\n'),
             ('quoted-after-plain.md', '段落\n> 引用\n> ---\n[x](#引用)\n'),
             ('quoted-after-blank.md', '> a\n\n> b\n> ===\n[x](#b)\n'),
         ):
@@ -206,7 +206,7 @@ class MdAnchorsTest(unittest.TestCase):
     def test_lazy_line_with_equals_is_paragraph_text(self):
         # === は lazy continuation の文字で、引用の外の下線にならない（M2）。
         self.assert_broken(self.write('eq.md', '> a\nb\n===\n[x](#b)\n'), expect='eq.md:4:')
-        self.assert_broken(self.write('eq2.md', '> a\nb\n===\n[x](#a-b)\n'), expect='eq2.md:4:')
+        self.assert_broken(self.write('eq2.md', '> a\nb\n===\n[x](#ab)\n'), expect='eq2.md:4:')
 
     def test_quoted_block_that_is_not_a_paragraph_is_not_lazy(self):
         # 引用の中のコードブロック・字下げのコード・HTML の後の引用の外の行は、新しい段落（I1）。
@@ -289,7 +289,7 @@ class MdAnchorsTest(unittest.TestCase):
     def test_indented_code_is_not_a_setext_candidate(self):
         # 段落でない字下げのコードは、見出しにならない。段落の途中の字下げは段落の続き。
         self.assert_broken(self.write('code.md', '    code\n---\n[x](#code)\n'), expect='code.md:3:')
-        self.assert_ok(self.write('continued.md', 'a\n    b\n---\n[x](#a-b)\n'))
+        self.assert_ok(self.write('continued.md', 'a\n    b\n---\n[x](#ab)\n'))
 
     def test_non_ascii_markdown_filename_is_found_by_git_mode(self):
         # lint.sh は --git で呼ぶ。git ls-files が引用する日本語のファイル名も検査に入る。

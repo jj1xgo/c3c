@@ -111,7 +111,7 @@ def _html_start(line, in_paragraph):
 def heading_ids(text):
     ids = set()
     seen = {}
-    paragraph = None  # 開いている段落 [行を空白で繋いだ文, 引用の深さ]（setext の見出しの候補）
+    paragraph = None  # 開いている段落 [行を空白なしで繋いだ文, 引用の深さ]（setext の見出しの候補）
     html = None  # HTML ブロックの中なら (引用の深さ, 終わりの正規表現 | None)
     fence = None  # 引用の中のコードブロックの中なら (記号, 長さ, 引用の深さ)
     for _, line in _content_lines(text):
@@ -164,7 +164,7 @@ def heading_ids(text):
             elif NOT_PARAGRAPH_RE.match(line) or THEMATIC_RE.fullmatch(line):
                 paragraph = None
             elif continues:
-                paragraph[0] += ' ' + line.strip()
+                paragraph[0] += line.strip()  # GitHub の実物: 行の間の改行は - にならず消える（'foo' / 'bar' / '---' は #foobar）
             else:
                 paragraph = [line.strip(), quoted]
             continue

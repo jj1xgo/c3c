@@ -6,7 +6,6 @@ c3c から resolve_state_dir() を抽出し、隔離 HOME で実行する。第 
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import tempfile
 import unittest

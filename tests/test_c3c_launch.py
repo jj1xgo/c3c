@@ -1100,7 +1100,7 @@ class LegacyStateLaunchTests(LaunchCase):
         self.assertEqual((self.state_dir / 'projects').read_text(), str(self.proj) + '\n')
 
     def test_check_without_ledger_points_to_legacy_ledger_without_reading_it(self):
-        legacy = self.make_legacy_state()
+        self.make_legacy_state()
         before = self.snapshot(self.home)
         result = self.run_c3c('--check')
         self.assertIn('[WARN] 旧 state', result.stdout)

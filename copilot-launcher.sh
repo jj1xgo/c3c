@@ -5,13 +5,16 @@
 #
 # Copilot の command sandboxing（MXC の bubblewrap、通信なし）を c3c のコンテナの中で動かすため、次をこの順で
 # 行い、どれかを満たせなければ ERROR を出して rc 1 で止まる（Copilot を起動しない。fail-closed）。
+#   0. 第 1 引数の --c3c-fusion-tier <値> を受け取って取り除く（値は standard・high・max だけ）。第 2 引数以降は
+#      変えずに Copilot に渡す（取り除いた直後にもう一度 --c3c-fusion-tier を続けた二重の指定は止める）
 #   1. bwrap の中継（copilot-bwrap-shim.sh）と Copilot の実体があること。続けて Copilot の package.json の版を、
 #      c3c が sandbox を canary で確かめた版（VERIFIED_COPILOT_VERSION）と比べ、違えば WARNING を出す（止めない）。
 #      package.json が読めない・版が印字できる 1 語でなければ止める
 #   2. 作業ディレクトリが、認証や秘密の置き場（/home/node 自身とその祖先、/home/node の直下の . で始まる
 #      エントリとその下）でないこと。sandbox はその作業ディレクトリを読み取りだけで見せる
 #   3. COPILOT_HOME の settings.json を、root が持つ雛形から毎回作り直し、作業ディレクトリを readonlyPaths に
-#      入れて、sandbox の設定を検査する（弱めた設定、未知のキー、真偽値でない値は不合格）
+#      入れて、sandbox の設定を検査する（弱めた設定、未知のキー、真偽値でない値は不合格）。段階を受け取ったときは
+#      fusionTier に書く（受け取らなければ書かず、雛形のまま）
 #   4. トークンを SECRETS_DIR の COPILOT_PAT から bash の組み込みで読む（印字できる ASCII の 1 行だけ）
 #   5. 環境を allowlist に絞り、中継を PATH の先頭にして npm-loader.js を exec する
 # トークンは外部コマンドの引数にしない（env -i を使わない。並行する sandbox からもコマンドラインは見える）。
@@ -22,7 +25,7 @@ set -u
 set +x +v
 # 起動口が使う名前を、呼び出し元が export した同じ名前から切り離す（export のまま値を入れると、下の環境の
 # 絞り込みで消える）。
-unset -v cwd rel token name saved_lc_all saved_lc_all_set installed_version
+unset -v cwd rel token name saved_lc_all saved_lc_all_set installed_version fusion_tier
 
 readonly CONTAINER_HOME=/home/node
 readonly COPILOT_BWRAP_DIR=/usr/local/libexec/c3c/copilot-bwrap
@@ -43,6 +46,33 @@ fail() {
   echo "ERROR: $*" >&2
   exit 1
 }
+
+# 0. Fusion の段階（Copilot CLI は設定ファイルの fusionTier でしか受け取らない）。第 1 引数だけを case で解釈し、
+#    受け取った値は ERROR の文に出さない。ここで止まるときは、~/.copilot も lock も settings.json も作らない。
+readonly FUSION_TIER_USAGE="第 1 引数の --c3c-fusion-tier には standard・high・max のどれか 1 つを、別の引数で渡してください（Copilot を起動しません）。"
+fusion_tier=""
+if [ "$#" -ge 1 ]; then
+  case "$1" in
+    --c3c-fusion-tier=*)
+      fail "$FUSION_TIER_USAGE"
+      ;;
+    --c3c-fusion-tier)
+      if [ "$#" -lt 2 ]; then
+        fail "$FUSION_TIER_USAGE"
+      fi
+      case "$2" in
+        standard | high | max) fusion_tier="$2" ;;
+        *) fail "$FUSION_TIER_USAGE" ;;
+      esac
+      shift 2
+      if [ "$#" -ge 1 ]; then
+        case "$1" in
+          --c3c-fusion-tier | --c3c-fusion-tier=*) fail "$FUSION_TIER_USAGE" ;;
+        esac
+      fi
+      ;;
+  esac
+fi
 
 # 1. 中継と実体
 if [ ! -f "$COPILOT_BWRAP_DIR/bwrap" ] || [ ! -x "$COPILOT_BWRAP_DIR/bwrap" ]; then
@@ -125,13 +155,17 @@ fi
 if ! "$PYTHON3" -I -c '
 import json, os, sys
 
-template_path, home, settings_path, cwd, required_tmp, required_secrets = sys.argv[1:7]
+template_path, home, settings_path, cwd, required_tmp, required_secrets, fusion_tier = sys.argv[1:8]
 REQUIRED_DENIED = [required_tmp, required_secrets]
 
 
 def die(message):
     print("ERROR: " + message, file=sys.stderr)
     sys.exit(1)
+
+
+if fusion_tier and fusion_tier not in ("standard", "high", "max"):
+    die("Fusion の段階が standard・high・max のどれでもありません。")
 
 
 def check(doc, readonly_paths):
@@ -193,6 +227,8 @@ if os.path.islink(settings_path) or (os.path.lexists(settings_path) and not os.p
 
 settings = template
 settings["sandbox"]["userPolicy"]["filesystem"]["readonlyPaths"] = [cwd]
+if fusion_tier:
+    settings["fusionTier"] = fusion_tier
 tmp = settings_path + ".tmp." + str(os.getpid())
 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
 try:
@@ -209,10 +245,12 @@ except BaseException:
 
 with open(settings_path, encoding="utf-8") as f:
     written = json.load(f)
+if written != settings:
+    die(settings_path + " の中身が作り直した内容と一致しません。")
 problem = check(written, [cwd])
 if problem:
     die(settings_path + " の sandbox の設定が不正です: " + problem + "。")
-' "$SETTINGS_TEMPLATE" "$COPILOT_HOME" "$COPILOT_HOME/settings.json" "$cwd" "$SANDBOX_TMP" "$SECRETS_DIR"; then
+' "$SETTINGS_TEMPLATE" "$COPILOT_HOME" "$COPILOT_HOME/settings.json" "$cwd" "$SANDBOX_TMP" "$SECRETS_DIR" "$fusion_tier"; then
   fail "sandbox の設定を用意できないため、Copilot を起動しません。"
 fi
 
@@ -261,5 +299,5 @@ export PATH="$SAFE_PATH"
 export COPILOT_HOME
 export COPILOT_AUTO_UPDATE=false
 export COPILOT_GITHUB_TOKEN="$token"
-unset token saved_lc_all saved_lc_all_set name denied cwd rel installed_version
+unset token saved_lc_all saved_lc_all_set name denied cwd rel installed_version fusion_tier
 exec "$COPILOT_JS" "$@"

@@ -101,7 +101,12 @@ def heading_ids(text):
         elif previous is not None and previous[1] == quoted and SETEXT_RE.fullmatch(line):
             title, previous = previous[0], None  # 引用の深さが違う --- は、段落の下線にならない
         else:
-            previous = (line, quoted) if line.strip() and not NOT_PARAGRAPH_RE.match(line) else None
+            if line.strip() and not NOT_PARAGRAPH_RE.match(line):
+                # 段落の途中で引用が浅くなった行は lazy continuation で、段落の深さは元のまま
+                depth = previous[1] if previous is not None and quoted < previous[1] else quoted
+                previous = (line, depth)
+            else:
+                previous = None
             continue
         base = _slug(title)
         slug = base

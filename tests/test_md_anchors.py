@@ -162,6 +162,34 @@ class MdAnchorsTest(unittest.TestCase):
             with self.subTest(name):
                 self.assert_ok(self.write(name, text))
 
+    def test_lazy_continuation_keeps_the_paragraph_quote_depth(self):
+        # 段落の途中で引用が浅くなった行は lazy continuation で、段落の深さは元のまま。
+        # その段落の下線は、元の深さの --- だけ（深さが違う --- は水平線）。
+        # 引数は (名前, 本文, 切れているべきリンクの行)。
+        for name, text, line in (
+            ('m5.md', '> > b\n> c\n> ---\n[x](#c)\n', 4),
+            ('m4.md', '> 段落\n続き\n---\n[x](#続き)\n', 4),
+            ('m4-first.md', '> 段落\n続き\n---\n[x](#段落)\n', 4),
+            ('two-one-one.md', '> > a\n> b\n> ---\n[x](#b)\n', 4),
+            ('two-zero-zero.md', '> > a\nb\n---\n[x](#b)\n', 4),
+            ('lazy-repeated.md', '> > a\n> b\nc\n> ---\n[x](#c)\n', 5),
+            ('lazy-repeated-first.md', '> > a\n> b\nc\n> ---\n[x](#a)\n', 5),
+            ('lazy-then-blank.md', '> > a\n> b\n\n> ---\n[x](#b)\n', 5),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:{line}:')
+
+    def test_lazy_continuation_underline_at_the_paragraph_depth_still_works(self):
+        for name, text in (
+            ('two-lazy-two.md', '> > a\n> b\n> > ---\n[x](#b)\n'),  # id は最後の行（既知の制限）
+            ('one-lazy-one.md', '> a\nb\n> ---\n[x](#b)\n'),  # 同上
+            ('plain.md', '平文\n---\n[x](#平文)\n'),
+            ('quoted-after-plain.md', '段落\n> 引用\n> ---\n[x](#引用)\n'),
+            ('quoted-after-blank.md', '> a\n\n> b\n> ===\n[x](#b)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_ok(self.write(name, text))
+
     def test_non_ascii_markdown_filename_is_found_by_git_mode(self):
         # lint.sh は --git で呼ぶ。git ls-files が引用する日本語のファイル名も検査に入る。
         env = {'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_SYSTEM': '/dev/null', 'PATH': os.environ['PATH']}

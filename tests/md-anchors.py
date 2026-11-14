@@ -131,7 +131,7 @@ def heading_ids(text):
             fence = None  # 引用が終わった（コードブロックは lazy continuation にならない）
         if not line.strip():
             paragraph = None
-            if html is not None and html[1] is None:
+            if html is not None and (html[1] is None or quoted < html[0]):  # 引用が空行で終われば、終わりの記号を持つ HTML も閉じる
                 html = None
             continue
         if html is not None:

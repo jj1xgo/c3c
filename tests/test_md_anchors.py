@@ -244,10 +244,20 @@ class MdAnchorsTest(unittest.TestCase):
         for name, text in (
             ('after-blank.md', '<div>\n\nfoo\n---\n[x](#foo)\n'),
             ('after-comment.md', '<!--\nx\n-->\n\nfoo\n---\n[x](#foo)\n'),
-            ('type7-cannot-interrupt.md', 'foo\n<span>\n---\n[x](#foo-span)\n'),
+            # 種類 7 は段落を中断できない。HTML ブロックにならなければ、次行の見出しは飲まれない。
+            ('type7-cannot-interrupt.md', 'foo\n<span>\n# H\n[x](#h)\n'),
         ):
             with self.subTest(name):
                 self.assert_ok(self.write(name, text))
+
+    def test_blank_line_outside_quote_closes_quoted_html_block(self):
+        # 引用の外の空行で引用は終わり、終わりの記号を持つ HTML（種類 1〜5）の状態も閉じる。
+        for name, start in (
+            ('script.md', '<script>'), ('comment.md', '<!--'), ('pi.md', '<?pi'),
+            ('doctype.md', '<!DOCTYPE'), ('cdata.md', '<![CDATA['), ('pre.md', '<pre>'),
+        ):
+            with self.subTest(name):
+                self.assert_ok(self.write(name, f'> {start}\n\n> c\n> ---\n[x](#c)\n'))
 
     def test_thematic_break_ends_a_quoted_paragraph(self):
         # ___ や *** は段落を中断して引用を閉じる。その後の --- は見出しにならない。

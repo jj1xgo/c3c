@@ -135,6 +135,14 @@ class MdAnchorsTest(unittest.TestCase):
     def test_heading_in_blockquote_gets_an_id(self):
         self.assert_ok(self.write('a.md', '> # 引用の見出し\n\n[x](#引用の見出し)\n'))
 
+    def test_unquoted_rule_after_quoted_paragraph_is_not_a_setext_underline(self):
+        # 引用の外の --- は水平線で、引用の段落を見出しにしない。
+        text = '> 引用の段落\n---\n[x](#引用の段落)\n'
+        self.assert_broken(self.write('a.md', text), expect='a.md:3: (#引用の段落)')
+
+    def test_quoted_setext_heading_still_works(self):
+        self.assert_ok(self.write('a.md', '> 引用の見出し\n> ---\n\n[x](#引用の見出し)\n'))
+
     def test_non_ascii_markdown_filename_is_found_by_git_mode(self):
         # lint.sh は --git で呼ぶ。git ls-files が引用する日本語のファイル名も検査に入る。
         env = {'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_SYSTEM': '/dev/null', 'PATH': os.environ['PATH']}

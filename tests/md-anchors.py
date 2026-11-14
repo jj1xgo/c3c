@@ -90,16 +90,18 @@ def heading_ids(text):
         if line is None:
             previous = None
             continue
-        line = QUOTE_RE.sub('', line, count=1)  # 引用の中の見出しにも id が付く
+        stripped = QUOTE_RE.sub('', line, count=1)  # 引用の中の見出しにも id が付く
+        quoted = stripped != line
+        line = stripped
         title = None
         atx = ATX_RE.fullmatch(line)
         if atx:
             title = ATX_CLOSE_RE.sub('', atx.group(2) or '')
             previous = None
-        elif previous is not None and SETEXT_RE.fullmatch(line):
-            title, previous = previous, None
+        elif previous is not None and previous[1] == quoted and SETEXT_RE.fullmatch(line):
+            title, previous = previous[0], None  # 引用の外の --- は、引用の段落の下線にならない
         else:
-            previous = line if line.strip() and not NOT_PARAGRAPH_RE.match(line) else None
+            previous = (line, quoted) if line.strip() and not NOT_PARAGRAPH_RE.match(line) else None
             continue
         base = _slug(title)
         slug = base

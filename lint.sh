@@ -1,5 +1,5 @@
 #!/bin/bash
-# 集約 lint target: bash -n + shellcheck + podman compose config をまとめて実行する。
+# 集約 lint target: bash -n + shellcheck + podman compose config + Python の構文 + Markdown のアンカーをまとめて実行する。
 # 対象の bash スクリプトは git ls-files（追跡済み + 未追跡。gitignore 対象は除く）+
 # shebang 判定で動的に決定する
 # （ハードコードのファイルリストを持たない — 追加/削除時のリスト同期漏れを構造的に防ぐ）。
@@ -356,6 +356,9 @@ from pathlib import Path
 for path in [*Path('.').glob('*.py'), *Path('tests').glob('*.py')]:
     compile(path.read_text(), str(path), 'exec')
 PYTHON
+
+# Markdown のリンクのアンカー（#見出し）が、リンク先の見出しに当たるか確かめる（tests/md-anchors.py）。
+python3 -I tests/md-anchors.py --git || status=1
 
 if [ "$status" -eq 0 ]; then
   echo "lint OK"

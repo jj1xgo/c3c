@@ -1,5 +1,5 @@
 #!/bin/bash
-# 集約 lint target: bash -n + shellcheck + podman compose config + Python の構文 + Markdown のアンカーをまとめて実行する。
+# 集約 lint target: bash -n + shellcheck + podman compose config + Python の構文 + Python の静的な検査（ruff の F 系）+ Markdown のアンカーをまとめて実行する。
 # 対象の bash スクリプトは git ls-files（追跡済み + 未追跡。gitignore 対象は除く）+
 # shebang 判定で動的に決定する
 # （ハードコードのファイルリストを持たない — 追加/削除時のリスト同期漏れを構造的に防ぐ）。
@@ -32,6 +32,32 @@ echo "shellcheck ${shellcheck_version:-不明}"
 if [ -n "$ci_shellcheck_version" ] && [ "$shellcheck_version" != "$ci_shellcheck_version" ]; then
   echo "WARNING: shellcheck の版（${shellcheck_version:-不明}）が CI の固定版（$ci_shellcheck_version）と異なります。版差で指摘が増減することがあります（#123）。" >&2
 fi
+
+ci_ruff_version=$(sed -nE 's/^[[:space:]]*RUFF_VERSION:[[:space:]]*"([^"]+)".*/\1/p' \
+  .github/workflows/ci.yml 2>/dev/null | head -n 1)
+
+# Python の静的な検査（ruff の F 系。使っていない import・変数、未定義の名前など）をかける（#264）。
+# 引数: CI の固定版（空なら版は比べない）、対象のファイル。ruff が無いときは WARNING で飛ばし、
+# LINT_REQUIRE_RUFF=1 のとき（CI）だけ失敗にする。bash の組み込みと ruff だけを使う（試験が PATH を絞るため）。
+run_ruff_check() {
+  local ci_version="$1" v=""
+  shift
+  if ! command -v ruff >/dev/null 2>&1; then
+    if [ "${LINT_REQUIRE_RUFF:-}" = "1" ]; then
+      printf 'ERROR: ruff が見つかりません（LINT_REQUIRE_RUFF=1 では必須です）。\n' >&2
+      return 1
+    fi
+    printf 'WARNING: ruff が見つからないため Python の静的な検査（ruff の F 系）をスキップしました（CI では LINT_REQUIRE_RUFF=1 で必須）。\n' >&2
+    return 0
+  fi
+  read -r _ v _ <<<"$(ruff --version 2>/dev/null)"
+  printf 'ruff %s\n' "${v:-不明}"
+  if [ -n "$ci_version" ] && [ "$v" != "$ci_version" ]; then
+    printf 'WARNING: ruff の版（%s）が CI の固定版（%s）と異なります。版差で指摘が増減することがあります（#264）。\n' "${v:-不明}" "$ci_version" >&2
+  fi
+  [ "$#" -gt 0 ] || return 0
+  ruff check --isolated --no-cache --select F --output-format concise -- "$@" || return 1
+}
 
 status=0
 
@@ -356,6 +382,12 @@ from pathlib import Path
 for path in [*Path('.').glob('*.py'), *Path('tests').glob('*.py')]:
     compile(path.read_text(), str(path), 'exec')
 PYTHON
+
+# 構文の確認と同じ対象（ルートと tests/ の *.py。`.` で始まる名前も含む）に ruff の F 系をかける。
+shopt -s nullglob dotglob
+py_files=(./*.py tests/*.py)
+shopt -u nullglob dotglob
+run_ruff_check "$ci_ruff_version" "${py_files[@]}" || status=1
 
 # Markdown のリンクのアンカー（#見出し）が、リンク先の見出しに当たるか確かめる（tests/md-anchors.py）。
 python3 -I tests/md-anchors.py --git || status=1

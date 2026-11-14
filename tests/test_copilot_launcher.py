@@ -241,6 +241,7 @@ class CopilotLauncherTest(unittest.TestCase):
     def test_fusion_tier_written(self):
         for tier in TIERS:
             with self.subTest(tier=tier):
+                Path(str(self.record) + '.argv').unlink(missing_ok=True)
                 result = self.run_launcher('--c3c-fusion-tier', tier, '-p', 'a b', '--model', 'fusion')
                 self.assert_ran(result)
                 self.assertEqual(self.recorded_argv(), ['-p', 'a b', '--model', 'fusion'])
@@ -274,7 +275,7 @@ class CopilotLauncherTest(unittest.TestCase):
                 result = self.run_launcher(*args)
                 self.assert_refused(result, r'--c3c-fusion-tier')
                 self.assertFalse(self.copilot_home.exists(), '~/.copilot も lock も作らない')
-        for value in ('auto', 'Max'):
+        for value in ('auto', 'Max', 'zz-c3c-probe'):
             with self.subTest(value=value):
                 self.assertNotIn(value, self.run_launcher('--c3c-fusion-tier', value).stderr, '受け取った値を出さない')
 
@@ -283,6 +284,20 @@ class CopilotLauncherTest(unittest.TestCase):
         self.assert_ran(self.run_launcher(*args))
         self.assertEqual(self.recorded_argv(), args)
         self.assertEqual(json.loads(self.settings.read_text()), self.expected_settings(self.work))
+        # 段階を取り除いた後は、直後が値の形でも、離れた位置に同じ文字列があっても、そのまま渡す。
+        for args, passed in ((['--c3c-fusion-tier', 'high', 'high'], ['high']),
+                             (['--c3c-fusion-tier', 'max', '-p', '--c3c-fusion-tier'], ['-p', '--c3c-fusion-tier'])):
+            with self.subTest(args=args):
+                Path(str(self.record) + '.argv').unlink(missing_ok=True)
+                self.assert_ran(self.run_launcher(*args))
+                self.assertEqual(self.recorded_argv(), passed)
+
+    def test_fusion_tier_parsed_before_shim_check(self):
+        # 段階の引数の解釈は、中継と実体の検査より前（不変条件の順序）。
+        (self.bwrap_dir / 'bwrap').unlink()
+        result = self.run_launcher('--c3c-fusion-tier', 'bad')
+        self.assert_refused(result, r'--c3c-fusion-tier')
+        self.assertNotIn('bwrap', result.stderr)
 
     def test_fusion_tier_with_template_value(self):
         self.write_template(lambda d: d.update(fusionTier='standard'))
@@ -465,7 +480,7 @@ class CopilotLauncherTest(unittest.TestCase):
         extra = {'GH_TOKEN': 'gh-secret', 'GITHUB_TOKEN': 'github-secret', 'COPILOT_GITHUB_TOKEN': 'old',
                  'GITHUB_MCP_PAT': 'mcp-secret', 'AWS_ACCESS_KEY_ID': 'aws-secret', 'COPILOT_HOME': '/elsewhere',
                  'COPILOT_ALLOW_ALL': 'true', 'GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS': '1', 'BASH_ENV': '/x',
-                 'PYTHONPATH': '/x', 'CONTAINER_HOME': '/elsewhere', 'SAFE_PATH': '/x', 'TERM': 'xterm', 'TZ': 'Asia/Tokyo', 'NO_COLOR': '1'}
+                 'PYTHONPATH': '/x', 'CONTAINER_HOME': '/elsewhere', 'SAFE_PATH': '/x', 'FUSION_TIER_USAGE': '/x', 'TERM': 'xterm', 'TZ': 'Asia/Tokyo', 'NO_COLOR': '1'}
         result = self.run_launcher('--version', env_extra=extra)
         self.assert_ran(result)
         env = self.recorded_env()

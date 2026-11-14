@@ -599,7 +599,7 @@ opt-in のイメージには、Debian の `bubblewrap`（0.5.0 以上）、npm �
 
 **起動口が止める条件**（`ERROR:` を出して rc 1。Copilot は起動しない）:
 
-- 第 1 引数の `--c3c-fusion-tier` の値が無いか `standard`・`high`・`max` 以外、`--c3c-fusion-tier=<値>` の形、段階の直後に `--c3c-fusion-tier` をもう一度続けた（下の「Copilot Fusion の段階」）
+- 第 1 引数の `--c3c-fusion-tier` の値が無いか `standard`・`high`・`max` 以外、`--c3c-fusion-tier=<値>` の形、段階の直後に `--c3c-fusion-tier` か `--c3c-fusion-tier=<値>` をもう一度続けた（下の「Copilot Fusion の段階」）
 - 中継か Copilot の実体が無い（旧イメージ。`-b` で再ビルドする）
 - Copilot の `package.json` が読めないか、版が空白を含まない印字できる 1 語でない
 - 作業ディレクトリが `/home/node` 自身かその祖先（`/` を含む）か、`/home/node` の直下の `.` で始まるエントリ（`.claude`・`.codex`・`.copilot`・`.config` など）かその下。sandbox で隠す `/tmp` と `SECRETS_DIR` のマウント先とその下も断る（作業ディレクトリは sandbox に読み取りだけで入るので、隠す場所と重ねない）。`/workspace` や `/home/node/copilot-work` のような、Copilot に見せてよいディレクトリで起動する。消えたディレクトリの中、改行や制御文字を含むパスでも止まる

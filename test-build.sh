@@ -1106,6 +1106,8 @@ run_launcher_tests() {
   check "Copilot の sandbox 用 bwrap の中継（--proc /proc の組だけを最初の -- より前で替える・組が無ければ素通し・本物の欠落の fail-closed・本物を空の環境で起動・終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_bwrap_shim.py"
   check "Copilot の Dockerfile の区間（入った版の検査〈latest は素の X.Y.Z、番号は一致〉・COPILOT_CACHEBUST・飛ばす口なし・sandbox の設定の読みの確認〈葉と型の一致、余分は許す、失敗・打ち切りの fail-closed、一時の home を消す、起動口と同じ組み立て〉）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_config_check.py"
   check "Copilot 起動口（作業ディレクトリの拒否・settings.json の毎回の作り直しと readonlyPaths・弱めた設定と未知のキーと真偽値でない値の拒否・トークンの書式・環境の allowlist・どの argv にもトークンが無い・引数と終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_launcher.py"
+  check "Copilot の canary の判定（bash の実行がちょうど 1 回・ほかの道具で不合格・コマンドの一致・出力の期待値・モデルの文を見ない・クレジット・設定の弱めと型まで含む一致・消費の 1 行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary_helper.py"
+  check "Copilot の canary の段取り（前提と拒む作業ディレクトリ・目印・名前空間・/home/node での停止・弱めた設定の戻り・後片付けの確認・中断・引数の組・消費の記録）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests

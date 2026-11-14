@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -116,6 +117,33 @@ class MdAnchorsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('(#x)', result.stderr)
         self.assertIn('(#y)', result.stderr)
+
+    def test_angle_bracket_destination_is_checked(self):
+        # [x](<#a>) も通常のリンクなので、切れていれば報告する。
+        self.assert_broken(self.write('a.md', '# 節\n[x](<#無い節>)\n'), expect='a.md:2: (#無い節)')
+        self.assert_ok(self.write('b.md', '# 節\n[x](<#節>) [y](<a.md#節>)\n'))
+
+    def test_setext_candidate_does_not_cross_a_fence(self):
+        # 段落とフェンスと --- の並びは、段落を見出しにしない（--- は水平線）。
+        text = '本文\n```\ncode\n```\n---\n[x](#本文)\n'
+        self.assert_broken(self.write('a.md', text), expect='a.md:6: (#本文)')
+
+    def test_setext_heading_still_works_around_a_fence(self):
+        text = '```\ncode\n```\n見出し\n---\n[x](#見出し)\n'
+        self.assert_ok(self.write('a.md', text))
+
+    def test_heading_in_blockquote_gets_an_id(self):
+        self.assert_ok(self.write('a.md', '> # 引用の見出し\n\n[x](#引用の見出し)\n'))
+
+    def test_non_ascii_markdown_filename_is_found_by_git_mode(self):
+        # lint.sh は --git で呼ぶ。git ls-files が引用する日本語のファイル名も検査に入る。
+        env = {'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_SYSTEM': '/dev/null', 'PATH': os.environ['PATH']}
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True, env=env)
+        self.write('設計.md', '# 節\n[x](#無い節)\n')
+        result = subprocess.run([sys.executable, '-I', str(CHECKER), '--git'], cwd=self.root,
+                                capture_output=True, text=True, timeout=30, env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('設計.md:2: (#無い節)', result.stderr)
 
     def test_no_files_is_ok(self):
         self.assert_ok()

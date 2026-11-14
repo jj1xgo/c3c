@@ -358,13 +358,7 @@ for path in [*Path('.').glob('*.py'), *Path('tests').glob('*.py')]:
 PYTHON
 
 # Markdown のリンクのアンカー（#見出し）が、リンク先の見出しに当たるか確かめる（tests/md-anchors.py）。
-md_files=()
-while IFS= read -r f; do
-  [ -f "$f" ] && md_files+=("$f")
-done < <(git ls-files -co --exclude-standard -- '*.md')
-if [ "${#md_files[@]}" -gt 0 ]; then
-  python3 -I tests/md-anchors.py "${md_files[@]}" || status=1
-fi
+python3 -I tests/md-anchors.py --git || status=1
 
 if [ "$status" -eq 0 ]; then
   echo "lint OK"

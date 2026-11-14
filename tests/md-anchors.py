@@ -25,6 +25,22 @@ ATX_RE = re.compile(r' {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*')
 ATX_CLOSE_RE = re.compile(r'(?:^|[ \t]+)#+[ \t]*$')
 SETEXT_RE = re.compile(r' {0,3}(=+|-+)[ \t]*')
 NOT_PARAGRAPH_RE = re.compile(r' {0,3}(?:[-*+>|]|[0-9]+[.)])')
+THEMATIC_RE = re.compile(r' {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})')
+HTML_TAGS = ('address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|'
+             'dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|'
+             'iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|'
+             'summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul')
+# CommonMark の HTML ブロックの始まり 1〜5（終わりの正規表現付き。段落を中断できる）、6（空行まで。中断できる）、7（空行まで。中断できない）
+HTML_STARTS = (
+    (re.compile(r' {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)', re.I), re.compile(r'</(?:script|pre|style|textarea)>', re.I)),
+    (re.compile(r' {0,3}<!--'), re.compile(r'-->')),
+    (re.compile(r' {0,3}<\?'), re.compile(r'\?>')),
+    (re.compile(r' {0,3}<![A-Za-z]'), re.compile(r'>')),
+    (re.compile(r' {0,3}<!\[CDATA\['), re.compile(r'\]\]>')),
+)
+HTML6_RE = re.compile(r' {0,3}</?(?:' + HTML_TAGS + r')(?:[ \t]|/?>|$)', re.I)
+HTML7_RE = re.compile(r' {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"\'=<>`]+|\'[^\']*\'|"[^"]*"))?)*\s*/?>'
+                      r'|</[A-Za-z][A-Za-z0-9-]*\s*>)[ \t]*')
 CODE_SPAN_RE = re.compile(r'(`+)(.+?)(?<!`)\1(?!`)')
 LINK_RE = re.compile(r'!?\[([^\]]*)\]\(\s*(?:<([^<>]*)>|([^()\s]*))(?:\s+"[^"]*")?\s*\)')
 QUOTE_RE = re.compile(r'(?: {0,3}>[ \t]?)+')
@@ -82,31 +98,75 @@ def _slug(heading):
     return ''.join(kept).replace(' ', '-')
 
 
+def _html_start(line, in_paragraph):
+    """行が HTML ブロックを始めるなら (終わりの正規表現 | None,) を返す（None は空行まで続く）。始めないなら None。"""
+    for start, end in HTML_STARTS:
+        if start.match(line):
+            return (end,)
+    if HTML6_RE.match(line) or (not in_paragraph and HTML7_RE.fullmatch(line)):
+        return (None,)
+    return None
+
+
 def heading_ids(text):
     ids = set()
     seen = {}
-    previous = None  # 直前の段落の行（setext の見出しの候補）
+    paragraph = None  # 開いている段落 [行を空白で繋いだ文, 引用の深さ]（setext の見出しの候補）
+    html = None  # HTML ブロックの中なら (引用の深さ, 終わりの正規表現 | None)
+    fence = None  # 引用の中のコードブロックの中なら (記号, 長さ, 引用の深さ)
     for _, line in _content_lines(text):
         if line is None:
-            previous = None
+            paragraph = html = fence = None
             continue
-        stripped = QUOTE_RE.sub('', line, count=1)  # 引用の中の見出しにも id が付く
-        quoted = line[:len(line) - len(stripped)].count('>')  # 引用の深さ（入れ子の `>` の数）
-        line = stripped
+        prefix = QUOTE_RE.match(line)  # 行頭の引用の記号だけ（行の途中の > は見ない）。引用の中の見出しにも id が付く
+        quoted = prefix.group().count('>') if prefix else 0  # 引用の深さ（入れ子の `>` の数）
+        line = line[prefix.end():] if prefix else line
+        if fence is not None:
+            if quoted >= fence[2]:
+                match = FENCE_RE.fullmatch(line)
+                if quoted == fence[2] and match and match.group(1)[0] == fence[0] \
+                        and len(match.group(1)) >= fence[1] and not match.group(2).strip():
+                    fence = None
+                continue
+            fence = None  # 引用が終わった（コードブロックは lazy continuation にならない）
+        if not line.strip():
+            paragraph = None
+            if html is not None and html[1] is None:
+                html = None
+            continue
+        if html is not None:
+            if quoted >= html[0]:
+                if html[1] is not None and html[1].search(line):
+                    html = None
+                continue
+            html = None
+        # 段落が続く行: 同じ深さか、浅くなった行（lazy continuation。段落の深さは元のまま）。深くなれば新しい引用
+        continues = paragraph is not None and quoted <= paragraph[1]
+        if not continues and (line.startswith('\t') or line.startswith('    ')):
+            paragraph = None  # 字下げのコード
+            continue
         title = None
         atx = ATX_RE.fullmatch(line)
         if atx:
             title = ATX_CLOSE_RE.sub('', atx.group(2) or '')
-            previous = None
-        elif previous is not None and previous[1] == quoted and SETEXT_RE.fullmatch(line):
-            title, previous = previous[0], None  # 引用の深さが違う --- は、段落の下線にならない
+            paragraph = None
+        elif paragraph is not None and paragraph[1] == quoted and SETEXT_RE.fullmatch(line):
+            title, paragraph = paragraph[0], None  # 引用の深さが違う --- は、段落の下線にならない
         else:
-            if line.strip() and not NOT_PARAGRAPH_RE.match(line):
-                # 段落の途中で引用が浅くなった行は lazy continuation で、段落の深さは元のまま
-                depth = previous[1] if previous is not None and quoted < previous[1] else quoted
-                previous = (line, depth)
+            fence_start = FENCE_RE.fullmatch(line)
+            html_start = _html_start(line, continues)
+            if fence_start and not (fence_start.group(1)[0] == '`' and '`' in fence_start.group(2)):
+                fence = (fence_start.group(1)[0], len(fence_start.group(1)), quoted)
+                paragraph = None
+            elif html_start is not None:
+                html = None if html_start[0] is not None and html_start[0].search(line) else (quoted, html_start[0])
+                paragraph = None
+            elif NOT_PARAGRAPH_RE.match(line) or THEMATIC_RE.fullmatch(line):
+                paragraph = None
+            elif continues:
+                paragraph[0] += ' ' + line.strip()
             else:
-                previous = None
+                paragraph = [line.strip(), quoted]
             continue
         base = _slug(title)
         slug = base

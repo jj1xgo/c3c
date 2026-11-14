@@ -180,15 +180,106 @@ class MdAnchorsTest(unittest.TestCase):
                 self.assert_broken(self.write(name, text), expect=f'{name}:{line}:')
 
     def test_lazy_continuation_underline_at_the_paragraph_depth_still_works(self):
+        # 段落は繋げて 1 つの見出しになる（GitHub の id は行を空白で繋いだ文から作る）。
         for name, text in (
-            ('two-lazy-two.md', '> > a\n> b\n> > ---\n[x](#b)\n'),  # id は最後の行（既知の制限）
-            ('one-lazy-one.md', '> a\nb\n> ---\n[x](#b)\n'),  # 同上
+            ('two-lazy-two.md', '> > a\n> b\n> > ---\n[x](#a-b)\n'),
+            ('one-lazy-one.md', '> a\nb\n> ---\n[x](#a-b)\n'),
+            ('three-lazy-three.md', '> > > a\n> b\n> > > ---\n[x](#a-b)\n'),
             ('plain.md', '平文\n---\n[x](#平文)\n'),
+            ('plain-two-lines.md', 'a\nb\n---\n[x](#a-b)\n'),
             ('quoted-after-plain.md', '段落\n> 引用\n> ---\n[x](#引用)\n'),
             ('quoted-after-blank.md', '> a\n\n> b\n> ===\n[x](#b)\n'),
         ):
             with self.subTest(name):
                 self.assert_ok(self.write(name, text))
+
+    def test_heading_text_is_the_whole_paragraph(self):
+        # 最後の行だけの id は、GitHub の id と違う（F2）。
+        for name, text, line in (
+            ('lazy-last-line.md', '> a\nb\n> ---\n[x](#b)\n', 4),
+            ('lazy-last-line-nested.md', '> > a\n> b\n> > ---\n[x](#b)\n', 4),
+            ('plain-last-line.md', 'a\nb\n---\n[x](#b)\n', 4),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:{line}:')
+
+    def test_lazy_line_with_equals_is_paragraph_text(self):
+        # === は lazy continuation の文字で、引用の外の下線にならない（M2）。
+        self.assert_broken(self.write('eq.md', '> a\nb\n===\n[x](#b)\n'), expect='eq.md:4:')
+        self.assert_broken(self.write('eq2.md', '> a\nb\n===\n[x](#a-b)\n'), expect='eq2.md:4:')
+
+    def test_quoted_block_that_is_not_a_paragraph_is_not_lazy(self):
+        # 引用の中のコードブロック・字下げのコード・HTML の後の引用の外の行は、新しい段落（I1）。
+        # 引用の外の --- は、その段落の下線になる（正しいリンク）。
+        for name, text in (
+            ('fence-then-heading.md', '> ```\nc\n---\n[x](#c)\n'),
+            ('indented-then-heading.md', '>     code\nc\n---\n[x](#c)\n'),
+            ('html-comment-then-heading.md', '> <!-- x -->\nc\n---\n[x](#c)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_ok(self.write(name, text))
+        # 引用の中の --- は、引用の外の段落の下線にならない。
+        for name, text in (
+            ('fence-then-quoted-rule.md', '> ```\nc\n> ---\n[x](#c)\n'),
+            ('indented-then-quoted-rule.md', '>     code\nc\n> ---\n[x](#c)\n'),
+            ('indented-then-quoted-rule2.md', '>     code\nc\n> ---\n[x](#code)\n'),
+            ('html-then-quoted-rule.md', '> <div>\nc\n> ---\n[x](#c)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:4:')
+
+    def test_html_block_line_does_not_continue_a_quoted_paragraph(self):
+        # lazy の行が HTML ブロックを始めるなら、段落は続かない（F1）。HTML ブロックは空行まで続く。
+        for name, text in (
+            ('div.md', '> a\n<div>\n> ---\n[x](#div)\n'),
+            ('div-a.md', '> a\n<div>\n> ---\n[x](#a)\n'),
+            ('div-inside.md', '<div>\nfoo\n---\n[x](#foo)\n'),
+            ('comment-inside.md', '<!--\nfoo\n---\n[x](#foo)\n'),
+            ('script-blank-inside.md', '<script>\n\nfoo\n---\n[x](#foo)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:{text.count(chr(10))}:')
+
+    def test_html_block_ends_and_text_after_it_is_a_paragraph(self):
+        for name, text in (
+            ('after-blank.md', '<div>\n\nfoo\n---\n[x](#foo)\n'),
+            ('after-comment.md', '<!--\nx\n-->\n\nfoo\n---\n[x](#foo)\n'),
+            ('type7-cannot-interrupt.md', 'foo\n<span>\n---\n[x](#foo-span)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_ok(self.write(name, text))
+
+    def test_thematic_break_ends_a_quoted_paragraph(self):
+        # ___ や *** は段落を中断して引用を閉じる。その後の --- は見出しにならない。
+        for name, text in (
+            ('underscores.md', '> a\n___\n> ---\n[x](#___)\n'),
+            ('underscores-a.md', '> a\n___\n> ---\n[x](#a)\n'),
+            ('spaced-dashes.md', '> a\n- - -\n> ---\n[x](#a)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:4:')
+
+    def test_fence_in_blockquote_is_code(self):
+        # 引用の中のコードブロックの中身は、段落でも見出しでもない。
+        for name, text in (
+            ('fence-atx.md', '> ```\n> # コメント\n> ```\n[x](#コメント)\n'),
+            ('fence-setext.md', '> ```\n> c\n> ---\n> ```\n[x](#c)\n'),
+            ('fence-quote-ends.md', '> ```\n> c\nd\n> ---\n[x](#d)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:{text.count(chr(10)) - 0}:')
+        # フェンスが閉じた後は普通の行に戻る。
+        self.assert_ok(self.write('after-fence.md', '> ```\n> x\n> ```\n> c\n> ---\n[x](#c)\n'))
+
+    def test_greater_than_inside_a_line_is_not_a_quote_marker(self):
+        # 行の途中の > は引用の記号ではない（深さを数えず、文字も消さない）。
+        self.assert_ok(self.write('arrow.md', 'a > b\n---\n[x](#a--b)\n'))
+        self.assert_ok(self.write('arrow2.md', '<!-- a -->\n\nfoo\n---\n[x](#foo)\n'))
+
+    def test_indented_code_is_not_a_setext_candidate(self):
+        # 段落でない字下げのコードは、見出しにならない。段落の途中の字下げは段落の続き。
+        self.assert_broken(self.write('code.md', '    code\n---\n[x](#code)\n'), expect='code.md:3:')
+        self.assert_ok(self.write('continued.md', 'a\n    b\n---\n[x](#a-b)\n'))
 
     def test_non_ascii_markdown_filename_is_found_by_git_mode(self):
         # lint.sh は --git で呼ぶ。git ls-files が引用する日本語のファイル名も検査に入る。

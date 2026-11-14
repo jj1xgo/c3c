@@ -91,7 +91,7 @@ def heading_ids(text):
             previous = None
             continue
         stripped = QUOTE_RE.sub('', line, count=1)  # 引用の中の見出しにも id が付く
-        quoted = stripped != line
+        quoted = line[:len(line) - len(stripped)].count('>')  # 引用の深さ（入れ子の `>` の数）
         line = stripped
         title = None
         atx = ATX_RE.fullmatch(line)
@@ -99,7 +99,7 @@ def heading_ids(text):
             title = ATX_CLOSE_RE.sub('', atx.group(2) or '')
             previous = None
         elif previous is not None and previous[1] == quoted and SETEXT_RE.fullmatch(line):
-            title, previous = previous[0], None  # 引用の外の --- は、引用の段落の下線にならない
+            title, previous = previous[0], None  # 引用の深さが違う --- は、段落の下線にならない
         else:
             previous = (line, quoted) if line.strip() and not NOT_PARAGRAPH_RE.match(line) else None
             continue

@@ -143,6 +143,25 @@ class MdAnchorsTest(unittest.TestCase):
     def test_quoted_setext_heading_still_works(self):
         self.assert_ok(self.write('a.md', '> 引用の見出し\n> ---\n\n[x](#引用の見出し)\n'))
 
+    def test_rule_at_a_different_quote_depth_is_not_a_setext_underline(self):
+        # 引用の深さが段落と違う --- は、段落の下線にならない（深さの組み合わせを全部見る）。
+        for name, text in (
+            ('deeper-paragraph.md', '> > 内側\n> ---\n[x](#内側)\n'),
+            ('shallower-paragraph.md', '> 外側\n> > ---\n[x](#外側)\n'),
+            ('two-to-none.md', '> > 内側\n---\n[x](#内側)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_broken(self.write(name, text), expect=f'{name}:3:')
+
+    def test_rule_at_the_same_quote_depth_is_a_setext_underline(self):
+        for name, text in (
+            ('one.md', '> 見出し\n> ---\n[x](#見出し)\n'),
+            ('two.md', '> > 見出し\n> > ---\n[x](#見出し)\n'),
+            ('two-compact.md', '>> 見出し\n>> ===\n[x](#見出し)\n'),
+        ):
+            with self.subTest(name):
+                self.assert_ok(self.write(name, text))
+
     def test_non_ascii_markdown_filename_is_found_by_git_mode(self):
         # lint.sh は --git で呼ぶ。git ls-files が引用する日本語のファイル名も検査に入る。
         env = {'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_SYSTEM': '/dev/null', 'PATH': os.environ['PATH']}

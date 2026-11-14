@@ -54,6 +54,7 @@ exec {real} "$@"
 
 
 VERIFIED = '1.0.109'
+TIERS = ('standard', 'high', 'max')
 WARNING_PREFIX = f'WARNING: Copilot CLI {{}} は、c3c が sandbox を canary で確かめた版（{VERIFIED}）と違います。'
 
 
@@ -235,6 +236,77 @@ class CopilotLauncherTest(unittest.TestCase):
         self.assert_refused(self.run_launcher('--version'))
         self.assertEqual(list(target.iterdir()), [])
 
+    # --- Fusion の段階 -------------------------------------------------------
+
+    def test_fusion_tier_written(self):
+        for tier in TIERS:
+            with self.subTest(tier=tier):
+                Path(str(self.record) + '.argv').unlink(missing_ok=True)
+                result = self.run_launcher('--c3c-fusion-tier', tier, '-p', 'a b', '--model', 'fusion')
+                self.assert_ran(result)
+                self.assertEqual(self.recorded_argv(), ['-p', 'a b', '--model', 'fusion'])
+                expected = self.expected_settings(self.work)
+                expected['fusionTier'] = tier
+                self.assertEqual(json.loads(self.settings.read_text()), expected)
+
+    def test_fusion_tier_does_not_persist(self):
+        self.assert_ran(self.run_launcher('--c3c-fusion-tier', 'max', '--version'))
+        self.assertEqual(json.loads(self.settings.read_text())['fusionTier'], 'max')
+        os.unlink(str(self.record) + '.argv')
+        self.assert_ran(self.run_launcher('--version'))
+        self.assertEqual(json.loads(self.settings.read_text()), self.expected_settings(self.work))
+
+    def test_fusion_tier_refused(self):
+        cases = [
+            ['--c3c-fusion-tier'],
+            ['--c3c-fusion-tier', ''],
+            ['--c3c-fusion-tier', 'Max'],
+            ['--c3c-fusion-tier', 'max '],
+            ['--c3c-fusion-tier', 'auto'],
+            ['--c3c-fusion-tier', '--version'],
+            ['--c3c-fusion-tier=max', '--version'],
+            ['--c3c-fusion-tier=', '--version'],
+            ['--c3c-fusion-tier', 'high', '--c3c-fusion-tier', 'max', '--version'],
+            ['--c3c-fusion-tier', 'max', '--c3c-fusion-tier'],
+            ['--c3c-fusion-tier', 'max', '--c3c-fusion-tier=high', '--version'],
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                result = self.run_launcher(*args)
+                self.assert_refused(result, r'--c3c-fusion-tier')
+                self.assertFalse(self.copilot_home.exists(), '~/.copilot も lock も作らない')
+        for value in ('auto', 'Max', 'zz-c3c-probe'):
+            with self.subTest(value=value):
+                self.assertNotIn(value, self.run_launcher('--c3c-fusion-tier', value).stderr, '受け取った値を出さない')
+
+    def test_fusion_tier_later_args_pass_through(self):
+        args = ['-p', 'x', '--c3c-fusion-tier', 'max', '--c3c-fusion-tier=bad']
+        self.assert_ran(self.run_launcher(*args))
+        self.assertEqual(self.recorded_argv(), args)
+        self.assertEqual(json.loads(self.settings.read_text()), self.expected_settings(self.work))
+        # 段階を取り除いた後は、直後が値の形でも、離れた位置に同じ文字列があっても、そのまま渡す。
+        for args, passed in ((['--c3c-fusion-tier', 'high', 'high'], ['high']),
+                             (['--c3c-fusion-tier', 'max', '-p', '--c3c-fusion-tier'], ['-p', '--c3c-fusion-tier'])):
+            with self.subTest(args=args):
+                Path(str(self.record) + '.argv').unlink(missing_ok=True)
+                self.assert_ran(self.run_launcher(*args))
+                self.assertEqual(self.recorded_argv(), passed)
+
+    def test_fusion_tier_parsed_before_shim_check(self):
+        # 段階の引数の解釈は、中継と実体の検査より前（不変条件の順序）。
+        (self.bwrap_dir / 'bwrap').unlink()
+        result = self.run_launcher('--c3c-fusion-tier', 'bad')
+        self.assert_refused(result, r'--c3c-fusion-tier')
+        self.assertNotIn('bwrap', result.stderr)
+
+    def test_fusion_tier_with_template_value(self):
+        self.write_template(lambda d: d.update(fusionTier='standard'))
+        self.assert_ran(self.run_launcher('--version'))
+        self.assertEqual(json.loads(self.settings.read_text())['fusionTier'], 'standard')
+        os.unlink(str(self.record) + '.argv')
+        self.assert_ran(self.run_launcher('--c3c-fusion-tier', 'max', '--version'))
+        self.assertEqual(json.loads(self.settings.read_text())['fusionTier'], 'max')
+
     # --- 雛形の検査 -----------------------------------------------------------
 
     def test_refuses_weakened_settings(self):
@@ -408,7 +480,7 @@ class CopilotLauncherTest(unittest.TestCase):
         extra = {'GH_TOKEN': 'gh-secret', 'GITHUB_TOKEN': 'github-secret', 'COPILOT_GITHUB_TOKEN': 'old',
                  'GITHUB_MCP_PAT': 'mcp-secret', 'AWS_ACCESS_KEY_ID': 'aws-secret', 'COPILOT_HOME': '/elsewhere',
                  'COPILOT_ALLOW_ALL': 'true', 'GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS': '1', 'BASH_ENV': '/x',
-                 'PYTHONPATH': '/x', 'CONTAINER_HOME': '/elsewhere', 'SAFE_PATH': '/x', 'TERM': 'xterm', 'TZ': 'Asia/Tokyo', 'NO_COLOR': '1'}
+                 'PYTHONPATH': '/x', 'CONTAINER_HOME': '/elsewhere', 'SAFE_PATH': '/x', 'FUSION_TIER_USAGE': '/x', 'TERM': 'xterm', 'TZ': 'Asia/Tokyo', 'NO_COLOR': '1'}
         result = self.run_launcher('--version', env_extra=extra)
         self.assert_ran(result)
         env = self.recorded_env()
@@ -424,12 +496,14 @@ class CopilotLauncherTest(unittest.TestCase):
             self.assertNotIn(value, env.values())
 
     def test_exported_internal_names_do_not_break(self):
-        extra = {'token': 'x', 'cwd': '/', 'rel': 'x', 'name': 'x', 'saved_lc_all': 'x', 'saved_lc_all_set': 'set'}
+        extra = {'token': 'x', 'cwd': '/', 'rel': 'x', 'name': 'x', 'saved_lc_all': 'x', 'saved_lc_all_set': 'set',
+                 'fusion_tier': 'max'}
         result = self.run_launcher('--version', env_extra=extra)
         self.assert_ran(result)
         env = self.recorded_env()
         self.assertEqual(env['COPILOT_GITHUB_TOKEN'], TOKEN)
         self.assertEqual(set(extra) & set(env), set())
+        self.assertNotIn('fusionTier', json.loads(self.settings.read_text()))
 
     def test_exported_functions_are_removed(self):
         # dash は名前に % を含む環境変数を落とすので、この試験の dummy は環境をそのまま記録する python にする。

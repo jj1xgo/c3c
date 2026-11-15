@@ -4,8 +4,9 @@
 # 使い方: install-apt-sources.sh <正規化済みの apt-sources のファイル>
 #   入力は validate-build-input.sh apt-sources の出力（1 行 1 取得元、半角空白区切り:
 #   <名前> <鍵の URL> <主鍵の指紋>[,<主鍵の指紋>...] <URI> <suite> <component>...）。
-#   Dockerfile.claude が 2 か所から呼ぶ: packages.txt の層の直前（初回の導入）と、-b のたびに作り直す
-#   upgrade の層の中（鍵の取り直し。提供元が鍵を替えても、キャッシュに残った古い鍵で止まらないため）。
+#   Dockerfile.claude が 4 か所から呼ぶ: packages.txt の層の直前（初回の導入）と、そのあと apt-get update を
+#   走らせる層（packages.txt の層、Copilot の層、-b のたびに作り直す upgrade の層）の update の前（鍵の取り直し。
+#   提供元が鍵を替えても、キャッシュに残った古い鍵で止まらないため）。
 #
 # 終了コード: 0 成功（入力が空なら何もしない）、1 取得・照合・書き込みの失敗、2 引数の誤り
 #
@@ -42,9 +43,11 @@ if ! command -v gpg >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends gnupg || { echo "ERROR: gnupg を入れられません" >&2; exit 1; }
 fi
 
+# 作業用の名前: 共通のものは「.」を含む名前（取得元の名前は「.」を含めないので衝突しない）、
+# 取得元ごとのものは "$work/src/<名前>/" の下に置く
 work=$(mktemp -d)
 cleanup() {
-  for h in "$work"/home-*; do
+  for h in "$work/show.home" "$work"/src/*/home; do
     [ -d "$h" ] && GNUPGHOME=$h gpgconf --kill all >/dev/null 2>&1
   done
   rm -rf "$work"
@@ -54,37 +57,39 @@ trap 'exit 1' HUP INT TERM
 
 # $1 の鍵ファイルの主鍵の指紋（pub の直後の fpr）を、整列して $2 に書く。読めなければ rc 1
 primaries() {
-  GNUPGHOME="$work/home-show" gpg --batch --show-keys --with-colons "$1" > "$work/colons" 2>/dev/null || return 1
-  awk -F: '$1 == "fpr" && prev == "pub" { print $10 } { prev = $1 }' "$work/colons" > "$work/fprs" || return 1
-  sort -u "$work/fprs" > "$2" || return 1
+  GNUPGHOME="$work/show.home" gpg --batch --show-keys --with-colons "$1" > "$work/show.colons" 2>/dev/null || return 1
+  awk -F: '$1 == "fpr" && prev == "pub" { print $10 } { prev = $1 }' "$work/show.colons" > "$work/show.fprs" || return 1
+  sort -u "$work/show.fprs" > "$2" || return 1
 }
 
-mkdir -m 700 "$work/home-show"
+mkdir -m 700 "$work/show.home" "$work/src"
 n=0
-: > "$work/plan"
+: > "$work/plan.names"
 while IFS=' ' read -r name keyurl fprs uri suite comps || [ -n "${name:-}" ]; do
   case "$name" in
     '' | *[!a-z0-9-]*) echo "ERROR: 取得元の名前が不正です: $name" >&2; exit 1 ;;
   esac
   n=$((n + 1))
-  key="$work/$name.key"
+  src="$work/src/$name"
+  mkdir "$src"
+  key="$src/key"
   if ! curl -fsSL --proto =https --proto-redir =https --tlsv1.2 --max-time 60 --max-filesize 1048576 \
       -o "$key" "$keyurl"; then
     echo "ERROR: $name の鍵を取得できません（$keyurl）" >&2
     exit 1
   fi
-  printf '%s\n' "$fprs" > "$work/declared.raw"
-  tr ',' '\n' < "$work/declared.raw" > "$work/declared.lines"
-  sort -u "$work/declared.lines" > "$work/declared"
-  if ! primaries "$key" "$work/got"; then
+  printf '%s\n' "$fprs" > "$src/declared.raw"
+  tr ',' '\n' < "$src/declared.raw" > "$src/declared.lines"
+  sort -u "$src/declared.lines" > "$src/declared"
+  if ! primaries "$key" "$src/got"; then
     echo "ERROR: $name の鍵を読めません（$keyurl）" >&2
     exit 1
   fi
-  if ! cmp -s "$work/declared" "$work/got"; then
-    echo "ERROR: $name の鍵の指紋が一致しません（宣言: $(tr '\n' ' ' < "$work/declared")/ 取得: $(tr '\n' ' ' < "$work/got")）" >&2
+  if ! cmp -s "$src/declared" "$src/got"; then
+    echo "ERROR: $name の鍵の指紋が一致しません（宣言: $(tr '\n' ' ' < "$src/declared")/ 取得: $(tr '\n' ' ' < "$src/got")）" >&2
     exit 1
   fi
-  home="$work/home-$name"
+  home="$src/home"
   mkdir -m 700 "$home"
   if ! GNUPGHOME=$home gpg --batch --quiet --import "$key" 2>/dev/null; then
     echo "ERROR: $name の鍵を読めません（$keyurl）" >&2
@@ -92,16 +97,16 @@ while IFS=' ' read -r name keyurl fprs uri suite comps || [ -n "${name:-}" ]; do
   fi
   # 宣言した指紋だけを書き出す（tr の出力は引数に分けて渡す。指紋は検査済みの 40 桁の英数字）
   # shellcheck disable=SC2046  # 指紋ごとに 1 つの引数に分けるため。値は [0-9A-F] だけで空白や glob を含まない
-  if ! GNUPGHOME=$home gpg --batch --export $(cat "$work/declared") > "$work/$name.gpg"; then
+  if ! GNUPGHOME=$home gpg --batch --export $(cat "$src/declared") > "$src/key.gpg"; then
     echo "ERROR: $name の鍵を書き出せません" >&2
     exit 1
   fi
-  if ! primaries "$work/$name.gpg" "$work/exported" || ! cmp -s "$work/declared" "$work/exported"; then
+  if ! primaries "$src/key.gpg" "$src/exported" || ! cmp -s "$src/declared" "$src/exported"; then
     echo "ERROR: $name の鍵の指紋が一致しません（書き出した鍵）" >&2
     exit 1
   fi
-  printf 'deb [signed-by=%s/c3c-%s.gpg] %s %s %s\n' "$KEYRING_DIR" "$name" "$uri" "$suite" "$comps" > "$work/$name.list"
-  printf '%s\n' "$name" >> "$work/plan"
+  printf 'deb [signed-by=%s/c3c-%s.gpg] %s %s %s\n' "$KEYRING_DIR" "$name" "$uri" "$suite" "$comps" > "$src/list"
+  printf '%s\n' "$name" >> "$work/plan.names"
 done < "$in"
 
 owner=${INSTALL_OWNER%%:*}
@@ -109,11 +114,11 @@ group=${INSTALL_OWNER#*:}
 install -d -o "$owner" -g "$group" -m 0755 "$KEYRING_DIR" "$SOURCES_DIR"
 placed=0
 while IFS= read -r name; do
-  install -o "$owner" -g "$group" -m 0644 "$work/$name.gpg" "$KEYRING_DIR/c3c-$name.gpg"
-  install -o "$owner" -g "$group" -m 0644 "$work/$name.list" "$SOURCES_DIR/c3c-$name.list"
+  install -o "$owner" -g "$group" -m 0644 "$work/src/$name/key.gpg" "$KEYRING_DIR/c3c-$name.gpg"
+  install -o "$owner" -g "$group" -m 0644 "$work/src/$name/list" "$SOURCES_DIR/c3c-$name.list"
   placed=$((placed + 1))
   echo "INFO: $name の鍵を照合して置きました" >&2
-done < "$work/plan"
+done < "$work/plan.names"
 
 if [ "$placed" -ne "$n" ]; then
   echo "ERROR: 置いた取得元の数（$placed）が宣言の数（$n）と違います" >&2

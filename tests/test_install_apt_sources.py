@@ -184,6 +184,15 @@ class InstallAptSourcesTest(unittest.TestCase):
         self.assertEqual(lst.stat().st_mode & 0o777, 0o644)
         self.assertNotIn(b'-----BEGIN', key.read_bytes())
 
+    def test_names_do_not_collide_with_work_files(self):
+        """取得元の名前が作業用のディレクトリやファイルの名前と同じでも動く（検査を通る名前はどれも使える）。"""
+        self.serve('https://k.example/a.gpg', self.key_a_bin)
+        names = ['show', 'declared', 'got', 'exported', 'plan', 'colons', 'fprs']
+        result = self.run_script(''.join(self.line(n, 'https://k.example/a.gpg', [self.fpr_a]) for n in names))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for n in names:
+            self.assertEqual(primaries(self.keyrings / f'c3c-{n}.gpg', self.root), [self.fpr_a])
+
     def test_multi_primary_exact_set(self):
         self.serve('https://k.example/ab.gpg', self.key_ab_bin)
         result = self.run_script(self.line('ab', 'https://k.example/ab.gpg', sorted([self.fpr_a, self.fpr_b], reverse=True)))

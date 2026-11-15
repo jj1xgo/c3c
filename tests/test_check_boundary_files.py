@@ -86,6 +86,22 @@ class CheckBoundaryFilesTest(unittest.TestCase):
         self.f.write_text('two\n')
         self.assert_changed()
 
+    def test_unreadable_directory_fails_snapshot(self):
+        """走査（find）が失敗したら、記録を作らずに止まる（走査できなかった部分を「同じ」と見なさない）。"""
+        if os.getuid() == 0:
+            self.skipTest('root は読めないディレクトリを作れない')
+        locked = self.d / 'locked'
+        locked.mkdir()
+        (locked / 'inner').write_text('x\n')
+        locked.chmod(0)
+        try:
+            result = self.run_script('snapshot')
+        finally:
+            locked.chmod(0o755)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('ERROR:', result.stderr)
+        self.assertFalse(self.state.exists())
+
     def test_newline_in_name_rejected(self):
         (self.d / 'a\nb').write_text('x\n')
         result = self.run_script('snapshot')

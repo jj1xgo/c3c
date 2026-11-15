@@ -128,9 +128,12 @@ RUN set -e; \
     sh /tmp/validate-build-input.sh apt-sources /tmp/apt-sources.txt /tmp/apt-sources.norm || exit 1; \
     sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm
 
+# packages.txt の層と、後ろの Copilot の層の apt-get update の前でも、外部の APT 取得元の鍵を取り直す
+# （上の層がキャッシュから使われると鍵が古いままで、提供元が鍵を替えるとこれらの update で止まり続けるため）。
 COPY packages.txt /tmp/packages.txt
 RUN set -e; \
     sh /tmp/validate-build-input.sh packages /tmp/packages.txt /tmp/packages.norm || exit 1; \
+    sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm; \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       $(tr '\n' ' ' < /tmp/packages.norm) && \
@@ -402,6 +405,7 @@ RUN set -e; \
         echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
         echo "ERROR: copilot-version.txt（$COPILOT_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Copilot を使わないなら .c3c/copilot-version.txt も空にしてください。" >&2; exit 1; }; \
+      sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm; \
       apt-get update && apt-get install -y --no-install-recommends bubblewrap && apt-get clean && rm -rf /var/lib/apt/lists/*; \
       bwrap_version="$(dpkg-query -W -f='${Version}' bubblewrap)" && dpkg --compare-versions "$bwrap_version" ge 0.5.0 || { \
         echo "ERROR: bubblewrap が 0.5.0 以上ではありません（${bwrap_version:-不明}）" >&2; exit 1; }; \

@@ -34,34 +34,36 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 
-# 引数のパスの状態を $1 に書く
+# 引数のパスの状態を $1 に書く。呼び出し側が `|| exit 1` で受けるので、この中では set -e が効かない。
+# 失敗しうる段はどれも明示して return 1 する（走査できなかった部分を「同じ」と見なさないため）
 record() {
   out=$1
   shift
-  : > "$work/raw"
+  : > "$work/raw" || return 1
   for p in "$@"; do
     if [ ! -e "$p" ] && [ ! -L "$p" ]; then
-      printf '%s\tmissing\n' "$p" >> "$work/raw"
+      printf '%s\tmissing\n' "$p" >> "$work/raw" || return 1
       continue
     fi
     # パス名に改行があると 1 エントリが 2 行に割れ、比べ方が崩れるので拒む
     find "$p" -xdev -name '*
-*' > "$work/nl"
+*' > "$work/nl" || { echo "ERROR: $p を走査できません" >&2; return 1; }
     if [ -s "$work/nl" ]; then
       echo "ERROR: 改行を含む名前があります（$p の下）" >&2
       return 1
     fi
-    find "$p" -xdev \( -type d -o -type f -o -type l \) -printf '%p\t%y\t%U:%G\t%m\t%l\n' > "$work/entries"
+    find "$p" -xdev \( -type d -o -type f -o -type l \) -printf '%p\t%y\t%U:%G\t%m\t%l\n' > "$work/entries" \
+      || { echo "ERROR: $p を走査できません" >&2; return 1; }
     while IFS="$(printf '\t')" read -r path type owner perm target; do
       sum=-
       if [ "$type" = f ]; then
         sum=$(sha256sum < "$path") || return 1
         sum=${sum%% *}
       fi
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$type" "$owner" "$perm" "$target" "$sum" >> "$work/raw"
-    done < "$work/entries"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$type" "$owner" "$perm" "$target" "$sum" >> "$work/raw" || return 1
+    done < "$work/entries" || return 1
   done
-  sort "$work/raw" > "$out"
+  sort "$work/raw" > "$out" || return 1
 }
 
 if [ "$mode" = snapshot ]; then

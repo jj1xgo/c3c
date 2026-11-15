@@ -410,7 +410,16 @@ run_validator_layer2() {
              'index($0, "RUN set -e;") == 1 && index($0, v) > 0 && index($0, i) > index($0, v) { n++ } END { print n + 0 }' "$logical")
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: apt-sources の検査と導入の RUN のヒット数=$hits (期待1)"; fi
   hits=$(grep -cF 'sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' "$logical")
-  if [ "$hits" -eq 2 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: install-apt-sources.sh の .norm での呼び出しの数=$hits (期待2: 導入と upgrade の層)"; fi
+  if [ "$hits" -eq 4 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: install-apt-sources.sh の .norm での呼び出しの数=$hits (期待4: 導入・packages・Copilot・upgrade の層)"; fi
+  # 外部の取得元の層の後で apt-get update を走らせる層（packages.txt の層と Copilot の bubblewrap の導入）は、
+  # update の前に鍵を取り直す（外部の取得元の層がキャッシュから使われると鍵は古いままで、提供元が鍵を替えると
+  # その update で止まり続けるため。#273 の PR 前レビュー）。
+  hits=$(awk -v i='sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' \
+             '(index($0, "sh /tmp/validate-build-input.sh packages") > 0 || index($0, "--no-install-recommends bubblewrap") > 0) {
+                k = index($0, i); u = index($0, "apt-get update")
+                if (k > 0 && u > k) n++ }
+              END { print n + 0 }' "$logical")
+  if [ "$hits" -eq 2 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: packages・Copilot の層で update の前に鍵を取り直す RUN の数=$hits (期待2)"; fi
   hits=$(grep -cE 'install-apt-sources\.sh /tmp/apt-sources\.txt|(install-apt-sources|check-boundary-files)\.sh [^;&|]*\|\|' "$logical")
   if [ "$hits" -eq 0 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: 2 本のスクリプトが .txt を読むか失敗を || で握っている(ヒット数=$hits)"; fi
   # 検査7（#273）: upgrade の RUN（apt-get update --error-on=any を含む論理行）が set -e で始まり、

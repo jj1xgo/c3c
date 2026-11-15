@@ -64,7 +64,7 @@ finish_by_result() {
 #   input/expected は printf '%b' で展開するエスケープ表記
 #   （\t \r \n \000 \357\273\277=BOM \343\200\200=U+3000）を含みうる。
 #   件数: packages 34（有効9・除外7・無効18）／requirements 35（有効11・除外4・無効20）
-#   ／総計69／reject 38（計画「ベクタ表」節と1行＝1ベクタで対応、件数はここから機械導出）。
+#   ／apt-sources 19（有効4・除外2・無効13。#273）／総計88／reject 51（計画「ベクタ表」節と1行＝1ベクタで対応、件数はここから機械導出）。
 VBI_VECTORS=(
   # packages 有効(9)
   'packages|accept|htop\n|htop\n'
@@ -141,9 +141,46 @@ VBI_VECTORS=(
   'requirements|reject|pkg[a,]\n|'
   'requirements|reject|pkg[a,,b]\n|'
   'requirements|reject|pkg[]\n|'
+  # apt-sources 有効(4)（#273）。指紋は Mozilla・Google の主鍵（2026-11-15 に取得）の形だけを使う
+  'apt-sources|accept|mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://packages.mozilla.org/apt mozilla main\n|mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://packages.mozilla.org/apt mozilla main\n'
+  # 空白の正規化（タブ・連続する空白）と行末の CR、指紋 2 つ、component 2 つ
+  'apt-sources|accept|a\thttps://k.example/key.asc  EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796,35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3   https://r.example/deb/ stable main contrib\r\n|a https://k.example/key.asc EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796,35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://r.example/deb/ stable main contrib\n'
+  # 末尾に改行の無い入力も、出力は改行で終える（packages の契約とは違う）
+  'apt-sources|accept|a https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main|a https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n'
+  # URL のポート
+  'apt-sources|accept|b https://k.example:8443/k.asc EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example:8443/deb stable main\n|b https://k.example:8443/k.asc EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example:8443/deb stable main\n'
+  # apt-sources 除外(2)
+  'apt-sources|exclude|# comment\n|'
+  'apt-sources|exclude|\n|'
+  # apt-sources 無効(13・reject): 鍵の URL が http
+  'apt-sources|reject|x http://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # URI が http
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 http://r.example stable main\n|'
+  # 小文字の指紋
+  'apt-sources|reject|x https://k.example/key eb4c1bfd4f042f6dddccec917721f63bd38b4796 https://r.example stable main\n|'
+  # 空の指紋（末尾のカンマ）
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796, https://r.example stable main\n|'
+  # component が無い
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable\n|'
+  # apt のオプションを書く欄は無い
+  'apt-sources|reject|x [trusted=yes] https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # 名前の大文字
+  'apt-sources|reject|X https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # 名前のパス
+  'apt-sources|reject|../x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # URL の問い合わせ
+  'apt-sources|reject|x https://k.example/key?a=b EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # 先頭が - の suite
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example -stable main\n|'
+  # 行内のコメント
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main # note\n|'
+  # 名前の重複
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\nx https://k.example/key 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://s.example stable main\n|'
+  # NUL
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example st\000able main\n|'
 )
 
-# 層1本体: ベクタ表全69件＋件数アサーション4件を実行する。
+# 層1本体: ベクタ表全88件＋件数アサーション5件を実行する。
 run_validator_layer1() {
   local vbi="${SCRIPT_DIR}/validate-build-input.sh"
   local t infile outfile expfile
@@ -151,13 +188,14 @@ run_validator_layer1() {
   infile="$t/in"; outfile="$t/out"; expfile="$t/expected"
 
   local entry kind class input expected actual_rc
-  local pkg_count=0 req_count=0 reject_count=0 total_count=0
+  local pkg_count=0 req_count=0 apt_count=0 reject_count=0 total_count=0
 
   for entry in "${VBI_VECTORS[@]}"; do
     IFS='|' read -r kind class input expected <<< "$entry"
     total_count=$((total_count + 1))
     [ "$kind" = "packages" ] && pkg_count=$((pkg_count + 1))
     [ "$kind" = "requirements" ] && req_count=$((req_count + 1))
+    [ "$kind" = "apt-sources" ] && apt_count=$((apt_count + 1))
     [ "$class" = "reject" ] && reject_count=$((reject_count + 1))
 
     printf 'SENTINEL' > "$outfile"
@@ -195,12 +233,13 @@ run_validator_layer1() {
     esac
   done
 
-  # 件数アサーション4件（抽出漏れ・区切り記号依存を機械的に検出する。数は
+  # 件数アサーション5件（抽出漏れ・区切り記号依存を機械的に検出する。数は
   # 計画「ベクタ表」節の表から機械導出した値で、転記しない）。
   if [ "$pkg_count" -eq 34 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 packages件数=$pkg_count (期待34)"; fi
   if [ "$req_count" -eq 35 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 requirements件数=$req_count (期待35)"; fi
-  if [ "$total_count" -eq 69 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 総数=$total_count (期待69)"; fi
-  if [ "$reject_count" -eq 38 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 reject件数=$reject_count (期待38)"; fi
+  if [ "$apt_count" -eq 19 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 apt-sources件数=$apt_count (期待19)"; fi
+  if [ "$total_count" -eq 88 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 総数=$total_count (期待88)"; fi
+  if [ "$reject_count" -eq 51 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 reject件数=$reject_count (期待51)"; fi
 
   rm -rf "$t"
 }
@@ -365,7 +404,7 @@ run_validator_layer2() {
 
 # 層1（ベクタ表・契約異常系）の実行入口。--validator-only と通常実行の両方から
 # 呼ぶ（複製しない）。層2（Dockerfile.claude 配線の静的検査）は --validator-only
-# の対象外（計画の検証手順が定める合格条件 PASS==82 は層1+契約異常系のみを指す）
+# の対象外（計画の検証手順が定める合格条件 PASS==82〈#273 で apt-sources の 19 件と件数の assert 1 件を足して 102〉は層1+契約異常系のみを指す）
 # のため、ここには含めず通常実行フロー側で別途呼ぶ。
 run_validator_layer1_and_contract() {
   log "## 層1: validate-build-input.sh ベクタ表・契約異常系テスト（#34）"

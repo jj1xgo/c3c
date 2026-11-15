@@ -1,9 +1,12 @@
 #!/bin/sh
-# validate-build-input.sh — packages.txt / requirements.txt のビルド時インジェクション対策検証と
-#                           GitHub meta のスナップショットの検査
+# validate-build-input.sh — packages.txt / requirements.txt / apt-sources.txt のビルド時インジェクション
+#                           対策検証と GitHub meta のスナップショットの検査
 #
 # 使い方: validate-build-input.sh <kind> <infile> [outfile]
 #   kind    : packages | requirements
+#             | apt-sources（外部の APT 取得元の宣言、#273。1 行 1 取得元で
+#               <名前> <鍵の URL> <主鍵の指紋>[,<主鍵の指紋>...] <URI> <suite> <component>...。
+#               空白を 1 つにそろえ、最後の行も改行で終える。名前の重複は rc 1）
 #             | github-meta（outfile を取らない。GitHub meta のスナップショットの検査、#238）
 #   infile  : 検証対象（正規化前）
 #   outfile : 省略時は正規化結果を書き出さない（--check 用の dry-run）
@@ -38,6 +41,12 @@ case "$VBI_KIND" in
   packages)
     VBI_RE='^[a-z0-9][a-z0-9+.-]*[a-z0-9+]$'
     ;;
+  apt-sources)
+    # 欄: 名前、鍵の URL、主鍵の指紋（大文字 40 桁をカンマ区切り）、URI、suite、component（1 つ以上）。
+    # URL は https だけで、問い合わせ・断片・空白・[ ] を含まない（apt のオプションの位置に何も入れさせない）。
+    VBI_URL='https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~%+/-]*)?'
+    VBI_RE="^[a-z0-9][a-z0-9-]{0,62} ${VBI_URL} [0-9A-F]{40}(,[0-9A-F]{40})* ${VBI_URL} [A-Za-z0-9][A-Za-z0-9._/-]*( [A-Za-z0-9][A-Za-z0-9._-]*)+\$"
+    ;;
   requirements)
     VBI_RE='^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*\])?((==|!=|<=|>=|<|>|~=|===)[A-Za-z0-9.*+!]+(,(==|!=|<=|>=|<|>|~=|===)[A-Za-z0-9.*+!]+)*)?$'
     ;;
@@ -48,7 +57,7 @@ case "$VBI_KIND" in
     fi
     ;;
   *)
-    echo "error: 未知の kind です: $VBI_KIND（packages・requirements・github-meta を想定）" >&2
+    echo "error: 未知の kind です: $VBI_KIND（packages・requirements・apt-sources・github-meta を想定）" >&2
     exit 2
     ;;
 esac
@@ -129,7 +138,22 @@ VBI_CR=$(printf '\r')
 
 # 正規化は単一 sed コマンドで中間ファイルへ書き出す（実装制約9）。
 # trim は [[:blank:]] に限定する（実装制約4）。
-if [ "$VBI_KIND" = "packages" ]; then
+if [ "$VBI_KIND" = "apt-sources" ]; then
+  # packages と同じ正規化に、連続する空白の 1 つへのそろえを足す。sed は最後の行が改行で
+  # 終わらなくても読むが、出力にも改行を足さないので、下で改行を足す（#273。読む側の
+  # while read が最後の行を落とさないため）。
+  sed \
+    -e "s/${VBI_CR}\$//" \
+    -e 's/^[[:blank:]]*//' \
+    -e 's/[[:blank:]]*$//' \
+    -e '/^#/d' \
+    -e '/^$/d' \
+    -e 's/[[:blank:]][[:blank:]]*/ /g' \
+    "$VBI_INFILE" > "$VBI_NORM_TMP"
+  if [ -s "$VBI_NORM_TMP" ] && [ -n "$(tail -c 1 "$VBI_NORM_TMP")" ]; then
+    printf '\n' >> "$VBI_NORM_TMP" || exit 2
+  fi
+elif [ "$VBI_KIND" = "packages" ]; then
   # 行末 CR 除去 → trim(行頭/行末) → # 始まりの行を除外 → 空行を除外
   # （行内 # は剥がさない — 「1行1パッケージ」仕様に忠実）
   sed \
@@ -180,6 +204,18 @@ else
   fi
 
   # grep rc=1: 不一致行なし = 全行が仕様に適合。
+  # apt-sources は名前（鍵と取得元のファイル名になる）の重複を拒む。outfile を確定する前に、
+  # 段ごとに中間ファイルへ書いて rc を見る（パイプにすると前段の失敗が消える。実装制約9・10）。
+  if [ "$VBI_KIND" = "apt-sources" ]; then
+    cut -d' ' -f1 "$VBI_NORM_TMP" > "$VBI_TMPDIR/names" || exit 2
+    sort "$VBI_TMPDIR/names" > "$VBI_TMPDIR/sorted" || exit 2
+    uniq -d "$VBI_TMPDIR/sorted" > "$VBI_TMPDIR/dups" || exit 2
+    if [ -s "$VBI_TMPDIR/dups" ]; then
+      echo "error: $VBI_INFILE で名前が重複しています:" >&2
+      sed -n l "$VBI_TMPDIR/dups" >&2
+      exit 1
+    fi
+  fi
   if [ -n "$VBI_OUTFILE" ]; then
     # outfile は成功時にのみ確定させる。outfile と同じディレクトリに
     # mktemp してから mv -f で置く（原子性・シンボリックリンク非追従のため）。

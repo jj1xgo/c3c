@@ -3,3 +3,5 @@
 shellcheck
 # lint.sh が Python の静的な検査（ruff の F 系）に使う（無ければ WARNING で飛ばす）。Debian の版は CI の固定版と違うことがあり、版違いの WARNING は想定内。
 ruff
+# tests/test_install_apt_sources.py が試験の鍵を作るのに使う（#273。無ければ試験は skip せず失敗する）。
+gnupg

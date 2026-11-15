@@ -1126,6 +1126,7 @@ run_launcher_tests() {
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
+  check "外部の APT 取得元の鍵の照合（指紋の集合・形式・失敗時に書かない・https だけ）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_install_apt_sources.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "コンテナ側のファイルが旧名のパス・env キー・label を参照しない（改名 第 2 段）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_container_paths.py"
   check "lint の Markdown のアンカーの検査（GitHub の見出しの id・重複の番号・コードの中を読まない・相対パス・外のリンクを見ない）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_md_anchors.py"

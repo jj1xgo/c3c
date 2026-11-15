@@ -1109,7 +1109,7 @@ run_launcher_tests() {
   check "Copilot の canary の判定（bash の実行がちょうど 1 回・ほかの道具で不合格・コマンドの一致・出力の期待値・モデルの文を見ない・クレジット・設定の弱めと型まで含む一致・消費の 1 行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary_helper.py"
   check "Copilot の canary の段取り（前提と拒む作業ディレクトリ・目印・名前空間・/home/node での停止・弱めた設定の戻り・後片付けの確認・中断・引数の組・消費の記録）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
-  check "lint の ruff の検査（無い・必須・版違い・版の読み取り・引数・終了コード・配線）" bash "${SCRIPT_DIR}/tests/test-lint-ruff.sh"
+  check "lint の ruff の検査（無い・必須・版違い・版の読み取り・引数・終了コード・対象の集め方・配線）" bash "${SCRIPT_DIR}/tests/test-lint-ruff.sh"
   run_base_image_launcher_tests
   run_codex_dir_launcher_tests
   run_codex_host_plugins_launcher_tests

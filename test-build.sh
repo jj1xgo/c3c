@@ -399,6 +399,32 @@ run_validator_layer2() {
   hits=$(grep -cF 'COPY validate-build-input.sh /tmp/' "$logical")
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: COPYのヒット数=$hits (期待1)"; fi
 
+  # 検査6（#273）: 外部の APT 取得元。validator が `|| exit 1` で握られ、同じ RUN の中でその後に
+  # install-apt-sources.sh が .norm を読むこと。RUN は `set -e;` で始まる（取得・照合の失敗を止める）。
+  hits=$(grep -cF 'COPY apt-sources.txt /tmp/apt-sources.txt' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: apt-sources の COPY のヒット数=$hits (期待1)"; fi
+  hits=$(grep -cF 'COPY install-apt-sources.sh check-boundary-files.sh /tmp/' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: 2 本のスクリプトの COPY のヒット数=$hits (期待1)"; fi
+  hits=$(awk -v v='sh /tmp/validate-build-input.sh apt-sources /tmp/apt-sources.txt /tmp/apt-sources.norm || exit 1;' \
+             -v i='sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' \
+             'index($0, "RUN set -e;") == 1 && index($0, v) > 0 && index($0, i) > index($0, v) { n++ } END { print n + 0 }' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: apt-sources の検査と導入の RUN のヒット数=$hits (期待1)"; fi
+  hits=$(grep -cF 'sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' "$logical")
+  if [ "$hits" -eq 2 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: install-apt-sources.sh の .norm での呼び出しの数=$hits (期待2: 導入と upgrade の層)"; fi
+  hits=$(grep -cE 'install-apt-sources\.sh /tmp/apt-sources\.txt|(install-apt-sources|check-boundary-files)\.sh [^;&|]*\|\|' "$logical")
+  if [ "$hits" -eq 0 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: 2 本のスクリプトが .txt を読むか失敗を || で握っている(ヒット数=$hits)"; fi
+  # 検査7（#273）: upgrade の RUN（apt-get update --error-on=any を含む論理行）が set -e で始まり、
+  # 鍵の取り直し → snapshot → apt-get update → upgrade → verify の順に並ぶこと。
+  hits=$(awk 'index($0, "apt-get update --error-on=any") > 0 && index($0, "RUN set -e;") == 1 {
+                k = index($0, "sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm")
+                s = index($0, "sh /tmp/check-boundary-files.sh snapshot ")
+                u = index($0, "apt-get update --error-on=any")
+                g = index($0, "upgrade --with-new-pkgs")
+                v = index($0, "sh /tmp/check-boundary-files.sh verify ")
+                if (k > 0 && k < s && s < u && u < g && g < v) n++ }
+              END { print n + 0 }' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: upgrade の RUN の順（取り直し→snapshot→update→upgrade→verify）のヒット数=$hits (期待1)"; fi
+
   rm -rf "$t"
 }
 
@@ -3125,6 +3151,17 @@ COPILOT_DISABLED_PROBE='set -e
 [ "$(id -u)" != 0 ]'
 check "Copilot は既定で無効（copilot・中継・雛形・bubblewrap・宛先・一時ファイルが無い）" \
   podman run --rm --network=none "$IMAGE" sh -c "$COPILOT_DISABLED_PROBE"
+# 外部の APT 取得元（#273）を宣言しないイメージ（apt-sources.txt が空）には、c3c の取得元と鍵が無く、
+# 導入と照合に使った一時ファイルも残らない。
+# shellcheck disable=SC2016  # コンテナ内 sh へ渡す文字列。$ はコンテナ側で展開させる意図
+APT_SOURCES_ABSENT_PROBE='set -e
+! ls /etc/apt/sources.list.d/c3c-* >/dev/null 2>&1 || { echo "c3c の取得元がある"; exit 1; }
+! ls /etc/apt/keyrings/c3c-* >/dev/null 2>&1 || { echo "c3c の鍵がある"; exit 1; }
+for f in /tmp/apt-sources.txt /tmp/apt-sources.norm /tmp/install-apt-sources.sh /tmp/check-boundary-files.sh /tmp/c3c-boundary.state; do
+  [ ! -e "$f" ] || { echo "$f が残っている"; exit 1; }
+done'
+check "外部の APT 取得元の宣言が無いイメージに c3c の取得元・鍵・一時ファイルが無い（#273）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$APT_SOURCES_ABSENT_PROBE"
 log ""
 
 # 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。
@@ -3242,6 +3279,84 @@ else
 fi
 podman rmi "$POS1_IMAGE" 2>/dev/null
 rm -rf "$POS1_PROJECT_DIR" "$POS1_CONTEXT_DIR"
+
+log ""
+log "## apt-sources ビルド時検証テスト（#273）"
+# 外部の APT 取得元を宣言した文脈を作る。$1 = 文脈のディレクトリ、$2 = apt-sources.txt の中身
+APT_MOZILLA_LINE='mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://packages.mozilla.org/apt mozilla main'
+stage_apt_sources_context() {
+  stage_common_context "$1" || return 1
+  cp "${SCRIPT_DIR}/packages.txt" "$1/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$1/requirements.txt"
+  printf '%s\n' "$2" > "$1/apt-sources.txt"
+}
+
+# 陰性1: 指紋の 1 桁を変えた Mozilla の行 → 照合でビルドが止まる
+APTNEG1_IMAGE="localhost/claude-test-aptneg1"
+APTNEG1_CONTEXT_DIR="$(mktemp -d)"
+if stage_apt_sources_context "$APTNEG1_CONTEXT_DIR" "${APT_MOZILLA_LINE/35BAA0B3/35BAA0B4}"; then
+  check_fails "apt-sources 陰性1: 指紋の不一致でビルドfail" "指紋が一致しません" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTNEG1_IMAGE" "$APTNEG1_CONTEXT_DIR"
+else
+  check "apt-sources 陰性1: 指紋の不一致でビルドfail (staging failed: see stderr above)" false
+fi
+podman rmi "$APTNEG1_IMAGE" 2>/dev/null
+rm -rf "$APTNEG1_CONTEXT_DIR"
+
+# 陰性2: URI が http → 書式の検査でビルドが止まる
+APTNEG2_IMAGE="localhost/claude-test-aptneg2"
+APTNEG2_CONTEXT_DIR="$(mktemp -d)"
+if stage_apt_sources_context "$APTNEG2_CONTEXT_DIR" "${APT_MOZILLA_LINE/https:\/\/packages.mozilla.org\/apt /http://packages.mozilla.org/apt }"; then
+  check_fails "apt-sources 陰性2: http の URI でビルドfail" "仕様外の行があります" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTNEG2_IMAGE" "$APTNEG2_CONTEXT_DIR"
+else
+  check "apt-sources 陰性2: http の URI でビルドfail (staging failed: see stderr above)" false
+fi
+podman rmi "$APTNEG2_IMAGE" 2>/dev/null
+rm -rf "$APTNEG2_CONTEXT_DIR"
+
+# 陰性3: Dockerfile が固定で足している GitHub CLI の取得元と同じ URI を、正しい指紋で宣言する →
+# apt が Signed-By の食い違いで止まる（黙ってどちらかを使わない）。指紋は 2026-11-15 に取得した主鍵 2 本。
+APTNEG3_IMAGE="localhost/claude-test-aptneg3"
+APTNEG3_CONTEXT_DIR="$(mktemp -d)"
+if stage_apt_sources_context "$APTNEG3_CONTEXT_DIR" 'gh https://cli.github.com/packages/githubcli-archive-keyring.gpg 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325 https://cli.github.com/packages stable main'; then
+  check_fails "apt-sources 陰性3: 既存の取得元と同じ URI でビルドfail" "Conflicting values set for option Signed-By" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTNEG3_IMAGE" "$APTNEG3_CONTEXT_DIR"
+else
+  check "apt-sources 陰性3: 既存の取得元と同じ URI でビルドfail (staging failed: see stderr above)" false
+fi
+podman rmi "$APTNEG3_IMAGE" 2>/dev/null
+rm -rf "$APTNEG3_CONTEXT_DIR"
+
+# 陽性1: Mozilla の正しい行、packages.txt は既定 → ビルドが成功し、取得元と鍵が root:root 0644 で置かれ、
+# 試験のコンテナの中で update すると packages.mozilla.org が見える（最終のイメージは apt の索引を消すため）。
+APTPOS1_IMAGE="localhost/claude-test-aptpos1"
+APTPOS1_CONTEXT_DIR="$(mktemp -d)"
+APTPOS1_LOG="$(mktemp)"
+if stage_apt_sources_context "$APTPOS1_CONTEXT_DIR" "$APT_MOZILLA_LINE"; then
+  check "apt-sources 陽性1: 正しい指紋でビルド成功" podman build --build-arg CACHEBUST=aptpos1-a \
+    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTPOS1_IMAGE" "$APTPOS1_CONTEXT_DIR"
+  # shellcheck disable=SC2016  # コンテナ内 sh へ渡す文字列。$ はコンテナ側で展開させる意図
+  check "apt-sources 陽性1: 鍵と取得元が root:root 0644" podman run --rm --network=none "$APTPOS1_IMAGE" sh -c \
+    '[ "$(stat -c %u:%g:%a /etc/apt/keyrings/c3c-mozilla.gpg)" = 0:0:644 ] && [ "$(stat -c %u:%g:%a /etc/apt/sources.list.d/c3c-mozilla.list)" = 0:0:644 ] && grep -qx "deb \[signed-by=/etc/apt/keyrings/c3c-mozilla.gpg\] https://packages.mozilla.org/apt mozilla main" /etc/apt/sources.list.d/c3c-mozilla.list'
+  check "apt-sources 陽性1: update すると packages.mozilla.org が見える" podman run --rm --user 0 "$APTPOS1_IMAGE" sh -c \
+    'apt-get update --error-on=any >/dev/null && apt-cache policy | grep -q packages.mozilla.org'
+  # 陽性1 の続き: CACHEBUST だけ変えて作り直すと、外部の取得元の RUN はキャッシュを使い、upgrade の RUN の中で
+  # 鍵を取り直して照合する（提供元が鍵を替えても、キャッシュの古い鍵で止まり続けないため）。
+  if podman build --build-arg CACHEBUST=aptpos1-b -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTPOS1_IMAGE" "$APTPOS1_CONTEXT_DIR" > "$APTPOS1_LOG" 2>&1; then
+    check "apt-sources 陽性1: 再ビルドで upgrade の層が鍵を取り直す" grep -qF 'INFO: mozilla の鍵を照合して置きました' "$APTPOS1_LOG"
+    # shellcheck disable=SC2016  # awk のプログラム。$0 は awk が展開する
+    check "apt-sources 陽性1: 再ビルドで外部の取得元の RUN はキャッシュを使う" \
+      awk '/^STEP / { step = $0 } /Using cache/ && step ~ /validate-build-input\.sh apt-sources/ { found = 1 } END { exit !found }' "$APTPOS1_LOG"
+  else
+    cat "$APTPOS1_LOG" >> "$LOG_FILE"
+    check "apt-sources 陽性1: 再ビルドが成功する" false
+  fi
+else
+  check "apt-sources 陽性1: 正しい指紋でビルド成功 (staging failed: see stderr above)" false
+fi
+podman rmi "$APTPOS1_IMAGE" 2>/dev/null
+rm -rf "$APTPOS1_CONTEXT_DIR" "$APTPOS1_LOG"
 log ""
 
 # 同梱 default の opt-out と project pin（c3c 第2b-2段階）。stage_common_context() が置く default を

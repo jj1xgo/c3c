@@ -5,6 +5,7 @@
 # （ハードコードのファイルリストを持たない — 追加/削除時のリスト同期漏れを構造的に防ぐ）。
 # LINT_SKIP_COMPOSE=1 を与えると podman compose config の検証だけを WARNING 付きで
 # スキップする（Compose を実行できない環境での明示的な省略用）。
+# ruff が無いときは Python の静的な検査だけを WARNING 付きで飛ばし、LINT_REQUIRE_RUFF=1（CI）では失敗にする。
 set -uo pipefail
 
 cd "$(dirname "$0")" || exit 1
@@ -57,6 +58,15 @@ run_ruff_check() {
   fi
   [ "$#" -gt 0 ] || return 0
   ruff check --isolated --no-cache --select F --output-format concise -- "$@" || return 1
+}
+
+# ruff の検査の対象を py_files に集める（#264）。構文の確認（Path.glob）と同じく、ルートと tests/ の *.py を
+# `.` で始まる名前も含めて集め、0 本なら空にする。nullglob・dotglob は終わったら無効に戻す。
+# 試験（tests/test-lint-ruff.sh）が関数を抜き出して fixture のディレクトリで確かめる。
+collect_py_files() {
+  shopt -s nullglob dotglob
+  py_files=(./*.py tests/*.py)
+  shopt -u nullglob dotglob
 }
 
 status=0
@@ -384,9 +394,7 @@ for path in [*Path('.').glob('*.py'), *Path('tests').glob('*.py')]:
 PYTHON
 
 # 構文の確認と同じ対象（ルートと tests/ の *.py。`.` で始まる名前も含む）に ruff の F 系をかける。
-shopt -s nullglob dotglob
-py_files=(./*.py tests/*.py)
-shopt -u nullglob dotglob
+collect_py_files
 run_ruff_check "$ci_ruff_version" "${py_files[@]}" || status=1
 
 # Markdown のリンクのアンカー（#見出し）が、リンク先の見出しに当たるか確かめる（tests/md-anchors.py）。

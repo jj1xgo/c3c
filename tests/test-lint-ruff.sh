@@ -80,14 +80,48 @@ check no_ci_version 'rc_is 0 && err_empty'
 run_harness yes 1 0.16.4 1 0.16.4
 check no_files 'rc_is 0 && no_argv'
 
-# lint 本体の配線: 呼び出しの行が行全体の一致でちょうど 1 行あること。`|| true` などに変えると赤になる。
+# 対象の集め方（collect_py_files）を、fixture のディレクトリで確かめる。ルートと tests/ の *.py を
+# `.` 始まりも含めて集め、ほかの拡張子・tests/ の下の階層・ほかのディレクトリは入れず、
+# 0 本なら空の配列にし、終わった後に nullglob・dotglob を元（無効）に戻すこと。
+{
+  printf '#!/bin/bash\nset -uo pipefail\n'
+  sed -n '/^collect_py_files()/,/^}/p' "$ROOT/lint.sh"
+  # shellcheck disable=SC2016 # 意図的にリテラル（harness の中で展開する）
+  printf 'collect_py_files\nprintf "%%s\\n" "${#py_files[@]}" "${py_files[@]}"\n'
+  # shellcheck disable=SC2016 # 同上
+  printf 'for o in nullglob dotglob; do if shopt -q "$o"; then echo "$o=on"; else echo "$o=off"; fi; done\n'
+} > "$tmp/collect"
+mkdir -p "$tmp/fx/tests/sub" "$tmp/fx/other" "$tmp/fx0"
+touch "$tmp/fx/a.py" "$tmp/fx/.b.py" "$tmp/fx/c.txt" "$tmp/fx/tests/d.py" "$tmp/fx/tests/.e.py" \
+  "$tmp/fx/tests/f.pyc" "$tmp/fx/tests/sub/g.py" "$tmp/fx/other/h.py"
+collect_in() { RC=0; (cd "$1" && env -i PATH=/usr/bin:/bin /bin/bash "$tmp/collect") > "$tmp/out" 2> "$tmp/err" || RC=$?; }
+out_is() { [[ "$(cat "$tmp/out")" == "$(printf '%s\n' "$@")" ]]; }
+collect_in "$tmp/fx"
+check collect_files 'rc_is 0 && err_empty && out_is 4 ./.b.py ./a.py tests/.e.py tests/d.py nullglob=off dotglob=off'
+collect_in "$tmp/fx0"
+check collect_none 'rc_is 0 && err_empty && out_is 0 nullglob=off dotglob=off'
+
+# lint 本体の配線: 集める行と呼び出しの行が、行全体の一致でちょうど 1 行ずつあること。
+# `|| true` に変える、集める行を消すなどすると赤になる。
 # shellcheck disable=SC2016 # 意図的にリテラル（lint.sh の 1 行と文字どおり比べる。変数展開ではない）
-wiring=$(grep -cFx 'run_ruff_check "$ci_ruff_version" "${py_files[@]}" || status=1' "$ROOT/lint.sh" || true)
+for line in 'collect_py_files' 'run_ruff_check "$ci_ruff_version" "${py_files[@]}" || status=1'; do
+  wiring=$(grep -cFx -- "$line" "$ROOT/lint.sh" || true)
+  count=$((count + 1))
+  if [[ "$wiring" -eq 1 ]]; then
+    echo "ok - wiring: lint 本体に「$line」がちょうど 1 行ある"
+  else
+    echo "FAIL - wiring: 「$line」が ${wiring} 行（1 行であるべき）"; fail=$((fail + 1))
+  fi
+done
+# 集める行が呼び出しの行より前にあること（後ろへ移すと py_files が空のまま呼ばれ、検査が黙って消える）。
+collect_at=$(grep -nFx 'collect_py_files' "$ROOT/lint.sh" | head -n 1 | cut -d: -f1)
+# shellcheck disable=SC2016 # 意図的にリテラル
+call_at=$(grep -nF 'run_ruff_check "$ci_ruff_version"' "$ROOT/lint.sh" | head -n 1 | cut -d: -f1)
 count=$((count + 1))
-if [[ "$wiring" -eq 1 ]]; then
-  echo 'ok - wiring: lint 本体が run_ruff_check の結果を status へ反映している'
+if [[ -n "$collect_at" && -n "$call_at" && "$collect_at" -lt "$call_at" ]]; then
+  echo 'ok - wiring: collect_py_files が run_ruff_check の呼び出しより前にある'
 else
-  echo "FAIL - wiring: 呼び出しの行が ${wiring} 行（1 行であるべき）"; fail=$((fail + 1))
+  echo "FAIL - wiring: collect_py_files（${collect_at:-なし}行目）が呼び出し（${call_at:-なし}行目）より前にない"; fail=$((fail + 1))
 fi
 
 echo "結果: $count ケース、失敗 $fail"

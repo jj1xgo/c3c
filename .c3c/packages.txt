@@ -1,3 +1,5 @@
 # 本リポジトリ自身を c3c 内で開発する際にコンテナへ追加する apt パッケージ。
 # lint.sh / lint-posttool.sh（PostToolUse hook）が shellcheck を使うため同梱する。
 shellcheck
+# lint.sh が Python の静的な検査（ruff の F 系）に使う（無ければ WARNING で飛ばす）。Debian の版は CI の固定版と違うことがあり、版違いの WARNING は想定内。
+ruff

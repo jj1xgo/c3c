@@ -10,7 +10,6 @@ import json
 import os
 import pty
 import subprocess
-import sys
 import termios
 import unittest
 

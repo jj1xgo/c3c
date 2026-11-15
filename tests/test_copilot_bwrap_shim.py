@@ -9,7 +9,6 @@
 本物を起動するので、終了コードは環境変数で渡せない）。
 """
 
-import os
 from pathlib import Path
 import subprocess
 import tempfile

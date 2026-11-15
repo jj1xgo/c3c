@@ -7,8 +7,6 @@
 Codex の実体は argv・PATH を記録する dummy。実 /usr/local・ホストの設定や認証には触れない。
 """
 
-import json
-import os
 from pathlib import Path
 import re
 import subprocess

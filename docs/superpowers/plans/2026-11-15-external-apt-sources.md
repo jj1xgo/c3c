@@ -382,3 +382,4 @@ git commit -m "feat: 外部の APT 取得元の層と、upgrade の層の境界�
 
 区分: 境界（ビルドの入力の検証〈`validate-build-input.sh`〉、外部の鍵の照合、境界のファイルの照合というセキュリティ境界に触れるため）
 推奨実装: Opus（c3c の Claude Code 面の既定は Sonnet だが、グローバル指示の「セキュリティ境界を含むときは Opus」に当たる。判定順の 1〜5 には当たらない。実行方法は executing-plans を推す。Task 1〜5 が前のタスクのファイル名と出力に順に依存し、8 タスクで 1 セッションに収まるため）
+実装: Opus（持ち主指定、2026-11-15。このセッションで executing-plans）

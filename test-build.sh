@@ -438,9 +438,9 @@ run_validator_layer2() {
 }
 
 # 層1（ベクタ表・契約異常系）の実行入口。--validator-only と通常実行の両方から
-# 呼ぶ（複製しない）。層2（Dockerfile.claude 配線の静的検査）は --validator-only
-# の対象外（計画の検証手順が定める合格条件 PASS==82〈#273 で apt-sources の 19 件と件数の assert 1 件を足して 102〉は層1+契約異常系のみを指す）
-# のため、ここには含めず通常実行フロー側で別途呼ぶ。
+# 呼ぶ（複製しない）。層2（Dockerfile.claude 配線の静的検査）はここには含めず、--validator-only と
+# 通常実行の側でそれぞれ呼ぶ（#273 から --validator-only でも走る。層1+契約異常系の PASS は 102、
+# 層2 を足した --validator-only の合計は 120）。
 run_validator_layer1_and_contract() {
   log "## 層1: validate-build-input.sh ベクタ表・契約異常系テスト（#34）"
   run_validator_layer1
@@ -2882,8 +2882,12 @@ SHIM
   launcher_sandbox_cleanup
 }
 
+# 層 2（Dockerfile.claude の配線の静的検査）は Dockerfile を読むだけなので、--validator-only でも走らせる
+# （CI が毎回見る。#273 の PR 前レビューで、外部の APT 取得元と境界の照合の配線を CI で守るため持ち主が決めた）。
 if [[ "${1:-}" == "--validator-only" ]]; then
   run_validator_layer1_and_contract
+  log "## 層2: Dockerfile.claude 配線の回帰条件（#34）"
+  run_validator_layer2
   finish_by_result
 fi
 

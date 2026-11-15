@@ -448,7 +448,7 @@ class ResolverConsistencyTests(ConfigCase):
         self.use_new_layout()
         baseline_run, baseline_staged = self.run_and_capture('claude', str(self.proj))
         for name in ('entrypoint.sh', 'init-firewall.sh', 'git-askpass.sh', 'validate-build-input.sh',
-                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'ipv6-firewall.py', 'firewall-refresh.py',
+                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'install-apt-sources.sh', 'check-boundary-files.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
                      'compose.ipv6.yml', 'compose.codex-preflight.yml', 'compose.home-mount.yml', 'compose.home-mount-ro.yml'):
             (self.new / name).write_text('#!/bin/sh\nexit 99\n')
         run, staged = self.run_and_capture('claude', str(self.proj))
@@ -456,6 +456,62 @@ class ResolverConsistencyTests(ConfigCase):
         self.assertEqual(run['env']['ASSET_HASH'], baseline_run['env']['ASSET_HASH'])
         for name in ('entrypoint.sh', 'validate-build-input.sh'):
             self.assertEqual(staged[name], hashlib.sha256((self.runner / name).read_bytes()).hexdigest())
+
+
+class AptSourcesInputTests(ConfigCase):
+    """外部の APT 取得元の宣言 apt-sources.txt（#273）と、それを使う 2 本の固定スクリプトの配線。"""
+
+    LINE = ('mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 '
+            'https://packages.mozilla.org/apt mozilla main\n')
+
+    def launch(self):
+        self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
+        result = self.run_c3c('claude', str(self.proj))
+        run = self.assert_single_run(result, 'claude')
+        return result, run, self.staged_files()
+
+    def test_missing_file_is_staged_empty_without_warning(self):
+        (self.new / 'apt-sources.txt').unlink(missing_ok=True)
+        result, _, staged = self.launch()
+        self.assertEqual(staged['apt-sources.txt'], EMPTY_SHA256)
+        self.assertNotIn('apt-sources', result.stderr)
+        check = self.run_check('c3c', self.proj)
+        self.assertNotIn('apt-sources', check.stdout + check.stderr)
+
+    def test_project_file_is_staged_and_hashed(self):
+        (self.new / 'apt-sources.txt').write_text(self.LINE)
+        _, run, staged = self.launch()
+        self.assertEqual(staged['apt-sources.txt'], sha256_text(self.LINE))
+        (self.new / 'apt-sources.txt').write_text(self.LINE.replace('mozilla main', 'mozilla main contrib'))
+        _, changed_run, _ = self.launch()
+        self.assertNotEqual(changed_run['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
+
+    def test_check_diagnoses_content_only_when_present(self):
+        (self.new / 'apt-sources.txt').write_text(self.LINE)
+        check = self.run_check('c3c', self.proj)
+        self.assertIn('[OK]   apt-sources.txt: 内容診断 OK', check.stdout)
+        (self.new / 'apt-sources.txt').write_text(self.LINE.replace('https://packages.mozilla.org/apt ', 'http://packages.mozilla.org/apt '))
+        check = self.run_check('c3c', self.proj)
+        self.assertIn('[WARN] apt-sources.txt に仕様外の行があります', check.stdout)
+
+    def test_fixed_scripts_are_staged_and_hashed(self):
+        _, run, staged = self.launch()
+        for name in ('install-apt-sources.sh', 'check-boundary-files.sh'):
+            with self.subTest(name=name):
+                self.assertEqual(staged[name], hashlib.sha256((self.runner / name).read_bytes()).hexdigest())
+                original = (self.runner / name).read_bytes()
+                (self.runner / name).write_bytes(original + b'# changed\n')
+                _, changed_run, _ = self.launch()
+                (self.runner / name).write_bytes(original)
+                self.assertNotEqual(changed_run['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
+
+    def test_fixed_scripts_cannot_be_overridden_from_the_project(self):
+        _, run, staged = self.launch()
+        for name in ('install-apt-sources.sh', 'check-boundary-files.sh'):
+            (self.new / name).write_text('#!/bin/sh\nexit 99\n')
+        _, run2, staged2 = self.launch()
+        self.assertEqual(staged2, staged)
+        self.assertEqual(run2['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
 
 
 class GuidanceTests(ConfigCase):

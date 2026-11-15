@@ -64,7 +64,7 @@ finish_by_result() {
 #   input/expected は printf '%b' で展開するエスケープ表記
 #   （\t \r \n \000 \357\273\277=BOM \343\200\200=U+3000）を含みうる。
 #   件数: packages 34（有効9・除外7・無効18）／requirements 35（有効11・除外4・無効20）
-#   ／総計69／reject 38（計画「ベクタ表」節と1行＝1ベクタで対応、件数はここから機械導出）。
+#   ／apt-sources 19（有効4・除外2・無効13。#273）／総計88／reject 51（計画「ベクタ表」節と1行＝1ベクタで対応、件数はここから機械導出）。
 VBI_VECTORS=(
   # packages 有効(9)
   'packages|accept|htop\n|htop\n'
@@ -141,9 +141,46 @@ VBI_VECTORS=(
   'requirements|reject|pkg[a,]\n|'
   'requirements|reject|pkg[a,,b]\n|'
   'requirements|reject|pkg[]\n|'
+  # apt-sources 有効(4)（#273）。指紋は Mozilla・Google の主鍵（2026-11-15 に取得）の形だけを使う
+  'apt-sources|accept|mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://packages.mozilla.org/apt mozilla main\n|mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://packages.mozilla.org/apt mozilla main\n'
+  # 空白の正規化（タブ・連続する空白）と行末の CR、指紋 2 つ、component 2 つ
+  'apt-sources|accept|a\thttps://k.example/key.asc  EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796,35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3   https://r.example/deb/ stable main contrib\r\n|a https://k.example/key.asc EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796,35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://r.example/deb/ stable main contrib\n'
+  # 末尾に改行の無い入力も、出力は改行で終える（packages の契約とは違う）
+  'apt-sources|accept|a https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main|a https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n'
+  # URL のポート
+  'apt-sources|accept|b https://k.example:8443/k.asc EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example:8443/deb stable main\n|b https://k.example:8443/k.asc EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example:8443/deb stable main\n'
+  # apt-sources 除外(2)
+  'apt-sources|exclude|# comment\n|'
+  'apt-sources|exclude|\n|'
+  # apt-sources 無効(13・reject): 鍵の URL が http
+  'apt-sources|reject|x http://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # URI が http
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 http://r.example stable main\n|'
+  # 小文字の指紋
+  'apt-sources|reject|x https://k.example/key eb4c1bfd4f042f6dddccec917721f63bd38b4796 https://r.example stable main\n|'
+  # 空の指紋（末尾のカンマ）
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796, https://r.example stable main\n|'
+  # component が無い
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable\n|'
+  # apt のオプションを書く欄は無い
+  'apt-sources|reject|x [trusted=yes] https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # 名前の大文字
+  'apt-sources|reject|X https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # 名前のパス
+  'apt-sources|reject|../x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # URL の問い合わせ
+  'apt-sources|reject|x https://k.example/key?a=b EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\n|'
+  # 先頭が - の suite
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example -stable main\n|'
+  # 行内のコメント
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main # note\n|'
+  # 名前の重複
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example stable main\nx https://k.example/key 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://s.example stable main\n|'
+  # NUL
+  'apt-sources|reject|x https://k.example/key EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 https://r.example st\000able main\n|'
 )
 
-# 層1本体: ベクタ表全69件＋件数アサーション4件を実行する。
+# 層1本体: ベクタ表全88件＋件数アサーション5件を実行する。
 run_validator_layer1() {
   local vbi="${SCRIPT_DIR}/validate-build-input.sh"
   local t infile outfile expfile
@@ -151,13 +188,14 @@ run_validator_layer1() {
   infile="$t/in"; outfile="$t/out"; expfile="$t/expected"
 
   local entry kind class input expected actual_rc
-  local pkg_count=0 req_count=0 reject_count=0 total_count=0
+  local pkg_count=0 req_count=0 apt_count=0 reject_count=0 total_count=0
 
   for entry in "${VBI_VECTORS[@]}"; do
     IFS='|' read -r kind class input expected <<< "$entry"
     total_count=$((total_count + 1))
     [ "$kind" = "packages" ] && pkg_count=$((pkg_count + 1))
     [ "$kind" = "requirements" ] && req_count=$((req_count + 1))
+    [ "$kind" = "apt-sources" ] && apt_count=$((apt_count + 1))
     [ "$class" = "reject" ] && reject_count=$((reject_count + 1))
 
     printf 'SENTINEL' > "$outfile"
@@ -195,12 +233,13 @@ run_validator_layer1() {
     esac
   done
 
-  # 件数アサーション4件（抽出漏れ・区切り記号依存を機械的に検出する。数は
+  # 件数アサーション5件（抽出漏れ・区切り記号依存を機械的に検出する。数は
   # 計画「ベクタ表」節の表から機械導出した値で、転記しない）。
   if [ "$pkg_count" -eq 34 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 packages件数=$pkg_count (期待34)"; fi
   if [ "$req_count" -eq 35 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 requirements件数=$req_count (期待35)"; fi
-  if [ "$total_count" -eq 69 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 総数=$total_count (期待69)"; fi
-  if [ "$reject_count" -eq 38 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 reject件数=$reject_count (期待38)"; fi
+  if [ "$apt_count" -eq 19 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 apt-sources件数=$apt_count (期待19)"; fi
+  if [ "$total_count" -eq 88 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 総数=$total_count (期待88)"; fi
+  if [ "$reject_count" -eq 51 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer1 reject件数=$reject_count (期待51)"; fi
 
   rm -rf "$t"
 }
@@ -360,13 +399,48 @@ run_validator_layer2() {
   hits=$(grep -cF 'COPY validate-build-input.sh /tmp/' "$logical")
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: COPYのヒット数=$hits (期待1)"; fi
 
+  # 検査6（#273）: 外部の APT 取得元。validator が `|| exit 1` で握られ、同じ RUN の中でその後に
+  # install-apt-sources.sh が .norm を読むこと。RUN は `set -e;` で始まる（取得・照合の失敗を止める）。
+  hits=$(grep -cF 'COPY apt-sources.txt /tmp/apt-sources.txt' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: apt-sources の COPY のヒット数=$hits (期待1)"; fi
+  hits=$(grep -cF 'COPY install-apt-sources.sh check-boundary-files.sh /tmp/' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: 2 本のスクリプトの COPY のヒット数=$hits (期待1)"; fi
+  hits=$(awk -v v='sh /tmp/validate-build-input.sh apt-sources /tmp/apt-sources.txt /tmp/apt-sources.norm || exit 1;' \
+             -v i='sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' \
+             'index($0, "RUN set -e;") == 1 && index($0, v) > 0 && index($0, i) > index($0, v) { n++ } END { print n + 0 }' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: apt-sources の検査と導入の RUN のヒット数=$hits (期待1)"; fi
+  hits=$(grep -cF 'sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' "$logical")
+  if [ "$hits" -eq 4 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: install-apt-sources.sh の .norm での呼び出しの数=$hits (期待4: 導入・packages・Copilot・upgrade の層)"; fi
+  # 外部の取得元の層の後で apt-get update を走らせる層（packages.txt の層と Copilot の bubblewrap の導入）は、
+  # update の前に鍵を取り直す（外部の取得元の層がキャッシュから使われると鍵は古いままで、提供元が鍵を替えると
+  # その update で止まり続けるため。#273 の PR 前レビュー）。
+  hits=$(awk -v i='sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' \
+             '(index($0, "sh /tmp/validate-build-input.sh packages") > 0 || index($0, "--no-install-recommends bubblewrap") > 0) {
+                k = index($0, i); u = index($0, "apt-get update")
+                if (k > 0 && u > k) n++ }
+              END { print n + 0 }' "$logical")
+  if [ "$hits" -eq 2 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: packages・Copilot の層で update の前に鍵を取り直す RUN の数=$hits (期待2)"; fi
+  hits=$(grep -cE 'install-apt-sources\.sh /tmp/apt-sources\.txt|(install-apt-sources|check-boundary-files)\.sh [^;&|]*\|\|' "$logical")
+  if [ "$hits" -eq 0 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: 2 本のスクリプトが .txt を読むか失敗を || で握っている(ヒット数=$hits)"; fi
+  # 検査7（#273）: upgrade の RUN（apt-get update --error-on=any を含む論理行）が set -e で始まり、
+  # 鍵の取り直し → snapshot → apt-get update → upgrade → verify の順に並ぶこと。
+  hits=$(awk 'index($0, "apt-get update --error-on=any") > 0 && index($0, "RUN set -e;") == 1 {
+                k = index($0, "sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm")
+                s = index($0, "sh /tmp/check-boundary-files.sh snapshot ")
+                u = index($0, "apt-get update --error-on=any")
+                g = index($0, "upgrade --with-new-pkgs")
+                v = index($0, "sh /tmp/check-boundary-files.sh verify ")
+                if (k > 0 && k < s && s < u && u < g && g < v) n++ }
+              END { print n + 0 }' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: upgrade の RUN の順（取り直し→snapshot→update→upgrade→verify）のヒット数=$hits (期待1)"; fi
+
   rm -rf "$t"
 }
 
 # 層1（ベクタ表・契約異常系）の実行入口。--validator-only と通常実行の両方から
-# 呼ぶ（複製しない）。層2（Dockerfile.claude 配線の静的検査）は --validator-only
-# の対象外（計画の検証手順が定める合格条件 PASS==82 は層1+契約異常系のみを指す）
-# のため、ここには含めず通常実行フロー側で別途呼ぶ。
+# 呼ぶ（複製しない）。層2（Dockerfile.claude 配線の静的検査）はここには含めず、--validator-only と
+# 通常実行の側でそれぞれ呼ぶ（#273 から --validator-only でも走る。層1+契約異常系の PASS は 102、
+# 層2 を足した --validator-only の合計は 120）。
 run_validator_layer1_and_contract() {
   log "## 層1: validate-build-input.sh ベクタ表・契約異常系テスト（#34）"
   run_validator_layer1
@@ -1087,6 +1161,8 @@ run_launcher_tests() {
   run_ipv6_launcher_tests
   check "IPv6 のルール・entrypoint テスト" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_ipv6_*.py"
   check "通信待ちの上限・再試行・スナップショット保護" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_network_timeouts.py"
+  check "外部の APT 取得元の鍵の照合（指紋の集合・形式・失敗時に書かない・https だけ）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_install_apt_sources.py"
+  check "upgrade の層の前後の境界のファイルの照合" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_check_boundary_files.py"
   check "定期更新の診断状態・ログ上限" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_refresh_monitor.py"
   check "コンテナ側のファイルが旧名のパス・env キー・label を参照しない（改名 第 2 段）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_container_paths.py"
   check "lint の Markdown のアンカーの検査（GitHub の見出しの id・重複の番号・コードの中を読まない・相対パス・外のリンクを見ない）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_md_anchors.py"
@@ -2035,7 +2111,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2771,7 +2847,7 @@ SHIM
   # RUN_DIR（c3c の checkout）が HOME 配下にある構成。隔離用コピーから起動する。
   hm_run_dir_case() {
     mkdir -p "$home/tools/c3c"
-    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
+    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
       check "HOME_MOUNT が守っている領域を含むと止まる: RUN_DIR のコピーを作る" false
       return
     }
@@ -2806,8 +2882,12 @@ SHIM
   launcher_sandbox_cleanup
 }
 
+# 層 2（Dockerfile.claude の配線の静的検査）は Dockerfile を読むだけなので、--validator-only でも走らせる
+# （CI が毎回見る。#273 の PR 前レビューで、外部の APT 取得元と境界の照合の配線を CI で守るため持ち主が決めた）。
 if [[ "${1:-}" == "--validator-only" ]]; then
   run_validator_layer1_and_contract
+  log "## 層2: Dockerfile.claude 配線の回帰条件（#34）"
+  run_validator_layer2
   finish_by_result
 fi
 
@@ -2839,8 +2919,9 @@ check "podman compose config" env \
 log ""
 
 # c3c の stage_build_context() 相当。Dockerfile.claude が要求する
-# entrypoint.sh・init-firewall.sh・git-askpass.sh・validate-build-input.sh・
-# allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・
+# entrypoint.sh・init-firewall.sh・git-askpass.sh・validate-build-input.sh・install-apt-sources.sh・
+# check-boundary-files.sh・
+# allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・apt-sources.txt・
 # github-meta.json を一時ディレクトリへ集約する（packages.txt/requirements.txt は
 # 呼び出し側で個別にコピーする — プロジェクト上書きテストではソースが変わるため）。
 # node-version.txt・codex-version.txt は同梱 default（c3c 第2b-2段階）をコピーする。
@@ -2863,11 +2944,14 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/copilot-settings.json" "$dest/copilot-settings.json"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
+  cp "${SCRIPT_DIR}/install-apt-sources.sh" "$dest/install-apt-sources.sh"
+  cp "${SCRIPT_DIR}/check-boundary-files.sh" "$dest/check-boundary-files.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
   cp "${SCRIPT_DIR}/node-version.txt" "$dest/node-version.txt"
   cp "${SCRIPT_DIR}/codex-version.txt" "$dest/codex-version.txt"
   cp "${SCRIPT_DIR}/copilot-version.txt" "$dest/copilot-version.txt"
   : > "$dest/allowed-ports.txt"
+  : > "$dest/apt-sources.txt"
 
   local sibling gh_meta fetch_rc
   gh_meta=$(mktemp "$dest/github-meta.XXXXXX") || return 1
@@ -3080,6 +3164,17 @@ COPILOT_DISABLED_PROBE='set -e
 [ "$(id -u)" != 0 ]'
 check "Copilot は既定で無効（copilot・中継・雛形・bubblewrap・宛先・一時ファイルが無い）" \
   podman run --rm --network=none "$IMAGE" sh -c "$COPILOT_DISABLED_PROBE"
+# 外部の APT 取得元（#273）を宣言しないイメージ（apt-sources.txt が空）には、c3c の取得元と鍵が無く、
+# 導入と照合に使った一時ファイルも残らない。
+# shellcheck disable=SC2016  # コンテナ内 sh へ渡す文字列。$ はコンテナ側で展開させる意図
+APT_SOURCES_ABSENT_PROBE='set -e
+! ls /etc/apt/sources.list.d/c3c-* >/dev/null 2>&1 || { echo "c3c の取得元がある"; exit 1; }
+! ls /etc/apt/keyrings/c3c-* >/dev/null 2>&1 || { echo "c3c の鍵がある"; exit 1; }
+for f in /tmp/apt-sources.txt /tmp/apt-sources.norm /tmp/install-apt-sources.sh /tmp/check-boundary-files.sh /tmp/c3c-boundary.state; do
+  [ ! -e "$f" ] || { echo "$f が残っている"; exit 1; }
+done'
+check "外部の APT 取得元の宣言が無いイメージに c3c の取得元・鍵・一時ファイルが無い（#273）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$APT_SOURCES_ABSENT_PROBE"
 log ""
 
 # 実コンテナ CI はこのビルドとツール起動を再利用し、続くマウント・通信検査を別段階にする。
@@ -3197,6 +3292,84 @@ else
 fi
 podman rmi "$POS1_IMAGE" 2>/dev/null
 rm -rf "$POS1_PROJECT_DIR" "$POS1_CONTEXT_DIR"
+
+log ""
+log "## apt-sources ビルド時検証テスト（#273）"
+# 外部の APT 取得元を宣言した文脈を作る。$1 = 文脈のディレクトリ、$2 = apt-sources.txt の中身
+APT_MOZILLA_LINE='mozilla https://packages.mozilla.org/apt/repo-signing-key.gpg 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 https://packages.mozilla.org/apt mozilla main'
+stage_apt_sources_context() {
+  stage_common_context "$1" || return 1
+  cp "${SCRIPT_DIR}/packages.txt" "$1/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$1/requirements.txt"
+  printf '%s\n' "$2" > "$1/apt-sources.txt"
+}
+
+# 陰性1: 指紋の 1 桁を変えた Mozilla の行 → 照合でビルドが止まる
+APTNEG1_IMAGE="localhost/claude-test-aptneg1"
+APTNEG1_CONTEXT_DIR="$(mktemp -d)"
+if stage_apt_sources_context "$APTNEG1_CONTEXT_DIR" "${APT_MOZILLA_LINE/35BAA0B3/35BAA0B4}"; then
+  check_fails "apt-sources 陰性1: 指紋の不一致でビルドfail" "指紋が一致しません" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTNEG1_IMAGE" "$APTNEG1_CONTEXT_DIR"
+else
+  check "apt-sources 陰性1: 指紋の不一致でビルドfail (staging failed: see stderr above)" false
+fi
+podman rmi "$APTNEG1_IMAGE" 2>/dev/null
+rm -rf "$APTNEG1_CONTEXT_DIR"
+
+# 陰性2: URI が http → 書式の検査でビルドが止まる
+APTNEG2_IMAGE="localhost/claude-test-aptneg2"
+APTNEG2_CONTEXT_DIR="$(mktemp -d)"
+if stage_apt_sources_context "$APTNEG2_CONTEXT_DIR" "${APT_MOZILLA_LINE/https:\/\/packages.mozilla.org\/apt /http://packages.mozilla.org/apt }"; then
+  check_fails "apt-sources 陰性2: http の URI でビルドfail" "仕様外の行があります" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTNEG2_IMAGE" "$APTNEG2_CONTEXT_DIR"
+else
+  check "apt-sources 陰性2: http の URI でビルドfail (staging failed: see stderr above)" false
+fi
+podman rmi "$APTNEG2_IMAGE" 2>/dev/null
+rm -rf "$APTNEG2_CONTEXT_DIR"
+
+# 陰性3: Dockerfile が固定で足している GitHub CLI の取得元と同じ URI を、正しい指紋で宣言する →
+# apt が Signed-By の食い違いで止まる（黙ってどちらかを使わない）。指紋は 2026-11-15 に取得した主鍵 2 本。
+APTNEG3_IMAGE="localhost/claude-test-aptneg3"
+APTNEG3_CONTEXT_DIR="$(mktemp -d)"
+if stage_apt_sources_context "$APTNEG3_CONTEXT_DIR" 'gh https://cli.github.com/packages/githubcli-archive-keyring.gpg 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325 https://cli.github.com/packages stable main'; then
+  check_fails "apt-sources 陰性3: 既存の取得元と同じ URI でビルドfail" "Conflicting values set for option Signed-By" \
+    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTNEG3_IMAGE" "$APTNEG3_CONTEXT_DIR"
+else
+  check "apt-sources 陰性3: 既存の取得元と同じ URI でビルドfail (staging failed: see stderr above)" false
+fi
+podman rmi "$APTNEG3_IMAGE" 2>/dev/null
+rm -rf "$APTNEG3_CONTEXT_DIR"
+
+# 陽性1: Mozilla の正しい行、packages.txt は既定 → ビルドが成功し、取得元と鍵が root:root 0644 で置かれ、
+# 試験のコンテナの中で update すると packages.mozilla.org が見える（最終のイメージは apt の索引を消すため）。
+APTPOS1_IMAGE="localhost/claude-test-aptpos1"
+APTPOS1_CONTEXT_DIR="$(mktemp -d)"
+APTPOS1_LOG="$(mktemp)"
+if stage_apt_sources_context "$APTPOS1_CONTEXT_DIR" "$APT_MOZILLA_LINE"; then
+  check "apt-sources 陽性1: 正しい指紋でビルド成功" podman build --build-arg CACHEBUST=aptpos1-a \
+    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTPOS1_IMAGE" "$APTPOS1_CONTEXT_DIR"
+  # shellcheck disable=SC2016  # コンテナ内 sh へ渡す文字列。$ はコンテナ側で展開させる意図
+  check "apt-sources 陽性1: 鍵と取得元が root:root 0644" podman run --rm --network=none "$APTPOS1_IMAGE" sh -c \
+    '[ "$(stat -c %u:%g:%a /etc/apt/keyrings/c3c-mozilla.gpg)" = 0:0:644 ] && [ "$(stat -c %u:%g:%a /etc/apt/sources.list.d/c3c-mozilla.list)" = 0:0:644 ] && grep -qx "deb \[signed-by=/etc/apt/keyrings/c3c-mozilla.gpg\] https://packages.mozilla.org/apt mozilla main" /etc/apt/sources.list.d/c3c-mozilla.list'
+  check "apt-sources 陽性1: update すると packages.mozilla.org が見える" podman run --rm --user 0 "$APTPOS1_IMAGE" sh -c \
+    'apt-get update --error-on=any >/dev/null && apt-cache policy | grep -q packages.mozilla.org'
+  # 陽性1 の続き: CACHEBUST だけ変えて作り直すと、外部の取得元の RUN はキャッシュを使い、upgrade の RUN の中で
+  # 鍵を取り直して照合する（提供元が鍵を替えても、キャッシュの古い鍵で止まり続けないため）。
+  if podman build --build-arg CACHEBUST=aptpos1-b -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$APTPOS1_IMAGE" "$APTPOS1_CONTEXT_DIR" > "$APTPOS1_LOG" 2>&1; then
+    check "apt-sources 陽性1: 再ビルドで upgrade の層が鍵を取り直す" grep -qF 'INFO: mozilla の鍵を照合して置きました' "$APTPOS1_LOG"
+    # shellcheck disable=SC2016  # awk のプログラム。$0 は awk が展開する
+    check "apt-sources 陽性1: 再ビルドで外部の取得元の RUN はキャッシュを使う" \
+      awk '/^STEP / { step = $0 } /Using cache/ && step ~ /validate-build-input\.sh apt-sources/ { found = 1 } END { exit !found }' "$APTPOS1_LOG"
+  else
+    cat "$APTPOS1_LOG" >> "$LOG_FILE"
+    check "apt-sources 陽性1: 再ビルドが成功する" false
+  fi
+else
+  check "apt-sources 陽性1: 正しい指紋でビルド成功 (staging failed: see stderr above)" false
+fi
+podman rmi "$APTPOS1_IMAGE" 2>/dev/null
+rm -rf "$APTPOS1_CONTEXT_DIR" "$APTPOS1_LOG"
 log ""
 
 # 同梱 default の opt-out と project pin（c3c 第2b-2段階）。stage_common_context() が置く default を

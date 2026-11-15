@@ -112,9 +112,30 @@ RUN set -e; \
 # 固定なし、先頭の "-" なし。許可リストの全体はスクリプトを参照）ため、
 # packages.txt を書き込める攻撃者でもそこから apt オプションを注入できない。
 COPY validate-build-input.sh /tmp/
+
+# 外部の APT 取得元（.c3c/apt-sources.txt、#273。空なら何もしない）。packages.txt の層より前に置き、そこに
+# 書いたパッケージを外部の取得元からも入れられるようにする。宣言は validate-build-input.sh で検査してから
+# （https だけ、apt のオプションを書く欄は無い）、install-apt-sources.sh が鍵を取り、鍵束の主鍵の指紋の集合が
+# 宣言と完全に一致したときだけ、宣言した鍵だけを /etc/apt/keyrings/c3c-<名前>.gpg に、取得元を
+# /etc/apt/sources.list.d/c3c-<名前>.list に置く。照合するのは宣言した取得元の鍵までで、パッケージが
+# インストールのときに自分で足す取得元と鍵（Google Chrome の google-chrome.sources など）は照合の外。
+# 取得元を足すことは、その提供元にビルド時の root を渡すことと同じ（README「セキュリティモデル」の残余）。
+# 境界のファイルの多くはこの層より後で COPY するので、この層のインストールスクリプトは触れない（上の
+# managed-settings.json だけはこの層より前）。下の upgrade の層は境界のファイルの後に走るので、そこで前後を
+# 比べる（check-boundary-files.sh）。照合はその層だけで、この層・packages.txt の層・Copilot の bubblewrap の
+# 導入での書き換えは照合の外（README「セキュリティモデル」の残余）。2 本は upgrade の層で消す。
+COPY apt-sources.txt /tmp/apt-sources.txt
+COPY install-apt-sources.sh check-boundary-files.sh /tmp/
+RUN set -e; \
+    sh /tmp/validate-build-input.sh apt-sources /tmp/apt-sources.txt /tmp/apt-sources.norm || exit 1; \
+    sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm
+
+# packages.txt の層と、後ろの Copilot の層の apt-get update の前でも、外部の APT 取得元の鍵を取り直す
+# （上の層がキャッシュから使われると鍵が古いままで、提供元が鍵を替えるとこれらの update で止まり続けるため）。
 COPY packages.txt /tmp/packages.txt
 RUN set -e; \
     sh /tmp/validate-build-input.sh packages /tmp/packages.txt /tmp/packages.norm || exit 1; \
+    sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm; \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       $(tr '\n' ' ' < /tmp/packages.norm) && \
@@ -386,6 +407,7 @@ RUN set -e; \
         echo "ERROR: .c3c/copilot-version.txt には 1.0.103 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $COPILOT_VERSION）" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
         echo "ERROR: copilot-version.txt（$COPILOT_VERSION）には npm が必要ですが入っていません。.c3c/node-version.txt を空にしない（同梱 default か固定版で Node.js を導入する）か、packages.txt に nodejs/npm を追加してください。Copilot を使わないなら .c3c/copilot-version.txt も空にしてください。" >&2; exit 1; }; \
+      sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm; \
       apt-get update && apt-get install -y --no-install-recommends bubblewrap && apt-get clean && rm -rf /var/lib/apt/lists/*; \
       bwrap_version="$(dpkg-query -W -f='${Version}' bubblewrap)" && dpkg --compare-versions "$bwrap_version" ge 0.5.0 || { \
         echo "ERROR: bubblewrap が 0.5.0 以上ではありません（${bwrap_version:-不明}）" >&2; exit 1; }; \
@@ -549,11 +571,30 @@ ARG CACHEBUST=unknown
 # 止める（無いと apt-get update は rc 0 で終わりうるので、更新が欠けたまま upgrade が成功する）。
 # full-upgrade は使わない（パッケージを消すことがあり、固定の層や packages.txt のものが消えても
 # 下の検証では気づけない）。消さないと上がらないもの（kept back）は残る。
-RUN echo "cachebust=${CACHEBUST}" \
-  && apt-get update --error-on=any \
-  && apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-       upgrade --with-new-pkgs --no-install-recommends \
-  && apt-get clean && rm -rf /var/lib/apt/lists/*
+#
+# 外部の APT 取得元（#273）の鍵は、上の層がキャッシュから使われると取り直されない。提供元が署名の鍵を替えると
+# ここの update が古い鍵で止まり続けるので、update の前に install-apt-sources.sh で取り直して照合し直す
+# （照合できなければ止める。宣言が空なら何もしない）。
+# この層は境界のファイル（root 所有のスクリプトと設定）の COPY より後にあるので、upgrade の前後で
+# check-boundary-files.sh が状態を比べ、変わっていればビルドを止める。外の取得元が無いときも常に比べる。
+# これはインストールスクリプトがたまたま同じパスを書き換えた、という正直な壊れ方だけを捕まえる。悪意のある
+# 差し替え（setpriv・sudo など）は防げない（README「セキュリティモデル」の残余）。/etc/sudoers.d は丸ごと
+# 渡さない（sudo の conffile の README は、手を加えていなければ --force-confold でも置き換わり、誤検知になる）。
+# Debian のパッケージは /usr/local に置かないので /usr/local/bin は丸ごと渡す。
+RUN set -e; \
+    echo "cachebust=${CACHEBUST}"; \
+    sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm; \
+    sh /tmp/check-boundary-files.sh snapshot /tmp/c3c-boundary.state \
+      /usr/local/bin /usr/local/libexec/c3c /etc/c3c /etc/sudoers.d/node-firewall /etc/codex /etc/claude-code; \
+    apt-get update --error-on=any; \
+    apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+      upgrade --with-new-pkgs --no-install-recommends; \
+    sh /tmp/check-boundary-files.sh verify /tmp/c3c-boundary.state \
+      /usr/local/bin /usr/local/libexec/c3c /etc/c3c /etc/sudoers.d/node-firewall /etc/codex /etc/claude-code; \
+    rm -f /tmp/apt-sources.txt /tmp/apt-sources.norm /tmp/install-apt-sources.sh /tmp/check-boundary-files.sh \
+      /tmp/c3c-boundary.state; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
 
 # このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
 # 成功したことにして実行時に静かに壊れる（setpriv 不在）か堅牢化が未適用のまま

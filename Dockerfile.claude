@@ -120,8 +120,10 @@ COPY validate-build-input.sh /tmp/
 # /etc/apt/sources.list.d/c3c-<名前>.list に置く。照合するのは宣言した取得元の鍵までで、パッケージが
 # インストールのときに自分で足す取得元と鍵（Google Chrome の google-chrome.sources など）は照合の外。
 # 取得元を足すことは、その提供元にビルド時の root を渡すことと同じ（README「セキュリティモデル」の残余）。
-# 境界のファイルはこの層より後で COPY するので、この層のインストールスクリプトは触れない。下の upgrade の層は
-# 境界のファイルの後に走るので、そこで前後を比べる（check-boundary-files.sh）。2 本は upgrade の層で消す。
+# 境界のファイルの多くはこの層より後で COPY するので、この層のインストールスクリプトは触れない（上の
+# managed-settings.json だけはこの層より前）。下の upgrade の層は境界のファイルの後に走るので、そこで前後を
+# 比べる（check-boundary-files.sh）。照合はその層だけで、この層・packages.txt の層・Copilot の bubblewrap の
+# 導入での書き換えは照合の外（README「セキュリティモデル」の残余）。2 本は upgrade の層で消す。
 COPY apt-sources.txt /tmp/apt-sources.txt
 COPY install-apt-sources.sh check-boundary-files.sh /tmp/
 RUN set -e; \

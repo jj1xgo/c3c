@@ -336,6 +336,14 @@ git commit -m "feat: 外部の APT 取得元の層と、upgrade の層の境界�
 
 ---
 
+## 実装とレビューの後に変わったこと
+
+計画の本文（Task 5 の Step 1 と Step 3 など）は計画レビューを通した版のまま残し、実装とレビューで変えた点をここに書く。
+
+- PR 前レビュー（9241d11）: `install-apt-sources.sh` の呼び出しは 2 回ではなく 4 回になった（外部の取得元の層、`packages.txt` の層、Copilot の bubblewrap の導入、upgrade の層。後の 3 つは `apt-get update` の前の鍵の取り直し）。そのため `packages.txt` の RUN も変えた（Task 5 Step 3 の「変えない」は当てはまらない）。あわせて、境界のファイルの走査の失敗でビルドを止める、作業用の名前を取得元の名前と衝突させない、を直した。
+- PR 前レビュー（fac0510）: 層 2 の静的検査を `--validator-only` でも走らせ、CI で毎回走るようにした。
+- PR 後レビュー（持ち主の判断、2026-11-15）: 境界のファイルの照合は upgrade の層の前後だけで、それより前でパッケージを入れる層（外部の取得元の層の gnupg、`packages.txt` の層、Copilot の bubblewrap の導入）が、その層より前に置かれた境界のファイル（`managed-settings.json`、Codex の起動口、`codex-bwrap`、`/etc/codex/requirements.toml`）を書き換えても気づけない。コードは変えず、仕様・不変条件・README・`Dockerfile.claude` のコメントにこの範囲を書いた。
+
 ## 計画レビューの記録
 
 - Self-Review: `/etc/sudoers.d` を丸ごと照合すると sudo の conffile で誤検知になる点（`node-firewall` だけに絞った）、陰性 3 の apt の文言が未確認な点、README の「パッケージが自分で足す取得元」の記載漏れ、Task 7 の走らせ方を修正

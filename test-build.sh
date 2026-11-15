@@ -2076,7 +2076,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2812,7 +2812,7 @@ SHIM
   # RUN_DIR（c3c の checkout）が HOME 配下にある構成。隔離用コピーから起動する。
   hm_run_dir_case() {
     mkdir -p "$home/tools/c3c"
-    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
+    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
       check "HOME_MOUNT が守っている領域を含むと止まる: RUN_DIR のコピーを作る" false
       return
     }
@@ -2880,8 +2880,9 @@ check "podman compose config" env \
 log ""
 
 # c3c の stage_build_context() 相当。Dockerfile.claude が要求する
-# entrypoint.sh・init-firewall.sh・git-askpass.sh・validate-build-input.sh・
-# allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・
+# entrypoint.sh・init-firewall.sh・git-askpass.sh・validate-build-input.sh・install-apt-sources.sh・
+# check-boundary-files.sh・
+# allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・apt-sources.txt・
 # github-meta.json を一時ディレクトリへ集約する（packages.txt/requirements.txt は
 # 呼び出し側で個別にコピーする — プロジェクト上書きテストではソースが変わるため）。
 # node-version.txt・codex-version.txt は同梱 default（c3c 第2b-2段階）をコピーする。
@@ -2904,11 +2905,14 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/copilot-settings.json" "$dest/copilot-settings.json"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
+  cp "${SCRIPT_DIR}/install-apt-sources.sh" "$dest/install-apt-sources.sh"
+  cp "${SCRIPT_DIR}/check-boundary-files.sh" "$dest/check-boundary-files.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
   cp "${SCRIPT_DIR}/node-version.txt" "$dest/node-version.txt"
   cp "${SCRIPT_DIR}/codex-version.txt" "$dest/codex-version.txt"
   cp "${SCRIPT_DIR}/copilot-version.txt" "$dest/copilot-version.txt"
   : > "$dest/allowed-ports.txt"
+  : > "$dest/apt-sources.txt"
 
   local sibling gh_meta fetch_rc
   gh_meta=$(mktemp "$dest/github-meta.XXXXXX") || return 1

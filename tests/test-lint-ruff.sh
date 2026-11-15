@@ -113,15 +113,17 @@ for line in 'collect_py_files' 'run_ruff_check "$ci_ruff_version" "${py_files[@]
     echo "FAIL - wiring: 「$line」が ${wiring} 行（1 行であるべき）"; fail=$((fail + 1))
   fi
 done
-# 集める行が呼び出しの行より前にあること（後ろへ移すと py_files が空のまま呼ばれ、検査が黙って消える）。
-collect_at=$(grep -nFx 'collect_py_files' "$ROOT/lint.sh" | head -n 1 | cut -d: -f1)
-# shellcheck disable=SC2016 # 意図的にリテラル
-call_at=$(grep -nF 'run_ruff_check "$ci_ruff_version"' "$ROOT/lint.sh" | head -n 1 | cut -d: -f1)
+# 集める行の直後の行が呼び出しであること（後ろへ移すと py_files が空のまま呼ばれ、検査が黙って消える。
+# 間に別の行〈py_files=() など〉を挟む・集める行を関数の定義より前へ移す、も赤にするため、隣り合うことを見る）。
+# grep が当たらなくても set -e で止めずに FAIL と「結果:」まで出すため、|| true を付ける。
+collect_at=$(grep -nFx -- 'collect_py_files' "$ROOT/lint.sh" | head -n 1 | cut -d: -f1 || true)
+# shellcheck disable=SC2016 # 意図的にリテラル（行全体で比べ、コメントの部分一致に当てない）
+call_at=$(grep -nFx -- 'run_ruff_check "$ci_ruff_version" "${py_files[@]}" || status=1' "$ROOT/lint.sh" | head -n 1 | cut -d: -f1 || true)
 count=$((count + 1))
-if [[ -n "$collect_at" && -n "$call_at" && "$collect_at" -lt "$call_at" ]]; then
-  echo 'ok - wiring: collect_py_files が run_ruff_check の呼び出しより前にある'
+if [[ -n "$collect_at" && -n "$call_at" && "$call_at" -eq $((collect_at + 1)) ]]; then
+  echo 'ok - wiring: collect_py_files の直後の行が run_ruff_check の呼び出し'
 else
-  echo "FAIL - wiring: collect_py_files（${collect_at:-なし}行目）が呼び出し（${call_at:-なし}行目）より前にない"; fail=$((fail + 1))
+  echo "FAIL - wiring: collect_py_files（${collect_at:-なし}行目）の直後が呼び出し（${call_at:-なし}行目）でない"; fail=$((fail + 1))
 fi
 
 echo "結果: $count ケース、失敗 $fail"

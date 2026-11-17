@@ -596,6 +596,19 @@ RUN set -e; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
+# ~/.config を node が書けるようにする（#275）。秘密のマウント（compose.yml の .../.config/c3c/secrets）の親が
+# イメージに無いと、ランタイムが root 所有で作り、node はブラウザなどの設定を ~/.config の下に作れない。
+# /home/node/.config は /tmp と同じ root 所有・1777（sticky）にする。sticky により node は自分で作ったものしか
+# 改名・削除できず、Copilot の sandbox がパスだけで隠している秘密の親 c3c（root 所有・755）を動かせない。
+# node 所有にしない（c3c を改名でき、秘密が別のパスに見えるため）。secrets はここで作らない（SECRETS_DIR が
+# 未設定のときはランタイムが /dev/null を重ねるため）。~/.config そのものの改名は防がない（既知の限界。
+# /home/node が node 所有のため。docs/development-invariants.md）。symlink や既存の c3c は直さずに止める。
+RUN set -e; \
+    ! [ -L /home/node/.config ] || { echo "ERROR: /home/node/.config が symlink です" >&2; exit 1; }; \
+    install -d -o root -g root -m 1777 /home/node/.config; \
+    ! [ -e /home/node/.config/c3c ] && ! [ -L /home/node/.config/c3c ] || { echo "ERROR: /home/node/.config/c3c が既にあります（symlink を含む）" >&2; exit 1; }; \
+    install -d -o root -g root -m 755 /home/node/.config/c3c
+
 # このベースイメージがコンテナのセキュリティ境界が依存するものを提供しない場合、
 # 成功したことにして実行時に静かに壊れる（setpriv 不在）か堅牢化が未適用のまま
 # 残る（apt ソースが HTTP のまま）のではなく、ビルドを大声で失敗させる。上の upgrade の

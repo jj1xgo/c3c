@@ -434,6 +434,16 @@ run_validator_layer2() {
               END { print n + 0 }' "$logical")
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: upgrade の RUN の順（取り直し→snapshot→update→upgrade→verify）のヒット数=$hits (期待1)"; fi
 
+  # 検査8（#275）: ~/.config を root:root 1777、~/.config/c3c を root:root 755 で作る行が、どちらも最初の
+  # USER node より前（root の層）にあること。
+  hits=$(awk -v a='install -d -o root -g root -m 1777 /home/node/.config;' \
+             -v b='install -d -o root -g root -m 755 /home/node/.config/c3c' \
+             'u == 0 && /^USER node([[:space:]]|$)/ { u = NR }
+              index($0, a) > 0 { if (u == 0) na++; else late++ }
+              index($0, b) > 0 { if (u == 0) nb++; else late++ }
+              END { print ((na == 1 && nb == 1 && late == 0 && u > 0) ? 1 : 0) }' "$logical")
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: ~/.config（1777）と ~/.config/c3c（755）を USER node より前に作る行が無い（#275）"; fi
+
   rm -rf "$t"
 }
 
@@ -614,6 +624,43 @@ exit $fail
 # shellcheck disable=SC2016  # コンテナ内 bash へ渡す文字列
 HOME_MOUNT_FLOCK_PROBE='if flock -n /home/node/hm-probe/l true; then echo FREE; else echo "LOCKED rc=$?"; fi'
 
+# ~/.config の形（#275）。/home/node/.config は root:root 1777（sticky）、/home/node/.config/c3c は root:root 755 で、
+# node は ~/.config の下に作れるが、c3c（秘密のマウントの親）は改名も削除もできない。第 1 引数で場面を選ぶ:
+# image（マウント無しのイメージ。secrets が無い）、set（SECRETS_DIR にダミーの秘密）、unset（/dev/null が重なる）。
+# --build-only では sh -c、--config-ro-only では bash -c で評価するので POSIX sh の範囲で書く。
+# --config-ro-only は早い段階で分岐して終わるので、run_config_ro_tests() より前で定義する。
+# 独自のベースイメージで、後の層が ~/.config に何かを作っても崩れないよう、~/.config の中身の一覧では判定しない。
+# shellcheck disable=SC2016  # コンテナ内の sh で評価する
+CONFIG_DIR_PROBE='mode=${1:-}
+c=/home/node/.config
+bad() { echo "$*"; exit 1; }
+[ "$(id -u)" != 0 ] || bad "root で動いている"
+[ -d "$c" ] && ! [ -L "$c" ] || bad "$c が symlink でないディレクトリではない"
+[ "$(stat -c %u:%g:%a "$c")" = 0:0:1777 ] || bad "$c が root:root 1777 ではない: $(stat -c %u:%g:%a "$c")"
+[ -d "$c/c3c" ] && ! [ -L "$c/c3c" ] || bad "$c/c3c が symlink でないディレクトリではない"
+[ "$(stat -c %u:%g:%a "$c/c3c")" = 0:0:755 ] || bad "$c/c3c が root:root 755 ではない: $(stat -c %u:%g:%a "$c/c3c")"
+mkdir "$c/probe-275" || bad "node が $c の下に作れない"
+[ "$(stat -c %u "$c/probe-275")" = "$(id -u)" ] || bad "作ったディレクトリが node 所有でない"
+rmdir "$c/probe-275" || bad "作ったディレクトリを消せない"
+if mv "$c/c3c" "$c/c3c-moved" 2>/dev/null; then bad "node が c3c を改名できた"; fi
+[ -d "$c/c3c" ] && ! [ -e "$c/c3c-moved" ] || bad "改名の試みの後に c3c が元の場所に無い"
+if rm -rf "$c/c3c" 2>/dev/null; then bad "node が c3c を削除できた"; fi
+[ -d "$c/c3c" ] || bad "削除の試みの後に c3c が無い"
+case "$mode" in
+  set)
+    [ -d "$c/c3c/secrets" ] || bad "secrets がディレクトリでない"
+    [ "$(cat "$c/c3c/secrets/seed")" = seed ] || bad "secrets/seed が読めない"
+    if mv "$c/c3c/secrets" "$c/secrets-moved" 2>/dev/null; then bad "node が secrets を動かせた"; fi
+    [ "$(cat "$c/c3c/secrets/seed")" = seed ] || bad "移動の試みの後に secrets/seed が読めない" ;;
+  unset)
+    [ -c "$c/c3c/secrets" ] || bad "secrets に /dev/null が重なっていない" ;;
+  image)
+    ! [ -e "$c/c3c/secrets" ] && ! [ -L "$c/c3c/secrets" ] || bad "イメージに secrets がある"
+    ! [ -e "$c/probe-275" ] || bad "probe-275 が残っている" ;;
+  *) bad "場面の引数が違う: $mode" ;;
+esac
+echo OK'
+
 run_config_ro_tests() {
   log "## ホスト ~/.claude 設定の読み取り専用保護（compose.yml :ro 重ねマウント）"
   local proj="${TEST_COMPOSE_PROJECT:-claude-test-config-ro}"
@@ -731,6 +778,19 @@ run_config_ro_tests() {
   check "ホストが flock を放した後は、コンテナの flock -n が取れる" \
     bash -c 'out=$(env "${@:2}" "$1") && [ "$out" = FREE ]' _ "$HOME_MOUNT_FLOCK_PROBE" "${hm_env[@]}" "${hm_compose[@]}"
   rm -rf "$hm" "$hmro"
+  # ~/.config の形（#275）を、SECRETS_DIR を設定した組（ダミーの秘密だけを渡す）と未設定の組で確かめる。
+  mkdir -p "$root/c3c-secrets/secrets"
+  echo seed > "$root/c3c-secrets/secrets/seed"
+  chmod 755 "$root/c3c-secrets/secrets"; chmod 644 "$root/c3c-secrets/secrets/seed"
+  check "/home/node/.config が sticky で、c3c と secrets は動かせない（SECRETS_DIR あり）" env \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    SECRETS_DIR="$root/c3c-secrets/secrets" \
+    podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_DIR_PROBE" _ set
+  check "/home/node/.config が sticky で、c3c は動かせない（SECRETS_DIR なし、/dev/null が重なる）" env -u SECRETS_DIR \
+    CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
+    podman compose "${compose_args[@]}" -p "$proj" --in-pod false \
+      run --rm -T --entrypoint bash claude-auth-workspace -c "$CONFIG_DIR_PROBE" _ unset
   check "一時 ~/.claude 配下の全エントリが実行ユーザー所有" \
     bash -c "out=\$(find '$root' -not -uid $(id -u) -print 2>&1); [[ \$? -eq 0 && -z \"\$out\" ]]"
   env CLAUDE_CONFIG_DIR="$root" CONTEXT="$root" C3C_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$root" \
@@ -3044,6 +3104,8 @@ python3 -I -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {\
 [ "$(id -u)" != 0 ]'
 check "Claude managed settings の配置（root:root・node から書込不可・deny Cd だけ）" \
   podman run --rm --network=none "$IMAGE" sh -c "$CLAUDE_MANAGED_SETTINGS_PROBE"
+check "/home/node/.config が root:root 1777 で、node が作れて c3c は動かせない（マウント無し）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$CONFIG_DIR_PROBE" _ image
 check "Codex 審査 helper が使う tomllib（Python 3.11 以上）" podman run --rm --network=none "$IMAGE" python3 -I -c 'import tomllib'
 check "claude --version" podman run --rm "$IMAGE" claude --version
 check "gh --version"     podman run --rm "$IMAGE" gh --version

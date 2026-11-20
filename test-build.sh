@@ -3211,8 +3211,8 @@ check "Codex の更新確認の要件ファイル（root:root・node から書�
 COPILOT_ABSENT_PROBE='set -e
 ! command -v copilot >/dev/null || { echo "copilot がある"; exit 1; }
 [ ! -e /usr/local/bin/copilot ] && [ ! -L /usr/local/bin/copilot ] || { echo "/usr/local/bin/copilot がある"; exit 1; }
-[ ! -e /usr/local/libexec/c3c/copilot-bwrap ] || { echo "bwrap の中継がある"; exit 1; }
-[ ! -e /etc/c3c/copilot-settings.json ] || { echo "sandbox の設定の雛形がある"; exit 1; }
+[ ! -e /usr/local/libexec/c3c/copilot-bwrap ] && [ ! -L /usr/local/libexec/c3c/copilot-bwrap ] || { echo "bwrap の中継がある"; exit 1; }
+[ ! -e /etc/c3c/copilot-settings.json ] && [ ! -L /etc/c3c/copilot-settings.json ] || { echo "sandbox の設定の雛形がある"; exit 1; }
 ! dpkg -s bubblewrap >/dev/null 2>&1 || { echo "bubblewrap が入っている"; exit 1; }
 ! grep -q githubcopilot /etc/c3c/allowed-domains.txt || { echo "許可リストに Copilot の宛先がある"; exit 1; }
 ! ls /tmp/copilot-* >/dev/null 2>&1 || { echo "/tmp/copilot-* が残っている"; exit 1; }

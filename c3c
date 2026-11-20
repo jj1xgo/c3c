@@ -1078,7 +1078,10 @@ guard_build_input_defaults() {
     guard_warn "${warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに codex-version.txt は有効（$codex_value）です。Codex CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Codex を使わないなら $PROJECT_CONF_DIR/codex-version.txt も空にして無効化できます。"
   fi
   local leftover="$PROJECT_CONF_DIR/copilot-version.txt" leftover_bytes=""
-  if [[ -e "$leftover" || -L "$leftover" ]]; then
+  # 探索の権限（x）の無いディレクトリの中は、-e でも -L でも「無い」に見える。有無を確かめられないので止める。
+  if [[ -d "$PROJECT_CONF_DIR" && ! -x "$PROJECT_CONF_DIR" ]]; then
+    guard_fail "ERROR: $PROJECT_CONF_DIR の中を確かめられません（ディレクトリの探索の権限 x がありません）。c3c v21 で Copilot CLI の opt-in を廃止したので、残った copilot-version.txt が無いことを確かめてから起動します。権限を直してから起動してください。" || return 1
+  elif [[ -e "$leftover" || -L "$leftover" ]]; then
     # 止めないのは、symlink でない読める通常のファイルで、空白を除くと 0 バイトのものだけ。
     # 判定はバイト数と tr の rc で行う（コマンド置換は NUL を捨てるので、文字列では判定しない）。
     if [[ ! -f "$leftover" || -L "$leftover" || ! -r "$leftover" ]] \

@@ -746,8 +746,13 @@ class BuildInputDefaultTests(ConfigCase):
             path.rmdir()
         return path
 
-    def assert_leftover_copilot_stops(self, check_rebuild=False):
-        message = self.leftover_copilot_message()
+    def unsearchable_conf_dir_message(self):
+        return (f'ERROR: {self.new} の中を確かめられません（ディレクトリの探索の権限 x がありません）。c3c v21 で'
+                ' Copilot CLI の opt-in を廃止したので、残った copilot-version.txt が無いことを確かめてから起動します。'
+                '権限を直してから起動してください。')
+
+    def assert_leftover_copilot_stops(self, check_rebuild=False, message=None):
+        message = message or self.leftover_copilot_message()
         self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
         result = self.run_c3c('claude', str(self.proj))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -829,6 +834,18 @@ class BuildInputDefaultTests(ConfigCase):
                     self.assert_leftover_copilot_stops()
                 finally:
                     self.reset_copilot_path()
+
+    def test_unsearchable_conf_dir_fails_leftover_check(self):
+        # .c3c を探索できないと、中のファイルは -e でも -L でも「無い」に見える。黙って通さない。
+        if os.geteuid() == 0:
+            self.skipTest('root は探索の権限の無いディレクトリも探索できる')
+        self.reset_copilot_path().write_text('1.0.103\n')
+        self.new.chmod(0o600)
+        try:
+            self.assert_leftover_copilot_stops(message=self.unsearchable_conf_dir_message())
+        finally:
+            self.new.chmod(0o755)
+            self.reset_copilot_path()
 
     def test_leftover_copilot_version_blank_is_allowed(self):
         for content in ('', ' \n\t\n'):

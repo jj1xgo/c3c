@@ -1038,40 +1038,18 @@ guard_codex_dir() {
 # 内容（空 = 明示 opt-out）から決め、ここで別の解決規則を持たない。Node が opt-out で Codex が有効な
 # 組合せは、ベースイメージや packages.txt で npm が入るかをホスト側では判定できない（断定しない）ため
 # ビルド前に WARNING を出す（通常起動は進行可、--check は WARN 集計）。Node・Codex の値の妥当性
-# （書式）は Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。Copilot CLI
-# （copilot-version.txt。同梱 default は空 = 無効の opt-in）は、ビルドで必ず止まる書式違反を
-# ここでも検査して止める（素の X.Y.Z か、文字どおりの latest）。Node が空で Copilot が有効な
-# 組合せも Codex と同じ理由で WARNING にする。
+# （書式）は Dockerfile.claude のビルド時検証と guard_codex_agent() が担う。
+# 残った copilot-version.txt（v21 で Copilot CLI の opt-in を廃止）は、resolve_asset_source() を通さずに
+# project の置き場だけを見て、空白だけの通常のファイル以外は起動・-b・--check で止める。
 guard_build_input_defaults() {
   local name label value origin_text
   local node_value="" codex_value="" info_prefix="INFO: "
   [[ ${CHECK_MODE:-0} -eq 1 ]] && info_prefix="[INFO] "
-  local copilot_value=""
-  for name in node-version.txt codex-version.txt copilot-version.txt; do
+  for name in node-version.txt codex-version.txt; do
     resolve_asset_source "$name"
     value="$(tr -d '[:space:]' < "$ASSET_PATH")" || {
       guard_fail "ERROR: $ASSET_PATH を読めません。起動を中止します。" || return 1
     }
-    if [[ "$name" == copilot-version.txt ]]; then
-      if [[ -z "$value" && "$ASSET_ORIGIN" != "project" ]]; then
-        origin_text="なし（既定で無効。導入するには $PROJECT_CONF_DIR/copilot-version.txt に版を書きます）"
-      elif [[ -z "$value" ]]; then
-        origin_text="なし（$ASSET_PATH が空、Copilot を導入しません）"
-      elif [[ ! "$value" =~ ^([0-9]+\.[0-9]+\.[0-9]+|latest)$ ]]; then
-        guard_fail "ERROR: $ASSET_PATH には 1.0.103 のような素のバージョンか、文字どおり \"latest\" を書いてください（実際の値: $value）" || return 1
-      elif [[ "$ASSET_ORIGIN" == "project" ]]; then
-        origin_text="$value（採用元: project $ASSET_PATH）"
-      else
-        origin_text="$value（採用元: 同梱 default）"
-      fi
-      if [[ ${CHECK_MODE:-0} -eq 1 ]]; then
-        echo "${info_prefix}Copilot 版: $origin_text"
-      else
-        echo "${info_prefix}Copilot 版: $origin_text" >&2
-      fi
-      copilot_value="$value"
-      continue
-    fi
     label="Node.js"
     [[ "$name" == codex-version.txt ]] && label="Codex"
     if [[ "$ASSET_ORIGIN" == "project" ]]; then
@@ -1099,10 +1077,18 @@ guard_build_input_defaults() {
     [[ ${CHECK_MODE:-0} -eq 1 ]] && warn_prefix="[WARN] "
     guard_warn "${warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに codex-version.txt は有効（$codex_value）です。Codex CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Codex を使わないなら $PROJECT_CONF_DIR/codex-version.txt も空にして無効化できます。"
   fi
-  if [[ -z "$node_value" && -n "$copilot_value" ]]; then
-    local copilot_warn_prefix=""
-    [[ ${CHECK_MODE:-0} -eq 1 ]] && copilot_warn_prefix="[WARN] "
-    guard_warn "${copilot_warn_prefix}WARNING: $PROJECT_CONF_DIR/node-version.txt が空（Node.js を導入しない）なのに copilot-version.txt は有効（$copilot_value）です。Copilot CLI の導入には npm が必要ですが、ベースイメージや packages.txt で npm が入るかはホスト側では判定しません。npm が無ければ -b のビルドは失敗します。Copilot を使わないなら $PROJECT_CONF_DIR/copilot-version.txt も空にして無効化できます。"
+  local leftover="$PROJECT_CONF_DIR/copilot-version.txt" leftover_bytes=""
+  # 探索の権限（x）の無いディレクトリの中は、-e でも -L でも「無い」に見える。有無を確かめられないので止める。
+  if [[ -d "$PROJECT_CONF_DIR" && ! -x "$PROJECT_CONF_DIR" ]]; then
+    guard_fail "ERROR: $PROJECT_CONF_DIR の中を確かめられません（ディレクトリの探索の権限 x がありません）。c3c v21 で Copilot CLI の opt-in を廃止したので、残った copilot-version.txt が無いことを確かめてから起動します。権限を直してから起動してください。" || return 1
+  elif [[ -e "$leftover" || -L "$leftover" ]]; then
+    # 止めないのは、symlink でない読める通常のファイルで、空白を除くと 0 バイトのものだけ。
+    # 判定はバイト数と tr の rc で行う（コマンド置換は NUL を捨てるので、文字列では判定しない）。
+    if [[ ! -f "$leftover" || -L "$leftover" || ! -r "$leftover" ]] \
+      || ! leftover_bytes="$(LC_ALL=C tr -d '[:space:]' < "$leftover" | wc -c)" \
+      || [[ "${leftover_bytes//[[:space:]]/}" != 0 ]]; then
+      guard_fail "ERROR: $leftover があります。c3c v21 で Copilot CLI の opt-in を廃止したので、Copilot は入りません。このファイルを消してから起動してください（SECRETS_DIR の COPILOT_PAT も不要になりました。失効は GitHub で行います）。" || return 1
+    fi
   fi
   return 0
 }
@@ -1669,13 +1655,6 @@ run_explicit_build() {
      && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
     codex_cachebust="$(date +%s)"
   fi
-  # copilot-version.txt が "latest" のプロジェクトだけ Copilot のレイヤーのキャッシュを捨てる
-  # （Dockerfile.claude の ARG COPILOT_CACHEBUST と対）。固定版・空は "pinned" のまま。
-  local copilot_cachebust=pinned
-  if [[ -f "$BUILD_CONTEXT_DIR/copilot-version.txt" ]] \
-     && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/copilot-version.txt")" == "latest" ]]; then
-    copilot_cachebust="$(date +%s)"
-  fi
   local ref rc=0
   ref=$(base_image_pull_ref) || exit 1
   podman pull "$ref" || rc=$?
@@ -1683,7 +1662,7 @@ run_explicit_build() {
     echo "ERROR: ベースイメージ $ref をレジストリから取り直せませんでした（podman pull の終了コード $rc）。ネットワークとレジストリ（docker.io）を確かめてください。Docker Hub の取得の回数の上限（ログインしていないと IP ごとに 100 回）に当たったときも、この失敗になります。イメージは作り直していません。起動を中止します。" >&2
     exit 1
   fi
-  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" COPILOT_CACHEBUST="$copilot_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$codex_cachebust" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$ref" CONTEXT="$WORKING_DIR" C3C_DIR="$RUN_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" "${COMPOSE_OVERRIDE_ARGS[@]}" -p "$PROJECT_NAME" --in-pod false --env-file /dev/null build claude-auth-workspace \
     || rc=$?
   if [[ $rc -ne 0 ]]; then
@@ -2420,8 +2399,9 @@ guard_home_mounts() {
   # Claude 設定の基点（CLAUDE_CONFIG_DIR）は prepare_claude_config_ro() と同じ関数で解決する（失敗したら
   # 後の prepare_claude_config_ro() が起動を止めるので、ここでは比べない）。
   resolve_claude_config_base || config_rc=$?
-  # 秘密と認証の置き場。どちらのキーでも、重なれば止める（別の位置に見せると、パスで隠している Copilot の
-  # sandbox から読めるようになるため。#259 の PR 前レビュー）。
+  # 秘密と認証の置き場。どちらのキーでも、重なれば止める（#259 の PR 前レビュー）。秘密と認証の置き場を ~ の
+  # 別の位置に見せると、パスで隠す仕組み（作り直していない古いイメージに残る Copilot の起動口の sandbox など）から
+  # 読めるようになり、パスで隠す仕組みを今後足しても効かなくなるため。秘密は決まったマウント先だけに置く。
   # 基点の .claude.json も入れる（通常ファイルへの symlink を許すので、実体が別の位置にありうる。#260 の PR 後レビュー）。
   if [[ "$config_rc" == 0 ]]; then
     for item in "$CLAUDE_CONFIG_BASE_REAL/.claude" "${CLAUDE_CONFIG_BASE_HOST%/}/.claude" \
@@ -2454,7 +2434,7 @@ guard_home_mounts() {
     for path in "${credentials[@]}"; do
       for mine in "${own[@]}"; do
         if home_mount_overlap "$mine" "$path"; then
-          guard_fail "ERROR: $key=$source が秘密か認証の置き場（$path）と重なります。別の位置に見せると Copilot の sandbox などパスで隠している経路から読めるようになるため、重ならないディレクトリを指定してください。起動を中止します。" || return 1
+          guard_fail "ERROR: $key=$source が秘密か認証の置き場（$path）と重なります。別の位置に見せるとパスで隠す経路から読めるようになるため、重ならないディレクトリを指定してください。起動を中止します。" || return 1
         fi
       done
     done
@@ -2727,12 +2707,11 @@ check_mcp_approval() {
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
 #                    validate-build-input.sh・ipv6-firewall.py・firewall-refresh.py・
-#                    codex-mcp-audit.py・claude-project-audit.py・codex-launcher.sh・copilot-bwrap-shim.sh・
-#                    copilot-launcher.sh・copilot-settings.json・install-apt-sources.sh・
+#                    codex-mcp-audit.py・claude-project-audit.py・codex-launcher.sh・install-apt-sources.sh・
 #                    check-boundary-files.sh・固定 Compose override 群）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt・node-version.txt・
-#                    codex-version.txt・copilot-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
+#                    codex-version.txt）。node-version.txt・codex-version.txt は c3c 第2b-2段階から
 #                  同梱 default を持ち（現在は 24.18.0 / Codex latest）、project 側の空ファイルは
 #                  「missing」ではなく明示 opt-out（空の内容がそのまま採用される）。
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
@@ -2745,11 +2724,11 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | install-apt-sources.sh | check-boundary-files.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | copilot-bwrap-shim.sh | copilot-launcher.sh | copilot-settings.json | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.home-mount.yml | compose.home-mount-ro.yml | compose.codex-preflight.yml)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh | install-apt-sources.sh | check-boundary-files.sh | ipv6-firewall.py | firewall-refresh.py | codex-mcp-audit.py | claude-project-audit.py | codex-launcher.sh | compose.ipv6.yml | compose.plugins-alias.yml | compose.shared-home.yml | compose.shared-host.yml | compose.agents.yml | compose.codex-plugins.yml | compose.home-mount.yml | compose.home-mount-ro.yml | compose.codex-preflight.yml)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
-    packages.txt | requirements.txt | allowed-domains.txt | node-version.txt | codex-version.txt | copilot-version.txt)
+    packages.txt | requirements.txt | allowed-domains.txt | node-version.txt | codex-version.txt)
       if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
         ASSET_PATH="$PROJECT_CONF_DIR/$name"
         ASSET_ORIGIN="project"
@@ -2784,9 +2763,6 @@ ASSET_HASH_TARGETS=(
   codex-mcp-audit.py
   claude-project-audit.py
   codex-launcher.sh
-  copilot-bwrap-shim.sh
-  copilot-launcher.sh
-  copilot-settings.json
   compose.ipv6.yml
   compose.plugins-alias.yml
   compose.shared-home.yml
@@ -2806,7 +2782,6 @@ ASSET_HASH_TARGETS=(
   allowed-domains.txt
   node-version.txt
   codex-version.txt
-  copilot-version.txt
   allowed-ports.txt
   apt-sources.txt
   base-image.txt
@@ -2836,8 +2811,8 @@ compute_asset_hash() {
 }
 
 # entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh / codex-launcher.sh 等（fixed）・
-# packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt /
-# copilot-version.txt（overridable）・allowed-ports.txt / apt-sources.txt（optional）をビルドコンテキストへ集約する。
+# packages.txt / requirements.txt / allowed-domains.txt / node-version.txt / codex-version.txt
+# （overridable）・allowed-ports.txt / apt-sources.txt（optional）をビルドコンテキストへ集約する。
 # packages.txt・requirements.txt・allowed-domains.txt はプロジェクト側の設定ディレクトリ
 # （$PROJECT_CONF_DIR）にあればそちらを、なければ c3c 同梱のデフォルト
 # （空のフォールバック）を使う。node-version.txt・codex-version.txt も同じ解決規則だが
@@ -2847,9 +2822,11 @@ compute_asset_hash() {
 # 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
 stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
+  # v20 以前の c3c がこのビルドの文脈に置いた Copilot CLI のファイル（v21 で廃止）を消す。
+  rm -f -- "$BUILD_CONTEXT_DIR"/copilot-bwrap-shim.sh "$BUILD_CONTEXT_DIR"/copilot-launcher.sh "$BUILD_CONTEXT_DIR"/copilot-settings.json "$BUILD_CONTEXT_DIR"/copilot-version.txt
 
   local name
-  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py claude-project-audit.py codex-launcher.sh copilot-bwrap-shim.sh copilot-launcher.sh copilot-settings.json git-askpass.sh validate-build-input.sh install-apt-sources.sh check-boundary-files.sh; do
+  for name in entrypoint.sh init-firewall.sh ipv6-firewall.py firewall-refresh.py codex-mcp-audit.py claude-project-audit.py codex-launcher.sh git-askpass.sh validate-build-input.sh install-apt-sources.sh check-boundary-files.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
@@ -2874,7 +2851,7 @@ stage_build_context() {
   # Codex を勝手に導入しない）。allowed-ports.txt は任意機能で移行元が無く、無ければ静かに
   # 空ファイルを生成する。空の意味（既定値 443,22 の適用）は init-firewall.sh 自身が解釈する
   # （`#31`）。apt-sources.txt（#273）も同じく任意機能で、空は「外部の取得元を足さない」。
-  for name in node-version.txt codex-version.txt copilot-version.txt allowed-ports.txt apt-sources.txt; do
+  for name in node-version.txt codex-version.txt allowed-ports.txt apt-sources.txt; do
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "missing" ]]; then
       : > "$BUILD_CONTEXT_DIR/$name"

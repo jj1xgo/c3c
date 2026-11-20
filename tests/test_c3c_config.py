@@ -448,7 +448,7 @@ class ResolverConsistencyTests(ConfigCase):
         self.use_new_layout()
         baseline_run, baseline_staged = self.run_and_capture('claude', str(self.proj))
         for name in ('entrypoint.sh', 'init-firewall.sh', 'git-askpass.sh', 'validate-build-input.sh',
-                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'install-apt-sources.sh', 'check-boundary-files.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
+                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'install-apt-sources.sh', 'check-boundary-files.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
                      'compose.ipv6.yml', 'compose.codex-preflight.yml', 'compose.home-mount.yml', 'compose.home-mount-ro.yml'):
             (self.new / name).write_text('#!/bin/sh\nexit 99\n')
         run, staged = self.run_and_capture('claude', str(self.proj))
@@ -583,24 +583,6 @@ class BuildInputDefaultTests(ConfigCase):
                     self.assertRegex(cachebust, r'^\d+$', '既定 latest の再ビルドはキャッシュを破棄する')
                 else:
                     self.assertEqual(cachebust, 'pinned', '固定版と opt-out はキャッシュを維持する')
-
-    def test_rebuild_cachebust_follows_resolved_copilot_version(self):
-        for value in (None, '1.0.103', '', 'latest'):
-            with self.subTest(version=value):
-                path = self.new / 'copilot-version.txt'
-                if value is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_text(value + '\n')
-                self.launch_claude('-b')
-                builds = [call for call in self.calls
-                          if call['args'][:1] == ['compose'] and 'build' in call['args']]
-                self.assertEqual(len(builds), 1)
-                cachebust = builds[0]['env']['COPILOT_CACHEBUST']
-                if value == 'latest':
-                    self.assertRegex(cachebust, r'^\d+$', 'latest の再ビルドは Copilot のレイヤーのキャッシュを捨てる')
-                else:
-                    self.assertEqual(cachebust, 'pinned', '固定版・空・未指定はキャッシュを保つ')
 
     def test_bundled_defaults_are_the_contract_values(self):
         self.assertEqual((REPO / 'node-version.txt').read_bytes(), (DEFAULT_NODE + '\n').encode())
@@ -746,88 +728,143 @@ class BuildInputDefaultTests(ConfigCase):
         self.assertRegex(result.stderr, r'INFO: Node\.js 版: ' + re.escape(self.PIN_NODE) + r'（採用元: project ')
         self.assertRegex(result.stderr, r'INFO: Codex 版: ' + re.escape(DEFAULT_CODEX) + r'（採用元: 同梱 default）')
 
-    # --- Copilot CLI（opt-in。同梱 default は空 = 無効） --------------------
+    # --- 残った Copilot CLI の設定（v21 で opt-in を廃止） --------------------
 
-    COPILOT_PIN = '1.0.103'
+    def leftover_copilot_message(self):
+        return (f'ERROR: {self.new}/copilot-version.txt があります。c3c v21 で Copilot CLI の opt-in を廃止したので、'
+                'Copilot は入りません。このファイルを消してから起動してください（SECRETS_DIR の COPILOT_PAT も'
+                '不要になりました。失効は GitHub で行います）。')
 
-    def test_copilot_version_default_disabled(self):
-        self.assertEqual((REPO / 'copilot-version.txt').read_bytes(), b'', '同梱 default は 0 バイト（無効）')
-        (self.new / 'copilot-version.txt').unlink(missing_ok=True)
-        expected = f'Copilot 版: なし（既定で無効。導入するには {self.new}/copilot-version.txt に版を書きます）'
-        result, run, staged = self.launch_claude()
-        self.assertEqual(staged['copilot-version.txt'], EMPTY_SHA256)
-        self.assertIn('INFO: ' + expected, result.stderr.splitlines())
-        check = self.run_check('c3c', self.proj)
-        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
-        self.assertIn('[INFO] ' + expected, check.stdout.splitlines())
-
-    def test_copilot_version_project_pin(self):
+    def reset_copilot_path(self):
         path = self.new / 'copilot-version.txt'
-        path.write_text(self.COPILOT_PIN + '\n')
-        result, run, staged = self.launch_claude()
-        self.assertEqual(staged['copilot-version.txt'], sha256_text(self.COPILOT_PIN + '\n'))
-        self.assertIn(f'INFO: Copilot 版: {self.COPILOT_PIN}（採用元: project {path}）', result.stderr.splitlines())
-        check = self.run_check('c3c', self.proj)
-        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
-        self.assertIn(f'[INFO] Copilot 版: {self.COPILOT_PIN}（採用元: project {path}）', check.stdout.splitlines())
-        # 版を変えれば hash も変わる（ドリフト検知の対象）。
-        path.unlink()
-        _, absent_run, _ = self.launch_claude()
-        self.assertNotEqual(absent_run['env']['ASSET_HASH'], run['env']['ASSET_HASH'])
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_file():
+            path.chmod(0o644)
+            path.unlink()
+        elif path.is_dir():
+            path.rmdir()
+        return path
 
-    def test_copilot_version_latest(self):
-        path = self.new / 'copilot-version.txt'
-        path.write_text('latest\n')
-        result, _, staged = self.launch_claude()
-        self.assertEqual(staged['copilot-version.txt'], sha256_text('latest\n'))
-        self.assertIn(f'INFO: Copilot 版: latest（採用元: project {path}）', result.stderr.splitlines())
-        check = self.run_check('c3c', self.proj)
-        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
-        self.assertIn(f'[INFO] Copilot 版: latest（採用元: project {path}）', check.stdout.splitlines())
+    def unsearchable_conf_dir_message(self):
+        return (f'ERROR: {self.new} の中を確かめられません（ディレクトリの探索の権限 x がありません）。c3c v21 で'
+                ' Copilot CLI の opt-in を廃止したので、残った copilot-version.txt が無いことを確かめてから起動します。'
+                '権限を直してから起動してください。')
 
-    def test_copilot_version_project_empty(self):
-        path = self.new / 'copilot-version.txt'
-        path.write_text('\n')
-        result, _, staged = self.launch_claude()
-        self.assertEqual(staged['copilot-version.txt'], sha256_text('\n'))
-        self.assertIn(f'INFO: Copilot 版: なし（{path} が空、Copilot を導入しません）', result.stderr.splitlines())
+    def assert_leftover_copilot_stops(self, check_rebuild=False, message=None):
+        message = message or self.leftover_copilot_message()
+        self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
+        result = self.run_c3c('claude', str(self.proj))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(message, result.stderr.splitlines())
+        self.assert_no_containers()
+        self.assertEqual(self.compose_calls('build'), [])
+        if check_rebuild:
+            self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
+            rebuild = self.run_c3c('claude', '-b', str(self.proj))
+            self.assertEqual(rebuild.returncode, 1, rebuild.stdout + rebuild.stderr)
+            self.assertIn(message, rebuild.stderr.splitlines())
+            self.assertEqual(self.compose_calls('build'), [])
         check = self.run_check('c3c', self.proj)
-        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
-        self.assertIn(f'[INFO] Copilot 版: なし（{path} が空、Copilot を導入しません）', check.stdout.splitlines())
+        self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+        lines = check.stdout.splitlines()
+        self.assertIn(message, lines, '--check は診断を stdout にまとめる')
+        self.assertIn('→ 結果: FAIL', check.stdout)
+        return lines, lines.index(message)
 
-    def test_copilot_enabled_without_node_warns(self):
-        (self.new / 'node-version.txt').write_text('')
-        (self.new / 'codex-version.txt').write_text('')
-        (self.new / 'copilot-version.txt').write_text(self.COPILOT_PIN + '\n')
-        result, _, _ = self.launch_claude('-b')
-        self.assertEqual(len(self.compose_calls('build')), 1, '通常起動は進む')
-        warning = [line for line in result.stderr.splitlines() if line.startswith('WARNING:') and 'npm' in line]
-        self.assertEqual(len(warning), 1, result.stderr)
-        self.assertIn('copilot-version.txt は有効（1.0.103）', warning[0])
-        self.assertIn('Copilot CLI の導入には npm が必要', warning[0])
-        self.assertNotIn('Codex', warning[0])
-        check = self.run_check('c3c', self.proj)
-        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
-        self.assertRegex(check.stdout, r'\[WARN\] WARNING: .*node-version\.txt が空.*copilot-version\.txt')
-        self.assertIn('→ 結果: WARN', check.stdout)
+    COPILOT_BUILD_FILES = ('copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'copilot-version.txt')
 
-    def test_copilot_version_bad_format_fails(self):
-        path = self.new / 'copilot-version.txt'
-        for value in ('1.0', '1.0.103-beta', 'LATEST', 'latest-1'):
+    def test_no_copilot_build_inputs(self):
+        self.reset_copilot_path()
+        result, run, staged = self.launch_claude('-b')
+        builds = [c for c in self.calls if c['args'][:1] == ['compose'] and 'build' in c['args']]
+        self.assertEqual(len(builds), 1)
+        self.assertIsNone(builds[0]['env']['COPILOT_CACHEBUST'], 'Copilot のキャッシュの破棄の値を渡さない')
+        for name in self.COPILOT_BUILD_FILES:
+            self.assertNotIn(name, staged)
+
+    def test_stale_copilot_files_removed_from_build_context(self):
+        # v20 以前の c3c でビルドしたプロジェクトのビルドの文脈には、Copilot のファイルが残っている。
+        self.reset_copilot_path()
+        target = self.build_context / self.project_name()
+        target.mkdir(parents=True, exist_ok=True)
+        for name in self.COPILOT_BUILD_FILES:
+            (target / name).write_text('stale\n')
+        self.launch_claude('-b')
+        for name in self.COPILOT_BUILD_FILES:
+            self.assertFalse((target / name).exists(), name)
+
+    def test_leftover_copilot_version_fails(self):
+        for value in ('1.0.103', 'latest', 'x'):
             with self.subTest(value=value):
-                path.write_text(value + '\n')
-                message = f'ERROR: {path} には 1.0.103 のような素のバージョンか、文字どおり "latest" を書いてください（実際の値: {value}）'
-                self.state = {'image_exists': False, 'label': '2', 'preflight': {}}
-                result = self.run_c3c('claude', str(self.proj))
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn(message, result.stderr.splitlines())
-                self.assert_no_containers()
-                self.assertEqual(self.compose_calls('build'), [])
-                check = self.run_check('c3c', self.proj)
-                self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
-                self.assertIn(message, check.stdout.splitlines(), '--check は診断を stdout にまとめる')
-                self.assertIn('→ 結果: FAIL', check.stdout)
+                self.reset_copilot_path().write_text(value + '\n')
+                lines, at = self.assert_leftover_copilot_stops(check_rebuild=True)
+                self.assertTrue(any('packages.txt:' in line for line in lines[at + 1:]),
+                                '止めた後もそのプロジェクトの後段の診断が続く')
 
+    def test_leftover_copilot_version_non_regular_fails(self):
+        empty = self.proj / 'empty-target'
+        empty.write_text('')
+
+        def directory(path):
+            path.mkdir()
+
+        def link_to_empty(path):
+            path.symlink_to(empty)
+
+        def broken_link(path):
+            path.symlink_to(self.proj / 'missing-target')
+
+        def nul_only(path):
+            path.write_bytes(b'\0')
+
+        def blank_and_nul(path):
+            path.write_bytes(b' \0\n')
+
+        def unreadable(path):
+            if os.geteuid() == 0:
+                self.skipTest('root は chmod 0 のファイルも読める')
+            path.write_text('')
+            path.chmod(0)
+
+        for make in (directory, link_to_empty, broken_link, nul_only, blank_and_nul, unreadable):
+            with self.subTest(kind=make.__name__):
+                make(self.reset_copilot_path())
+                try:
+                    self.assert_leftover_copilot_stops()
+                finally:
+                    self.reset_copilot_path()
+
+    def test_unsearchable_conf_dir_fails_leftover_check(self):
+        # .c3c を探索できないと、中のファイルは -e でも -L でも「無い」に見える。黙って通さない。
+        if os.geteuid() == 0:
+            self.skipTest('root は探索の権限の無いディレクトリも探索できる')
+        self.reset_copilot_path().write_text('1.0.103\n')
+        self.new.chmod(0o600)
+        try:
+            self.assert_leftover_copilot_stops(message=self.unsearchable_conf_dir_message())
+        finally:
+            self.new.chmod(0o755)
+            self.reset_copilot_path()
+
+    def test_leftover_copilot_version_blank_is_allowed(self):
+        for content in ('', ' \n\t\n'):
+            with self.subTest(content=content):
+                self.reset_copilot_path().write_text(content)
+                result, run, staged = self.launch_claude()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse([line for line in result.stderr.splitlines()
+                                  if line.startswith('ERROR:') and 'copilot-version.txt' in line], result.stderr)
+                check = self.run_check('c3c', self.proj)
+                self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
+    def test_no_copilot_version_is_allowed(self):
+        self.reset_copilot_path()
+        result, _, _ = self.launch_claude()
+        self.assertNotIn('Copilot', result.stderr)
+        check = self.run_check('c3c', self.proj)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertNotIn('Copilot', check.stdout + check.stderr)
 
 if __name__ == '__main__':
     unittest.main()

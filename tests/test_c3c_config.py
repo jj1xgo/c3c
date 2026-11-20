@@ -448,7 +448,7 @@ class ResolverConsistencyTests(ConfigCase):
         self.use_new_layout()
         baseline_run, baseline_staged = self.run_and_capture('claude', str(self.proj))
         for name in ('entrypoint.sh', 'init-firewall.sh', 'git-askpass.sh', 'validate-build-input.sh',
-                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'install-apt-sources.sh', 'check-boundary-files.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
+                     'Dockerfile.claude', 'codex-mcp-audit.py', 'claude-project-audit.py', 'codex-launcher.sh', 'install-apt-sources.sh', 'check-boundary-files.sh', 'ipv6-firewall.py', 'firewall-refresh.py',
                      'compose.ipv6.yml', 'compose.codex-preflight.yml', 'compose.home-mount.yml', 'compose.home-mount-ro.yml'):
             (self.new / name).write_text('#!/bin/sh\nexit 99\n')
         run, staged = self.run_and_capture('claude', str(self.proj))
@@ -766,6 +766,28 @@ class BuildInputDefaultTests(ConfigCase):
         self.assertIn(message, lines, '--check は診断を stdout にまとめる')
         self.assertIn('→ 結果: FAIL', check.stdout)
         return lines, lines.index(message)
+
+    COPILOT_BUILD_FILES = ('copilot-bwrap-shim.sh', 'copilot-launcher.sh', 'copilot-settings.json', 'copilot-version.txt')
+
+    def test_no_copilot_build_inputs(self):
+        self.reset_copilot_path()
+        result, run, staged = self.launch_claude('-b')
+        builds = [c for c in self.calls if c['args'][:1] == ['compose'] and 'build' in c['args']]
+        self.assertEqual(len(builds), 1)
+        self.assertIsNone(builds[0]['env']['COPILOT_CACHEBUST'], 'Copilot のキャッシュの破棄の値を渡さない')
+        for name in self.COPILOT_BUILD_FILES:
+            self.assertNotIn(name, staged)
+
+    def test_stale_copilot_files_removed_from_build_context(self):
+        # v20 以前の c3c でビルドしたプロジェクトのビルドの文脈には、Copilot のファイルが残っている。
+        self.reset_copilot_path()
+        target = self.build_context / self.project_name()
+        target.mkdir(parents=True, exist_ok=True)
+        for name in self.COPILOT_BUILD_FILES:
+            (target / name).write_text('stale\n')
+        self.launch_claude('-b')
+        for name in self.COPILOT_BUILD_FILES:
+            self.assertFalse((target / name).exists(), name)
 
     def test_leftover_copilot_version_fails(self):
         for value in ('1.0.103', 'latest', 'x'):

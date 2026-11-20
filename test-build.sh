@@ -410,16 +410,16 @@ run_validator_layer2() {
              'index($0, "RUN set -e;") == 1 && index($0, v) > 0 && index($0, i) > index($0, v) { n++ } END { print n + 0 }' "$logical")
   if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: apt-sources の検査と導入の RUN のヒット数=$hits (期待1)"; fi
   hits=$(grep -cF 'sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' "$logical")
-  if [ "$hits" -eq 4 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: install-apt-sources.sh の .norm での呼び出しの数=$hits (期待4: 導入・packages・Copilot・upgrade の層)"; fi
-  # 外部の取得元の層の後で apt-get update を走らせる層（packages.txt の層と Copilot の bubblewrap の導入）は、
+  if [ "$hits" -eq 3 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: install-apt-sources.sh の .norm での呼び出しの数=$hits (期待3: 導入・packages・upgrade の層)"; fi
+  # 外部の取得元の層の後で apt-get update を走らせる packages.txt の層は、
   # update の前に鍵を取り直す（外部の取得元の層がキャッシュから使われると鍵は古いままで、提供元が鍵を替えると
   # その update で止まり続けるため。#273 の PR 前レビュー）。
   hits=$(awk -v i='sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm' \
-             '(index($0, "sh /tmp/validate-build-input.sh packages") > 0 || index($0, "--no-install-recommends bubblewrap") > 0) {
+             'index($0, "sh /tmp/validate-build-input.sh packages") > 0 {
                 k = index($0, i); u = index($0, "apt-get update")
                 if (k > 0 && u > k) n++ }
               END { print n + 0 }' "$logical")
-  if [ "$hits" -eq 2 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: packages・Copilot の層で update の前に鍵を取り直す RUN の数=$hits (期待2)"; fi
+  if [ "$hits" -eq 1 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: packages の層で update の前に鍵を取り直す RUN の数=$hits (期待1)"; fi
   hits=$(grep -cE 'install-apt-sources\.sh /tmp/apt-sources\.txt|(install-apt-sources|check-boundary-files)\.sh [^;&|]*\|\|' "$logical")
   if [ "$hits" -eq 0 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); log "  [FAIL] layer2: 2 本のスクリプトが .txt を読むか失敗を || で握っている(ヒット数=$hits)"; fi
   # 検査7（#273）: upgrade の RUN（apt-get update --error-on=any を含む論理行）が set -e で始まり、
@@ -1239,11 +1239,6 @@ run_launcher_tests() {
   check "entrypoint の Claude project 設定ゲート（preflight の fd3 分離・enum・再照合・TTY 確認・秘密より前）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_claude_project_entrypoint.py"
   check "Codex 同梱 bubblewrap の解決（npm の nested/hoisted/legacy・x64/arm64・欠落/実行不能/target 外/help 4 項目の fail-closed）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_bwrap.py"
   check "Codex 起動口（同梱 bubblewrap の PATH 先頭化・冪等・空 PATH・引数と終了コードの透過・欠落/dangling/実行不能の fail-closed・entrypoint との固定値一致）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_codex_launcher.py"
-  check "Copilot の sandbox 用 bwrap の中継（--proc /proc の組だけを最初の -- より前で替える・組が無ければ素通し・本物の欠落の fail-closed・本物を空の環境で起動・終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_bwrap_shim.py"
-  check "Copilot の Dockerfile の区間（入った版の検査〈latest は素の X.Y.Z、番号は一致〉・COPILOT_CACHEBUST・飛ばす口なし・sandbox の設定の読みの確認〈葉と型の一致、余分は許す、失敗・打ち切りの fail-closed、一時の home を消す、起動口と同じ組み立て〉）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_config_check.py"
-  check "Copilot 起動口（作業ディレクトリの拒否・settings.json の毎回の作り直しと readonlyPaths・弱めた設定と未知のキーと真偽値でない値の拒否・トークンの書式・環境の allowlist・どの argv にもトークンが無い・引数と終了コードの透過）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_launcher.py"
-  check "Copilot の canary の判定（bash の実行がちょうど 1 回・ほかの道具で不合格・コマンドの一致・出力の期待値・モデルの文を見ない・クレジット・設定の弱めと型まで含む一致・消費の 1 行）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary_helper.py"
-  check "Copilot の canary の段取り（前提と拒む作業ディレクトリ・目印・名前空間・/home/node での停止・弱めた設定の戻り・後片付けの確認・中断・引数の組・消費の記録）" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "${SCRIPT_DIR}/tests" -p "test_copilot_canary.py"
   check "lint の compose config 検査（provider 差: 短縮 / long syntax、:ro と TTY 無効）" bash "${SCRIPT_DIR}/tests/test-lint-compose-checks.sh"
   check "lint の ruff の検査（無い・必須・版違い・版の読み取り・引数・終了コード・対象の集め方・配線）" bash "${SCRIPT_DIR}/tests/test-lint-ruff.sh"
   run_base_image_launcher_tests
@@ -2171,7 +2166,7 @@ run_config_ro_launcher_tests() {
   launcher_sandbox_init
   # ホストの別プロジェクトの起動と競合せず、.build-context 全体を比較する。
   mkdir -p "$root/runner"
-  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$root/runner/" || {
+  cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$root/runner/" || {
     check "ランチャーの隔離用コピーを作成する" false
     launcher_sandbox_cleanup
     return
@@ -2907,7 +2902,7 @@ SHIM
   # RUN_DIR（c3c の checkout）が HOME 配下にある構成。隔離用コピーから起動する。
   hm_run_dir_case() {
     mkdir -p "$home/tools/c3c"
-    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,copilot-bwrap-shim.sh,copilot-launcher.sh,copilot-settings.json,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,copilot-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
+    cp -- "${SCRIPT_DIR}/"{c3c,agent-preference.py,project-images.py,compose.yml,compose.ipv6.yml,compose.plugins-alias.yml,compose.shared-home.yml,compose.shared-host.yml,compose.agents.yml,compose.codex-plugins.yml,compose.codex-preflight.yml,compose.home-mount.yml,compose.home-mount-ro.yml,Dockerfile.claude,entrypoint.sh,init-firewall.sh,ipv6-firewall.py,firewall-refresh.py,codex-mcp-audit.py,claude-project-audit.py,codex-launcher.sh,git-askpass.sh,validate-build-input.sh,install-apt-sources.sh,check-boundary-files.sh,packages.txt,requirements.txt,allowed-domains.txt,node-version.txt,codex-version.txt,empty.gitconfig} "$home/tools/c3c/" || {
       check "HOME_MOUNT が守っている領域を含むと止まる: RUN_DIR のコピーを作る" false
       return
     }
@@ -2999,9 +2994,6 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/codex-mcp-audit.py" "$dest/codex-mcp-audit.py"
   cp "${SCRIPT_DIR}/claude-project-audit.py" "$dest/claude-project-audit.py"
   cp "${SCRIPT_DIR}/codex-launcher.sh" "$dest/codex-launcher.sh"
-  cp "${SCRIPT_DIR}/copilot-bwrap-shim.sh" "$dest/copilot-bwrap-shim.sh"
-  cp "${SCRIPT_DIR}/copilot-launcher.sh" "$dest/copilot-launcher.sh"
-  cp "${SCRIPT_DIR}/copilot-settings.json" "$dest/copilot-settings.json"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
   cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/install-apt-sources.sh" "$dest/install-apt-sources.sh"
@@ -3009,7 +3001,6 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
   cp "${SCRIPT_DIR}/node-version.txt" "$dest/node-version.txt"
   cp "${SCRIPT_DIR}/codex-version.txt" "$dest/codex-version.txt"
-  cp "${SCRIPT_DIR}/copilot-version.txt" "$dest/copilot-version.txt"
   : > "$dest/allowed-ports.txt"
   : > "$dest/apt-sources.txt"
 
@@ -3213,9 +3204,9 @@ v="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"checks\"]
 [ "$(id -u)" != 0 ]'
 check "Codex の更新確認の要件ファイル（root:root・node から書込不可・固定内容・-c と user 設定の true より優先）" \
   podman run --rm --network=none "$IMAGE" sh -c "$CODEX_REQUIREMENTS_PROBE"
-# Copilot CLI は opt-in（同梱の copilot-version.txt は空）なので、既定のイメージには何も入らない。
+# Copilot CLI の opt-in は v21 で廃止した。作り直したイメージに Copilot の残りが無いことの回帰の検査。
 # shellcheck disable=SC2016  # コンテナ内の sh で評価する
-COPILOT_DISABLED_PROBE='set -e
+COPILOT_ABSENT_PROBE='set -e
 ! command -v copilot >/dev/null || { echo "copilot がある"; exit 1; }
 [ ! -e /usr/local/bin/copilot ] && [ ! -L /usr/local/bin/copilot ] || { echo "/usr/local/bin/copilot がある"; exit 1; }
 [ ! -e /usr/local/libexec/c3c/copilot-bwrap ] || { echo "bwrap の中継がある"; exit 1; }
@@ -3224,8 +3215,8 @@ COPILOT_DISABLED_PROBE='set -e
 ! grep -q githubcopilot /etc/c3c/allowed-domains.txt || { echo "許可リストに Copilot の宛先がある"; exit 1; }
 ! ls /tmp/copilot-* >/dev/null 2>&1 || { echo "/tmp/copilot-* が残っている"; exit 1; }
 [ "$(id -u)" != 0 ]'
-check "Copilot は既定で無効（copilot・中継・雛形・bubblewrap・宛先・一時ファイルが無い）" \
-  podman run --rm --network=none "$IMAGE" sh -c "$COPILOT_DISABLED_PROBE"
+check "Copilot が入っていない（copilot・中継・雛形・Debian の bubblewrap・許可リストの宛先・一時ファイル）" \
+  podman run --rm --network=none "$IMAGE" sh -c "$COPILOT_ABSENT_PROBE"
 # 外部の APT 取得元（#273）を宣言しないイメージ（apt-sources.txt が空）には、c3c の取得元と鍵が無く、
 # 導入と照合に使った一時ファイルも残らない。
 # shellcheck disable=SC2016  # コンテナ内 sh へ渡す文字列。$ はコンテナ側で展開させる意図
@@ -3507,143 +3498,6 @@ else
 fi
 podman rmi "$PIN_IMAGE" 2>/dev/null
 rm -rf "$PIN_PROJECT_DIR" "$PIN_CONTEXT_DIR"
-log ""
-
-# Copilot CLI の opt-in（実ビルド）。版を書いたビルドで、起動口・中継・雛形・宛先が入り、root 所有で node から
-# 書けないこと、ログインシェルから起動口に解決されること、トークンが無ければ起動口が止まることを確かめる。
-# モデルは呼ばない（sandbox の中の振る舞いは README「変更後の確認」の実機の受け入れで確かめる）。
-log "## copilot-version.txt の opt-in（実ビルド）"
-COPILOT_TEST_VERSION="1.0.103"
-# shellcheck disable=SC2016  # コンテナ内の sh で評価する（$1 は版）
-COPILOT_PROBE='set -e
-f=/usr/local/bin/copilot; js=/usr/local/lib/node_modules/@github/copilot/npm-loader.js
-d=/usr/local/libexec/c3c/copilot-bwrap; s=/etc/c3c/copilot-settings.json; a=/etc/c3c/allowed-domains.txt
-[ -f "$f" ] && ! [ -L "$f" ] || { echo "起動口が symlink でない通常ファイルではない"; exit 1; }
-for p in "$f:755" "$d/bwrap:755" "$d:755" "$s:644"; do
-  path="${p%:*}"; mode="${p##*:}"
-  [ "$(stat -c %u:%g:%a "$path")" = "0:0:$mode" ] || { echo "$path が root:root $mode ではない: $(stat -c %u:%g:%a "$path")"; exit 1; }
-  ! [ -w "$path" ] || { echo "$path が node から書込可"; exit 1; }
-done
-[ "$(ls -A "$d")" = bwrap ] || { echo "中継のディレクトリの中身が bwrap の 1 ファイルだけではない"; exit 1; }
-grep -qxF "readonly COPILOT_JS=$js" "$f" || { echo "起動口の COPILOT_JS が固定パスではない"; exit 1; }
-grep -qxF "readonly REAL_BWRAP=/usr/bin/bwrap" "$d/bwrap" || { echo "中継の REAL_BWRAP が固定パスではない"; exit 1; }
-[ -f "$js" ] && [ -x "$js" ] || { echo "npm-loader.js が実行可能な通常ファイルではない"; exit 1; }
-if [ "$1" = latest ]; then
-  v="$(node -p "require(process.argv[1]).version" "${js%/*}/package.json")"
-  printf "%s\n" "$v" | grep -qxE "[0-9]+[.][0-9]+[.][0-9]+" || { echo "latest の版 $v が素の X.Y.Z ではない"; exit 1; }
-else
-  node "$js" --version | grep -qF "$1" || { echo "npm-loader.js --version に $1 が無い"; exit 1; }
-fi
-/usr/bin/bwrap --version
-[ "$(bash -lc "command -v copilot")" = "$f" ] || { echo "ログインシェルの copilot が起動口に解決されない"; exit 1; }
-rc=0; out="$(cd /workspace && "$f" --version 2>&1)" || rc=$?
-[ "$rc" = 1 ] || { echo "COPILOT_PAT が無いのに起動口が止まらない（rc=$rc）"; exit 1; }
-printf "%s\n" "$out" | grep -q "COPILOT_PAT" || { echo "トークンの ERROR が出ない: $out"; exit 1; }
-v="$(node -p "require(process.argv[1]).version" "${js%/*}/package.json")"
-verified="$(sed -n "s/^readonly VERIFIED_COPILOT_VERSION=//p" "$f")"
-if [ "$v" = "$verified" ]; then
-  ! printf "%s\n" "$out" | grep -q "WARNING: Copilot CLI" || { echo "確かめた版 $v なのに WARNING が出る: $out"; exit 1; }
-else
-  [ "$(printf "%s\n" "$out" | grep -c "^WARNING: Copilot CLI $v は、c3c が sandbox を canary で確かめた版")" = 1 ] || { echo "版 $v（確かめた版 $verified）で WARNING が 1 行出ない: $out"; exit 1; }
-fi
-! ls /tmp/copilot-* >/dev/null 2>&1 || { echo "/tmp/copilot-* が残っている"; exit 1; }
-for n in api.individual.githubcopilot.com telemetry.individual.githubcopilot.com; do
-  [ "$(grep -cxF "$n" "$a")" = 1 ] || { echo "許可リストに $n がちょうど 1 行ない"; exit 1; }
-done
-[ "$(id -u)" != 0 ]'
-COPILOT_IMAGE="localhost/claude-test-copilot-optin"
-COPILOT_CONTEXT_DIR="$(mktemp -d)"
-if stage_common_context "$COPILOT_CONTEXT_DIR"; then
-  cp "${SCRIPT_DIR}/packages.txt" "$COPILOT_CONTEXT_DIR/packages.txt"
-  cp "${SCRIPT_DIR}/requirements.txt" "$COPILOT_CONTEXT_DIR/requirements.txt"
-  printf '%s\n' "$COPILOT_TEST_VERSION" > "$COPILOT_CONTEXT_DIR/copilot-version.txt"
-  # 末尾の改行なしの許可リストでも、Copilot の宛先が最後の行とつながらない。
-  printf '%s' example.com > "$COPILOT_CONTEXT_DIR/allowed-domains.txt"
-  # shellcheck disable=SC2016  # sh -c の中で評価する
-  check "Copilot opt-in: copilot-version.txt に版を書いてビルド成功し、sandbox の設定の読みの確認の INFO が出る" sh -c \
-    'out=$(podman build "$@" 2>&1) || { printf "%s\n" "$out"; exit 1; }; printf "%s\n" "$out" | grep -qF "が sandbox の設定を全部読めることを確かめました"' \
-    _ -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$COPILOT_IMAGE" "$COPILOT_CONTEXT_DIR"
-  check "Copilot opt-in: 起動口・中継・雛形（root 所有・node から書込不可）、版、ログインシェル、トークンなしの停止、一時ファイル、宛先" \
-    podman run --rm --network=none "$COPILOT_IMAGE" sh -c "$COPILOT_PROBE" _ "$COPILOT_TEST_VERSION"
-  check "Copilot opt-in: 末尾の改行なしの許可リストの最後の行が残る" \
-    podman run --rm --network=none "$COPILOT_IMAGE" grep -qxF example.com /etc/c3c/allowed-domains.txt
-  check "Copilot opt-in: Codex の起動口もそのまま" \
-    podman run --rm --network=none "$COPILOT_IMAGE" sh -c "$CODEX_LAUNCHER_PROBE"
-else
-  check "Copilot opt-in: copilot-version.txt に版を書いてビルド成功 (staging failed: see stderr above)" false
-fi
-podman rmi "$COPILOT_IMAGE" 2>/dev/null
-rm -rf "$COPILOT_CONTEXT_DIR"
-
-# Codex を無効にして Copilot だけ有効（/usr/local/libexec/c3c を Copilot の区間が自分で作る経路）。
-COPILOT_ONLY_IMAGE="localhost/claude-test-copilot-only"
-COPILOT_ONLY_CONTEXT_DIR="$(mktemp -d)"
-if stage_common_context "$COPILOT_ONLY_CONTEXT_DIR"; then
-  cp "${SCRIPT_DIR}/packages.txt" "$COPILOT_ONLY_CONTEXT_DIR/packages.txt"
-  cp "${SCRIPT_DIR}/requirements.txt" "$COPILOT_ONLY_CONTEXT_DIR/requirements.txt"
-  : > "$COPILOT_ONLY_CONTEXT_DIR/codex-version.txt"
-  printf '%s\n' "$COPILOT_TEST_VERSION" > "$COPILOT_ONLY_CONTEXT_DIR/copilot-version.txt"
-  check "Copilot だけ有効（Codex 無効）: ビルド成功" podman build \
-    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$COPILOT_ONLY_IMAGE" "$COPILOT_ONLY_CONTEXT_DIR"
-  # shellcheck disable=SC2016  # コンテナ内の sh で評価する
-  COPILOT_ONLY_PROBE='[ ! -e /usr/local/bin/codex ] && [ "$(ls -A /usr/local/libexec/c3c)" = copilot-bwrap ]'
-  check "Copilot だけ有効（Codex 無効）: Copilot の probe が通り、Codex の起動口・固定リンクは無い" \
-    podman run --rm --network=none "$COPILOT_ONLY_IMAGE" sh -c "$COPILOT_PROBE && $COPILOT_ONLY_PROBE" _ "$COPILOT_TEST_VERSION"
-else
-  check "Copilot だけ有効（Codex 無効）: ビルド成功 (staging failed: see stderr above)" false
-fi
-podman rmi "$COPILOT_ONLY_IMAGE" 2>/dev/null
-rm -rf "$COPILOT_ONLY_CONTEXT_DIR"
-
-# 陰性: 実物の Copilot が知らない sandbox の項目（bogusKey）は config --list に出ないので、ビルドの中の確認が止める
-# （新しい版が項目を捨てたときの模擬。雛形だけをビルドの文脈で差し替える）。
-COPILOT_BOGUS_IMAGE="localhost/claude-test-copilot-bogus"
-COPILOT_BOGUS_CONTEXT_DIR="$(mktemp -d)"
-if stage_common_context "$COPILOT_BOGUS_CONTEXT_DIR"; then
-  cp "${SCRIPT_DIR}/packages.txt" "$COPILOT_BOGUS_CONTEXT_DIR/packages.txt"
-  cp "${SCRIPT_DIR}/requirements.txt" "$COPILOT_BOGUS_CONTEXT_DIR/requirements.txt"
-  printf '%s\n' "$COPILOT_TEST_VERSION" > "$COPILOT_BOGUS_CONTEXT_DIR/copilot-version.txt"
-  python3 -I -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["sandbox"]["bogusKey"] = 1; json.dump(d, open(p, "w"))' \
-    "$COPILOT_BOGUS_CONTEXT_DIR/copilot-settings.json"
-  check_fails "Copilot: 知らない sandbox の項目を Copilot が捨てるとビルド fail" "sandbox.bogusKey" \
-    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$COPILOT_BOGUS_IMAGE" "$COPILOT_BOGUS_CONTEXT_DIR"
-else
-  check "Copilot: 知らない sandbox の項目を Copilot が捨てるとビルド fail (staging failed: see stderr above)" false
-fi
-podman rmi "$COPILOT_BOGUS_IMAGE" 2>/dev/null
-rm -rf "$COPILOT_BOGUS_CONTEXT_DIR"
-
-# 陽性: latest は、その時点の最新の素の X.Y.Z に解決して入る（probe は版の形だけを見る）。
-COPILOT_LATEST_IMAGE="localhost/claude-test-copilot-latest"
-COPILOT_LATEST_CONTEXT_DIR="$(mktemp -d)"
-if stage_common_context "$COPILOT_LATEST_CONTEXT_DIR"; then
-  cp "${SCRIPT_DIR}/packages.txt" "$COPILOT_LATEST_CONTEXT_DIR/packages.txt"
-  cp "${SCRIPT_DIR}/requirements.txt" "$COPILOT_LATEST_CONTEXT_DIR/requirements.txt"
-  printf 'latest\n' > "$COPILOT_LATEST_CONTEXT_DIR/copilot-version.txt"
-  check "Copilot latest: copilot-version.txt に latest を書いてビルド成功" podman build \
-    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$COPILOT_LATEST_IMAGE" "$COPILOT_LATEST_CONTEXT_DIR"
-  check "Copilot latest: 起動口・中継・雛形、版が素の X.Y.Z、ログインシェル、トークンなしの停止、一時ファイル、宛先" \
-    podman run --rm --network=none "$COPILOT_LATEST_IMAGE" sh -c "$COPILOT_PROBE" _ latest
-else
-  check "Copilot latest: copilot-version.txt に latest を書いてビルド成功 (staging failed: see stderr above)" false
-fi
-podman rmi "$COPILOT_LATEST_IMAGE" 2>/dev/null
-rm -rf "$COPILOT_LATEST_CONTEXT_DIR"
-
-# 陰性: 書式に合わない版（1.0）はビルドで止まる（c3c はビルド前に止めるが、podman build を直接使う経路でも止まる）。
-COPILOT_BAD_IMAGE="localhost/claude-test-copilot-bad"
-COPILOT_BAD_CONTEXT_DIR="$(mktemp -d)"
-if stage_common_context "$COPILOT_BAD_CONTEXT_DIR"; then
-  cp "${SCRIPT_DIR}/packages.txt" "$COPILOT_BAD_CONTEXT_DIR/packages.txt"
-  cp "${SCRIPT_DIR}/requirements.txt" "$COPILOT_BAD_CONTEXT_DIR/requirements.txt"
-  printf '1.0\n' > "$COPILOT_BAD_CONTEXT_DIR/copilot-version.txt"
-  check_fails "Copilot の版に 1.0 を書くとビルド fail" "素のバージョン" \
-    podman build -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$COPILOT_BAD_IMAGE" "$COPILOT_BAD_CONTEXT_DIR"
-else
-  check "Copilot の版に 1.0 を書くとビルド fail (staging failed: see stderr above)" false
-fi
-podman rmi "$COPILOT_BAD_IMAGE" 2>/dev/null
-rm -rf "$COPILOT_BAD_CONTEXT_DIR"
 log ""
 
 log "## .c3c/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"

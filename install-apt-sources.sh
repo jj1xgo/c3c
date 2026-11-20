@@ -4,8 +4,8 @@
 # 使い方: install-apt-sources.sh <正規化済みの apt-sources のファイル>
 #   入力は validate-build-input.sh apt-sources の出力（1 行 1 取得元、半角空白区切り:
 #   <名前> <鍵の URL> <主鍵の指紋>[,<主鍵の指紋>...] <URI> <suite> <component>...）。
-#   Dockerfile.claude が 4 か所から呼ぶ: packages.txt の層の直前（初回の導入）と、そのあと apt-get update を
-#   走らせる層（packages.txt の層、Copilot の層、-b のたびに作り直す upgrade の層）の update の前（鍵の取り直し。
+#   Dockerfile.claude が 3 か所から呼ぶ: packages.txt の層の直前（初回の導入）と、そのあと apt-get update を
+#   走らせる層（packages.txt の層、-b のたびに作り直す upgrade の層）の update の前（鍵の取り直し。
 #   提供元が鍵を替えても、キャッシュに残った古い鍵で止まらないため）。
 #
 # 終了コード: 0 成功（入力が空なら何もしない）、1 取得・照合・書き込みの失敗、2 引数の誤り

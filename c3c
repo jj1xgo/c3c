@@ -2396,8 +2396,9 @@ guard_home_mounts() {
   # Claude 設定の基点（CLAUDE_CONFIG_DIR）は prepare_claude_config_ro() と同じ関数で解決する（失敗したら
   # 後の prepare_claude_config_ro() が起動を止めるので、ここでは比べない）。
   resolve_claude_config_base || config_rc=$?
-  # 秘密と認証の置き場。どちらのキーでも、重なれば止める（別の位置に見せると、パスで隠している Copilot の
-  # sandbox から読めるようになるため。#259 の PR 前レビュー）。
+  # 秘密と認証の置き場。どちらのキーでも、重なれば止める（#259 の PR 前レビュー）。秘密と認証の置き場を ~ の
+  # 別の位置に見せると、パスで隠す仕組み（作り直していない古いイメージに残る Copilot の起動口の sandbox など）から
+  # 読めるようになり、パスで隠す仕組みを今後足しても効かなくなるため。秘密は決まったマウント先だけに置く。
   # 基点の .claude.json も入れる（通常ファイルへの symlink を許すので、実体が別の位置にありうる。#260 の PR 後レビュー）。
   if [[ "$config_rc" == 0 ]]; then
     for item in "$CLAUDE_CONFIG_BASE_REAL/.claude" "${CLAUDE_CONFIG_BASE_HOST%/}/.claude" \
@@ -2430,7 +2431,7 @@ guard_home_mounts() {
     for path in "${credentials[@]}"; do
       for mine in "${own[@]}"; do
         if home_mount_overlap "$mine" "$path"; then
-          guard_fail "ERROR: $key=$source が秘密か認証の置き場（$path）と重なります。別の位置に見せると Copilot の sandbox などパスで隠している経路から読めるようになるため、重ならないディレクトリを指定してください。起動を中止します。" || return 1
+          guard_fail "ERROR: $key=$source が秘密か認証の置き場（$path）と重なります。別の位置に見せるとパスで隠す経路から読めるようになるため、重ならないディレクトリを指定してください。起動を中止します。" || return 1
         fi
       done
     done

@@ -2,7 +2,7 @@
 """外部の APT 取得元の鍵を照合して置く install-apt-sources.sh の回帰試験（#273）。
 
 実物のスクリプトの固定の値（KEYRING_DIR・SOURCES_DIR・INSTALL_OWNER）を試験用の一時ディレクトリと
-試験を走らせるユーザーへ置換して実行する（tests/test_copilot_bwrap_shim.py と同じ流儀）。PATH は試験用の
+試験を走らせるユーザーへ置換して実行する。PATH は試験用の
 bin だけにし、curl・apt-get は記録する dummy、gpg は記録してから実物の gpg を呼ぶ包みにする。試験の鍵は
 実物の gpg で作る。gpg が無ければ skip せずに失敗する（CI と c3c の開発用のコンテナには gnupg がある。
 skip にすると CI で黙って抜けるため）。

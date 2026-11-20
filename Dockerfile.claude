@@ -122,16 +122,16 @@ COPY validate-build-input.sh /tmp/
 # 取得元を足すことは、その提供元にビルド時の root を渡すことと同じ（README「セキュリティモデル」の残余）。
 # 境界のファイルの多くはこの層より後で COPY するので、この層のインストールスクリプトは触れない（上の
 # managed-settings.json だけはこの層より前）。下の upgrade の層は境界のファイルの後に走るので、そこで前後を
-# 比べる（check-boundary-files.sh）。照合はその層だけで、この層・packages.txt の層・Copilot の bubblewrap の
-# 導入での書き換えは照合の外（README「セキュリティモデル」の残余）。2 本は upgrade の層で消す。
+# 比べる（check-boundary-files.sh）。照合はその層だけで、この層・packages.txt の層での書き換えは照合の外
+# （README「セキュリティモデル」の残余）。2 本は upgrade の層で消す。
 COPY apt-sources.txt /tmp/apt-sources.txt
 COPY install-apt-sources.sh check-boundary-files.sh /tmp/
 RUN set -e; \
     sh /tmp/validate-build-input.sh apt-sources /tmp/apt-sources.txt /tmp/apt-sources.norm || exit 1; \
     sh /tmp/install-apt-sources.sh /tmp/apt-sources.norm
 
-# packages.txt の層と、後ろの Copilot の層の apt-get update の前でも、外部の APT 取得元の鍵を取り直す
-# （上の層がキャッシュから使われると鍵が古いままで、提供元が鍵を替えるとこれらの update で止まり続けるため）。
+# packages.txt の層の apt-get update の前でも、外部の APT 取得元の鍵を取り直す
+# （上の層がキャッシュから使われると鍵が古いままで、提供元が鍵を替えるとこの update で止まり続けるため）。
 COPY packages.txt /tmp/packages.txt
 RUN set -e; \
     sh /tmp/validate-build-input.sh packages /tmp/packages.txt /tmp/packages.norm || exit 1; \
@@ -469,10 +469,13 @@ RUN set -e; \
 # ~/.config を node が書けるようにする（#275）。秘密のマウント（compose.yml の .../.config/c3c/secrets）の親が
 # イメージに無いと、ランタイムが root 所有で作り、node はブラウザなどの設定を ~/.config の下に作れない。
 # /home/node/.config は /tmp と同じ root 所有・1777（sticky）にする。sticky により node は自分で作ったものしか
-# 改名・削除できず、Copilot の sandbox がパスだけで隠している秘密の親 c3c（root 所有・755）を動かせない。
+# 改名・削除できず、秘密の親 c3c（root 所有・755）を動かせない（秘密が別のパスに見えると、パスで隠す仕組みが
+# 効かなくなる。作り直していない古いイメージの Copilot の sandbox はパスだけで隠している）。
 # node 所有にしない（c3c を改名でき、秘密が別のパスに見えるため）。secrets はここで作らない（SECRETS_DIR が
 # 未設定のときはランタイムが /dev/null を重ねるため）。~/.config そのものの改名は防がない（既知の限界。
-# /home/node が node 所有のため。docs/development-invariants.md）。symlink や既存の c3c は直さずに止める。
+# /home/node が node 所有のため。改名できるのは、秘密をもともと読める node だけで、別のパスに見えても読める者は
+# 増えない。作り直していない古いイメージの Copilot の sandbox の中からは /home/node が見えない。
+# docs/development-invariants.md）。symlink や既存の c3c は直さずに止める。
 RUN set -e; \
     ! [ -L /home/node/.config ] || { echo "ERROR: /home/node/.config が symlink です" >&2; exit 1; }; \
     install -d -o root -g root -m 1777 /home/node/.config; \

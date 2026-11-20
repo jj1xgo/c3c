@@ -2756,7 +2756,9 @@ run_home_mount_launcher_tests() {
     bash -c '[ "$1" = 0 ] && grep -qxF "C3C_HOME_MOUNT_RO_TARGET=/home/node/x" "$2/compose-env" && grep -qxF "$3/compose.home-mount-ro.yml" "$2/compose-args"' _ "$rc" "$root" "$SCRIPT_DIR"
 
   # 秘密と認証の置き場（SECRETS_DIR・CODEX_DIR・Claude 設定の .claude）は、どちらのキーでも重なれば止める。
-  # 別の位置に見せると、パスで隠している Copilot の sandbox から読めるようになるため。
+  # 秘密と認証の置き場を ~ の別の位置に見せると、パスで隠す仕組み（作り直していない古いイメージに残る Copilot の
+  # 起動口の sandbox など）から読めるようになり、パスで隠す仕組みを今後足しても効かなくなるため。秘密は決まった
+  # マウント先だけに置く。
   mkdir -p "$home/secrets/c3c/sub"
   for pair in 'HOME_MOUNT_RO|SECRETS_DIR=~/secrets/c3c|~/secrets' 'HOME_MOUNT_RO|SECRETS_DIR=~/secrets|~/secrets/c3c/sub' \
               'HOME_MOUNT_RO|CODEX_DIR=~/data/guard/codex|~/data/guard' 'HOME_MOUNT|CODEX_DIR=~/data/pair/codex|~/data/pair' \

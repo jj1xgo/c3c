@@ -3214,7 +3214,8 @@ COPILOT_ABSENT_PROBE='set -e
 [ ! -e /usr/local/libexec/c3c/copilot-bwrap ] && [ ! -L /usr/local/libexec/c3c/copilot-bwrap ] || { echo "bwrap の中継がある"; exit 1; }
 [ ! -e /etc/c3c/copilot-settings.json ] && [ ! -L /etc/c3c/copilot-settings.json ] || { echo "sandbox の設定の雛形がある"; exit 1; }
 ! dpkg -s bubblewrap >/dev/null 2>&1 || { echo "bubblewrap が入っている"; exit 1; }
-! grep -q githubcopilot /etc/c3c/allowed-domains.txt || { echo "許可リストに Copilot の宛先がある"; exit 1; }
+[ -f /etc/c3c/allowed-domains.txt ] && [ -r /etc/c3c/allowed-domains.txt ] || { echo "許可リストを読めない"; exit 1; }
+! grep -qF individual.githubcopilot.com /etc/c3c/allowed-domains.txt || { echo "許可リストに Copilot の宛先がある"; exit 1; }
 ! ls /tmp/copilot-* >/dev/null 2>&1 || { echo "/tmp/copilot-* が残っている"; exit 1; }
 [ "$(id -u)" != 0 ]'
 check "Copilot が入っていない（copilot・中継・雛形・Debian の bubblewrap・許可リストの宛先・一時ファイル）" \
